@@ -1,0 +1,63 @@
+name: Personal Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Personal release tag, must equal v<package version>
+        required: true
+        default: v1.6.0-personal.1
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:personal-install
+      - name: Validate tag and build personal source package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="${{ inputs.tag }}"
+          [ "$TAG" = "v$VERSION" ] || { echo "::error::tag $TAG does not match package version v$VERSION"; exit 1; }
+          NOTES="docs/person/releases/$TAG.md"
+          [ -f "$NOTES" ] || { echo "::error::missing release notes: $NOTES"; exit 1; }
+          ARCHIVE="$(npm pack --ignore-scripts --silent)"
+          sha256sum "$ARCHIVE" > SHA256SUMS
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codegraph-personal-${{ github.sha }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+      - name: Create or refresh GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          NOTES: ${{ steps.package.outputs.notes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo nk33-dev/codegraph >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ARCHIVE" SHA256SUMS --clobber --repo nk33-dev/codegraph
+            gh release edit "$TAG" --notes-file "$NOTES" --prerelease --repo nk33-dev/codegraph
+          else
+            gh release create "$TAG" "$ARCHIVE" SHA256SUMS \
+              --target personal --title "CodeGraph $TAG" --notes-file "$NOTES" --prerelease \
+              --repo nk33-dev/codegraph
+          fi

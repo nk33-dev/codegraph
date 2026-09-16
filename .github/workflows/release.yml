@@ -40,6 +40,8 @@ jobs:
   # ship one). (Runner images ship rustup; build-kernel.sh
   # adds each cross target itself.)
   kernel:
+    # 个人 fork 不沿用上游 npm 身份、PAT、标签和 main 写回流程。
+    if: github.repository == 'colbymchenry/codegraph'
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +71,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: github.repository == 'colbymchenry/codegraph'
     runs-on: ubuntu-latest
     needs: kernel
     steps:

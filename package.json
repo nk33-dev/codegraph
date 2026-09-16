@@ -1,10 +1,20 @@
 {
   "name": "@colbymchenry/codegraph",
-  "version": "1.6.0",
+  "private": true,
+  "version": "1.6.0-personal.1",
+  "codegraphDistribution": {
+    "channel": "personal",
+    "repository": "nk33-dev/codegraph",
+    "ref": "personal"
+  },
   "description": "Supercharge AI coding agents with semantic code intelligence — surgical context, fewer tool calls, faster answers. 100% local.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/colbymchenry/codegraph.git"
+    "url": "git+https://github.com/nk33-dev/codegraph.git"
+  },
+  "homepage": "https://github.com/nk33-dev/codegraph#readme",
+  "bugs": {
+    "url": "https://github.com/nk33-dev/codegraph/issues"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,7 +30,8 @@
     "ui"
   ],
   "scripts": {
-    "build": "tsc && npm run copy-assets && npm run build:ui && node -e \"require('fs').chmodSync('dist/bin/codegraph.js', 0o755)\"",
+    "build": "tsc && npm run copy-assets && npm run build:ui && node -e \"require('fs').chmodSync('dist/bin/codegraph.js', 0o755)\" && node scripts/write-build-info.mjs",
+    "prepare": "node scripts/prepare-personal.mjs",
     "build:ui": "npm run build --workspace ui && node scripts/check-ui-build.mjs",
     "build:lib": "npm run build:lib --workspace ui",
     "preuninstall": "node dist/bin/uninstall.js",
@@ -28,8 +39,11 @@
     "dev": "tsc --watch",
     "build:kernel": "bash scripts/build-kernel.sh",
     "cli": "npm run build && node dist/bin/codegraph.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "codegraph": "node dist/bin/codegraph.js",
+    "verify:personal-install": "npm run build && node scripts/verify-personal-install.mjs",
+    "test": "vitest run --project engine --project ui",
+    "test:watch": "vitest --project engine --project ui",
+    "test:perf": "vitest run --project perf",
     "test:eval": "vitest run __tests__/evaluation/",
     "eval": "npm run build && npx tsx __tests__/evaluation/runner.ts",
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\""

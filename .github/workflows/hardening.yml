@@ -1,0 +1,88 @@
+name: Hardening
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '17 18 * * 2'
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:personal-install
+
+  real-lsp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm install --global pyright typescript typescript-language-server
+      - run: npm run build
+      - run: npx vitest run --project engine __tests__/lsp-real-servers.test.ts
+        env:
+          CODEGRAPH_LSP_E2E: '1'
+
+  native-kernel:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build native kernel
+        shell: bash
+        run: bash scripts/build-kernel.sh
+      - name: Native kernel contract and parity
+        shell: bash
+        run: npx vitest run __tests__/kernel-*.test.ts
+        env:
+          CODEGRAPH_KERNEL_EXPECT: '1'
+
+  daemon-recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Recovery and lifecycle contracts
+        run: >-
+          npx vitest run --project engine
+          __tests__/edit-transaction.test.ts
+          __tests__/daemon-registry.test.ts
+          __tests__/daemon-manager.test.ts
+          __tests__/liveness-watchdog.test.ts
+          __tests__/wal-heal.test.ts
+      - name: Shared daemon concurrent-client soak
+        run: |
+          node dist/bin/codegraph.js init --yes
+          node scripts/agent-eval/repro-daemon-clients.mjs . 8 60000 1
+        env:
+          CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: '1000'

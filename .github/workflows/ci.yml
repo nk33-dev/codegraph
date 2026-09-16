@@ -1,0 +1,39 @@
+name: CI
+
+# 常规门禁：每次 push / PR 在 Windows、Ubuntu 和 macOS 上各跑一遍 build + test。
+#
+# 刻意不放进这个工作流的东西（放夜间或手动任务）：
+#   - 真实 LSP 端到端（__tests__/lsp-real-servers.test.ts）：需要按平台预装
+#     语言服务器，属于环境准备而不是代码门禁；
+#   - 原生 kernel 构建与 kernel 对齐套件（codegraph-kernel/、kernel-*.test.ts）：
+#     需要 Rust 工具链，release.yml 已经在发布矩阵里构建各平台 prebuild；
+#   - 能耗/续航测量：共享 runner 上的墙钟功耗数字没有可比性。
+#
+# 严格计时门禁（npm run test:perf）同样是手动/夜间触发：它用
+# CODEGRAPH_PERF_ASSERT=1 串行跑计时敏感套件，共享 runner 的抖动足以让它误报，
+# 因此不阻塞普通 PR —— 普通 `npm test` 里的计时断言已按 perf-utils.ts 的系数放宽。
+#
+# Windows 上无需额外环境变量：平台差异（路径、命名管道、%APPDATA%、CRLF）在测试里
+# 用 it.runIf/skipIf(process.platform ...) 显式分流，见 docs/development.md 的
+# "Windows-gated tests"。这里也不引入 cross-env 等新依赖；每个平台各自
+# `npm ci` 安装本地二进制（esbuild/rollup 的平台包不能跨平台复用）。
+
+on: [push, pull_request]
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # 只跑 engine + ui 两个项目；串行严格计时的 perf 项目不在这里。
+      - run: npm test
