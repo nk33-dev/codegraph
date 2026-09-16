@@ -21,7 +21,7 @@
 
 ```powershell
 npm pack "github:nk33-dev/codegraph#personal"
-npm install -g ".\colbymchenry-codegraph-1.6.0-personal.1.tgz"
+npm install -g ".\colbymchenry-codegraph-1.6.0-personal.2.tgz"
 codegraph doctor
 ```
 

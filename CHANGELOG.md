@@ -14,6 +14,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- `v1.6.0-personal.2` 修复 Windows worktree 短路径识别、macOS 临时目录路径断言和事务失败注入，校正跨平台 URI 契约与 LSP 进程复用验证，并升级 GitHub Actions Node 运行时。
 - `v1.6.0-personal.1` 作为首个个人 GitHub prerelease，提供经过隔离安装验证的 `.tgz` 与 SHA-256 校验文件，不发布到上游 npm scope。
 - Python 可以通过 Pyright 查询定义、引用、文件符号和诊断，并完成跨文件重命名。
 - `codegraph doctor` 显示实际运行入口和构建来源，个人版不再提示或执行官方升级，配置向导也不会覆盖个人安装。

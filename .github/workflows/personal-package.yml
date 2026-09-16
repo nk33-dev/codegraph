@@ -6,7 +6,7 @@ on:
       tag:
         description: Personal release tag, must equal v<package version>
         required: true
-        default: v1.6.0-personal.1
+        default: v1.6.0-personal.2
 
 permissions:
   contents: write

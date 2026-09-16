@@ -1,6 +1,6 @@
 # 个人使用与安装
 
-本轮面向个人开发和使用，不复制官方的多平台 npm 发行流程。首个个人版使用 `v1.6.0-personal.1` GitHub prerelease 交付 `.tgz`，不会发布到上游 npm scope，也不会自动替换这台机器上的全局 CodeGraph。
+本轮面向个人开发和使用，不复制官方的多平台 npm 发行流程。当前个人版使用 `v1.6.0-personal.2` GitHub prerelease 交付 `.tgz`，不会发布到上游 npm scope，也不会自动替换这台机器上的全局 CodeGraph。
 
 ## 开发时使用哪个入口
 
@@ -19,15 +19,15 @@ npm run codegraph -- explore target_value --mode definitions --backend auto
 安装机器使用 Node 20 至 24，推荐 Node 24。发布后可直接安装固定 Release 资产：
 
 ```powershell
-npm install -g "https://github.com/nk33-dev/codegraph/releases/download/v1.6.0-personal.1/colbymchenry-codegraph-1.6.0-personal.1.tgz"
+npm install -g "https://github.com/nk33-dev/codegraph/releases/download/v1.6.0-personal.2/colbymchenry-codegraph-1.6.0-personal.2.tgz"
 codegraph doctor --json
 ```
 
 需要从 Git 标签自行打包时，推荐分两步执行：
 
 ```powershell
-npm pack "github:nk33-dev/codegraph#v1.6.0-personal.1"
-npm install -g ".\colbymchenry-codegraph-1.6.0-personal.1.tgz"
+npm pack "github:nk33-dev/codegraph#v1.6.0-personal.2"
+npm install -g ".\colbymchenry-codegraph-1.6.0-personal.2.tgz"
 codegraph doctor --json
 ```
 

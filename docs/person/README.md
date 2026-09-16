@@ -26,11 +26,11 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 
 本机构建与全量测试已通过；具体环境、结果和验证范围集中记录在[开发验证记录](test-repairs.md)。语言服务文档中的历史数字只对应当时的测试环境。资源档位的实测数字、重新建立的性能基线和保留的限制见[资源档位与自动回收](resource-governance.md)。
 
-个人扩展通过 `personal` 分支维护，并以 `v1.6.0-personal.1` 作为首个 GitHub prerelease。向 npm registry 安装上游包不会获得个人改动；个人版按[安装说明](personal-usage.md)从 GitHub Release `.tgz` 或固定标签安装。
+个人扩展通过 `personal` 分支维护；首个 GitHub prerelease 为 `v1.6.0-personal.1`，当前修订版为 `v1.6.0-personal.2`。向 npm registry 安装上游包不会获得个人改动；个人版按[安装说明](personal-usage.md)从 GitHub Release `.tgz` 或固定标签安装。
 
 ## 计划与维护
 
-[AI 优先能力与资源治理](../plans/2026-09-16-ai-first-capabilities-and-resource-governance.md)共六个阶段，阶段一至阶段五已实现并完成本地验证；阶段六的提交链、自动化、产物验证和首个 GitHub prerelease 已纳入本轮交付，三平台 GitHub 实跑、真实仓库 Agent A/B 和能耗测量仍待完成。本机验证与外部验证状态见[生产硬化与发布准备](release-readiness.md)。历史上游数字不作为本轮结果。独立的 LSP implementations 查询不再是阶段二前置需求：现有 `codegraph_explore` 会从统一图契约自动展开实现者；更深的 LSP 专用实现查询仍可后续评估。Serena 仅供参考，本项目不在其仓库中开发。
+[AI 优先能力与资源治理](../plans/2026-09-16-ai-first-capabilities-and-resource-governance.md)共六个阶段，阶段一至阶段五已实现并完成本地验证；阶段六的提交链、自动化、产物验证和首个 GitHub prerelease 已纳入本轮交付。首次三平台实跑暴露的跨平台问题已在 `v1.6.0-personal.2` 修复，修订版不等待远端矩阵结果；真实仓库 Agent A/B 和能耗测量仍待完成。本机验证与外部验证状态见[生产硬化与发布准备](release-readiness.md)。历史上游数字不作为本轮结果。独立的 LSP implementations 查询不再是阶段二前置需求：现有 `codegraph_explore` 会从统一图契约自动展开实现者；更深的 LSP 专用实现查询仍可后续评估。Serena 仅供参考，本项目不在其仓库中开发。
 
 - [分支、上游同步、迁移与个人发行](maintenance.md)
 - [开发参考](../development.md)
