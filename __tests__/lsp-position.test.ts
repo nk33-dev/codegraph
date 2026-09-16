@@ -91,14 +91,18 @@ describe('URI normalization', () => {
   });
 
   it('tsserver %3A encoding and the pathToFileURL form normalize to the same key', () => {
-    expect(uriKey('file:///C:/Users/x/a.ts')).toBe(uriKey('file:///c%3A/Users/x/a.ts'));
-    expect(uriKey('file:///C:/Users/x/a.ts')).toBe(uriKey('file:///C:\\Users\\x\\a.ts'));
+    const upper = uriKey('file:///C:/Users/x/a.ts');
+    const lower = uriKey('file:///c%3A/Users/x/a.ts');
+    expect(upper === lower).toBe(process.platform === 'win32');
+    expect(upper).toBe(uriKey('file:///C:\\Users\\x\\a.ts'));
   });
 
   it('non-file protocols and malformed URIs do not throw', () => {
     expect(uriToPath('jdt://contents/foo')).toBeNull();
     expect(uriToNormalizedPath('untitled:Untitled-1')).toBeNull();
-    expect(uriKey('file:///broken/%E0%A4%A')).toBe('file:///broken/%e0%a4%a');
+    expect(uriKey('file:///broken/%E0%A4%A')).toBe(
+      process.platform === 'win32' ? 'file:///broken/%e0%a4%a' : 'file:///broken/%E0%A4%A',
+    );
   });
 });
 

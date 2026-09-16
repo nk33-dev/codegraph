@@ -2694,7 +2694,7 @@ describe('Installer targets — Claude CLAUDE_CONFIG_DIR override (#1627)', () =
   });
 
   it.each(['absolute', 'relative'])('global install honors %s CLAUDE_CONFIG_DIR paths', (kind) => {
-    const custom = path.join(tmpHome, 'claude profile');
+    const custom = path.join(fs.realpathSync(tmpHome), 'claude profile');
     process.env.CLAUDE_CONFIG_DIR = kind === 'relative' ? path.relative(tmpCwd, custom) : custom;
 
     const claude = getTarget('claude')!;
@@ -2774,12 +2774,13 @@ describe('Installer targets — Claude CLAUDE_CONFIG_DIR override (#1627)', () =
     process.env.CLAUDE_CONFIG_DIR = custom;
     const claude = getTarget('claude')!;
     const result = claude.install('local', { autoAllow: true });
-    const mcpPath = path.join(tmpCwd, '.mcp.json');
+    const canonicalCwd = fs.realpathSync(tmpCwd);
+    const mcpPath = path.join(canonicalCwd, '.mcp.json');
 
     expect(result.files.map((f) => f.path)).toEqual([
       mcpPath,
-      path.join(tmpCwd, '.claude', 'settings.json'),
-      path.join(tmpCwd, '.claude', 'CLAUDE.md'),
+      path.join(canonicalCwd, '.claude', 'settings.json'),
+      path.join(canonicalCwd, '.claude', 'CLAUDE.md'),
     ]);
     expect(JSON.parse(fs.readFileSync(mcpPath, 'utf-8')).mcpServers.codegraph).toBeDefined();
     expect(claude.detect('local')).toEqual({

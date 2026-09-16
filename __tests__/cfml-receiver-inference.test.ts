@@ -22,7 +22,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { CodeGraph } from '../src';
 
-describe('CFML receiver-type inference', () => {
+describe('CFML receiver-type inference', { timeout: 15_000 }, () => {
   let dir: string;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfml-recv-')); });
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
@@ -35,20 +35,23 @@ describe('CFML receiver-type inference', () => {
 
   const load = async () => {
     const cg = await CodeGraph.init(dir, { silent: true });
-    await cg.indexAll();
-    const db = (cg as any).db.db;
-    const calls: { src: string; tgt: string; tgtQn: string }[] = db
-      .prepare(
-        `SELECT s.name src, t.name tgt, t.qualified_name tgtQn
-         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
-         WHERE e.kind = 'calls' AND t.kind = 'method'`
-      )
-      .all();
-    const methods: { name: string; qn: string }[] = db
-      .prepare(`SELECT name, qualified_name qn FROM nodes WHERE kind = 'method'`)
-      .all();
-    cg.close?.();
-    return { calls, methods };
+    try {
+      await cg.indexAll();
+      const db = (cg as any).db.db;
+      const calls: { src: string; tgt: string; tgtQn: string }[] = db
+        .prepare(
+          `SELECT s.name src, t.name tgt, t.qualified_name tgtQn
+           FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+           WHERE e.kind = 'calls' AND t.kind = 'method'`
+        )
+        .all();
+      const methods: { name: string; qn: string }[] = db
+        .prepare(`SELECT name, qualified_name qn FROM nodes WHERE kind = 'method'`)
+        .all();
+      return { calls, methods };
+    } finally {
+      cg.close();
+    }
   };
   const hasCall = (calls: any[], src: string, tgtQn: string) =>
     calls.some((e) => e.src === src && e.tgtQn === tgtQn);

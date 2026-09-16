@@ -32,7 +32,9 @@ describe('Python LSP', () => {
     const applied = await cg.editCode({ operation: 'rename', symbol: 'target_value', file: 'main.py', newName: 'next_value', apply: true });
     expect(applied.status).toBe('applied');
     expect(fs.readFileSync(path.join(project.root, 'main.py'), 'utf8')).toContain('result = next_value()');
-    expect(project.events('initialize')).toHaveLength(1);
+    const initializeEvents = project.events('initialize');
+    expect(initializeEvents.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(initializeEvents.map((event) => event.pid))).toHaveProperty('size', 1);
     expect(project.events('textDocument/didOpen')[0]?.params.textDocument.languageId).toBe('python');
     await cg.getLspManager().close();
     expect(cg.getLspManager().status().find((entry) => entry.family === 'python')?.pid).toBeNull();

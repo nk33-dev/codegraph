@@ -41,7 +41,18 @@ export function gitWorktreeRoot(dir: string): string | null {
       // 60s liveness watchdog and SIGKILL a healthy daemon (#1139).
       timeout: 5000,
     }).trim();
-    return out ? realpath(out) : null;
+    if (!out) return null;
+    const gitRoot = realpath(out);
+    // Git for Windows 可能展开 8.3 短路径，而 Node 保留原拼写。
+    // 从调用路径向上查找，诊断信息也能继续展示调用方看到的路径。
+    let candidate = realpath(dir);
+    for (;;) {
+      if (sameDirectory(candidate, gitRoot)) return candidate;
+      const parent = path.dirname(candidate);
+      if (parent === candidate) break;
+      candidate = parent;
+    }
+    return gitRoot;
   } catch {
     return null;
   }
@@ -98,12 +109,13 @@ export function detectWorktreeIndexMismatch(
   if (!worktreeRoot) return null;
 
   const resolvedIndexRoot = realpath(indexRoot);
-  if (worktreeRoot === resolvedIndexRoot) return null;
+  if (sameDirectory(worktreeRoot, resolvedIndexRoot)) return null;
 
   // Only flag it when the index root is itself a real working-tree root. This
   // distinguishes "borrowed another worktree's index" from "index sits in a
   // plain ancestor directory", and avoids warning outside git entirely.
-  if (gitWorktreeRoot(resolvedIndexRoot) !== resolvedIndexRoot) return null;
+  const indexWorktreeRoot = gitWorktreeRoot(resolvedIndexRoot);
+  if (!indexWorktreeRoot || !sameDirectory(indexWorktreeRoot, resolvedIndexRoot)) return null;
 
   // Don't flag a nested repo (submodule / embedded clone) that `indexRoot`'s
   // index ALREADY covers: indexing a super-repo descends into its submodules
@@ -117,7 +129,7 @@ export function detectWorktreeIndexMismatch(
   // not — so suppress only when the two clearly differ. (#1031, #1033)
   const worktreeCommon = gitCommonDir(worktreeRoot);
   const indexCommon = gitCommonDir(resolvedIndexRoot);
-  if (worktreeCommon && indexCommon && worktreeCommon !== indexCommon) return null;
+  if (worktreeCommon && indexCommon && !sameDirectory(worktreeCommon, indexCommon)) return null;
 
   return { worktreeRoot, indexRoot: resolvedIndexRoot };
 }
@@ -154,5 +166,20 @@ function realpath(p: string): string {
     return fs.realpathSync(path.resolve(p));
   } catch {
     return path.resolve(p);
+  }
+}
+
+/** 比较目录身份，兼容 Windows 盘符大小写与 8.3 短路径。 */
+function sameDirectory(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  if (process.platform === 'win32' && a.toLowerCase() === b.toLowerCase()) return true;
+  if (a === b) return true;
+  try {
+    const aStat = fs.statSync(a);
+    const bStat = fs.statSync(b);
+    return aStat.dev === bStat.dev && aStat.ino === bStat.ino;
+  } catch {
+    return false;
   }
 }

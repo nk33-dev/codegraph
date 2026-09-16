@@ -1,11 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
-import { __setEditTransactionFaultForTests } from '../src/edits/transaction';
-
-vi.mock('fs', async (importOriginal) => ({ ...await importOriginal<typeof import('fs')>() }));
+import {
+  __setEditTransactionDeviceForTests,
+  __setEditTransactionFaultForTests,
+  __setEditTransactionOperationFaultForTests,
+} from '../src/edits/transaction';
 
 const SOURCE = 'export function run() {\n  return 1;\n}\n';
 const REPLACEMENT = 'export function run() { return 2; }';
@@ -22,7 +24,8 @@ beforeEach(async () => {
 
 afterEach(() => {
   __setEditTransactionFaultForTests(null);
-  vi.restoreAllMocks();
+  __setEditTransactionOperationFaultForTests(null);
+  __setEditTransactionDeviceForTests(null);
   try { cg?.close(); } catch { /* 已关闭。 */ }
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -125,14 +128,9 @@ describe('结构化编辑事务', () => {
     fs.mkdirSync(mounted);
     fs.writeFileSync(path.join(mounted, 'service.ts'), SOURCE);
     await cg.indexFiles(['mounted/service.ts']);
-    const originalStat = fs.statSync;
-    vi.spyOn(fs, 'statSync').mockImplementation((target, options) => {
-      const stat = originalStat(target, options as never);
-      if (path.resolve(String(target)) === path.resolve(mounted)) {
-        return Object.assign(stat, { dev: stat.dev + 1 });
-      }
-      return stat;
-    });
+    __setEditTransactionDeviceForTests((target, device) => (
+      path.resolve(target) === path.resolve(mounted) ? device + 1 : device
+    ));
 
     const result = await cg.editCode({
       operation: 'replace-body', symbol: 'run', file: 'mounted/service.ts', content: REPLACEMENT, apply: true,

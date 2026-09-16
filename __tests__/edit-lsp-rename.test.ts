@@ -14,6 +14,7 @@ import { pathToFileURL } from 'url';
 import { CodeGraph } from '../src';
 import { clearLspConfigCache } from '../src/lsp/config';
 import { normalizeWorkspaceEdit } from '../src/lsp/manager';
+import { __setEditTransactionOperationFaultForTests } from '../src/edits/transaction';
 import { ToolHandler, __setLoadCodeGraphForTests } from '../src/mcp/tools';
 import { createFakeProject, type FakeProject } from './lsp-test-utils';
 
@@ -37,6 +38,7 @@ async function setup(files: Record<string, string>, serverArgs: string[] = []): 
 
 afterEach(() => {
   vi.restoreAllMocks();
+  __setEditTransactionOperationFaultForTests(null);
   try { cg?.close(); } catch { /* already closed */ }
   __setLoadCodeGraphForTests(null);
   clearLspConfigCache();
@@ -210,10 +212,8 @@ describe('cross-file and unsafe workspace edits', () => {
   it('第二个文件写入失败时恢复第一个文件，不留下部分修改', async () => {
     await setup({ 'a.ts': CLASS_FILE, 'b.ts': CLASS_FILE }, ['--rename']);
     project.writeConfig({ serverArgs: ['--rename', '--rename-extra', path.join(project.root, 'b.ts')] });
-    const rename = fs.renameSync;
-    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-      if (to === path.join(project.root, 'b.ts')) throw new Error('模拟第二次写入失败');
-      rename(from, to);
+    __setEditTransactionOperationFaultForTests((point) => {
+      if (point === 'before-commit:1') throw new Error('模拟第二次写入失败');
     });
     const result = await cg.editCode({ operation: 'rename', symbol: 'Widget', file: 'a.ts', newName: 'Gadget', apply: true });
     expect(result).toMatchObject({
