@@ -20,6 +20,8 @@ export interface FakeProjectOptions {
   server?: Record<string, unknown>;
   /** Top-level config overrides (idleTimeoutMs / requestTimeoutMs / disabled ...). */
   config?: Record<string, unknown>;
+  /** 设为 false 时只配置调用方显式提供的服务，用于验证服务族隔离。 */
+  includeTypescript?: boolean;
 }
 
 export interface FakeProject {
@@ -65,6 +67,7 @@ export function createFakeProject(files: Record<string, string> = {}, options: F
         serverArgs: overrides.serverArgs ?? options.serverArgs,
         server: overrides.server ?? options.server,
         config: overrides.config ?? options.config,
+        includeTypescript: overrides.includeTypescript ?? options.includeTypescript,
       };
       const command = process.execPath;
       const args = [FAKE_SERVER, '--log', logPath, ...(merged.serverArgs ?? [])];
@@ -73,7 +76,9 @@ export function createFakeProject(files: Record<string, string> = {}, options: F
         warmupTimeoutMs: 2000,
         ...(merged.config ?? {}),
         servers: {
-          typescript: { command, args, ...(merged.server ?? {}) },
+          ...(merged.includeTypescript === false ? {} : {
+            typescript: { command, args, ...(merged.server ?? {}) },
+          }),
           ...((merged.config as { servers?: object } | undefined)?.servers ?? {}),
         },
       };

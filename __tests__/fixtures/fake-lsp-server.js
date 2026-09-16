@@ -61,7 +61,7 @@ const fileOperations = flag('--file-operations');
 const log = (entry) => {
   if (!logFile) return;
   try {
-    fs.appendFileSync(logFile, JSON.stringify({ ...entry, pid: process.pid }) + '\n');
+    fs.appendFileSync(logFile, JSON.stringify(entry) + '\n');
   } catch {
     /* a logging failure must not change protocol behaviour */
   }

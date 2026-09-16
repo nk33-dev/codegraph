@@ -2693,8 +2693,10 @@ describe('Installer targets — Claude CLAUDE_CONFIG_DIR override (#1627)', () =
     fs.rmSync(tmpCwd, { recursive: true, force: true });
   });
 
+  const canonicalPaths = (paths: readonly string[]) => paths.map((file) => fs.realpathSync(file));
+
   it.each(['absolute', 'relative'])('global install honors %s CLAUDE_CONFIG_DIR paths', (kind) => {
-    const custom = path.join(fs.realpathSync(tmpHome), 'claude profile');
+    const custom = path.join(tmpHome, 'claude profile');
     process.env.CLAUDE_CONFIG_DIR = kind === 'relative' ? path.relative(tmpCwd, custom) : custom;
 
     const claude = getTarget('claude')!;
@@ -2705,13 +2707,13 @@ describe('Installer targets — Claude CLAUDE_CONFIG_DIR override (#1627)', () =
       path.join(custom, 'CLAUDE.md'),
     ] as const;
 
-    expect(result.files.map((f) => f.path)).toEqual(paths);
+    expect(canonicalPaths(result.files.map((f) => f.path))).toEqual(canonicalPaths(paths));
     const mcp = JSON.parse(fs.readFileSync(paths[0], 'utf-8'));
     expect(mcp.mcpServers.codegraph.alwaysLoad).toBe(true);
     const settings = JSON.parse(fs.readFileSync(paths[1], 'utf-8'));
     expect(settings.permissions.allow).toContain('mcp__codegraph__*');
     expect(fs.readFileSync(paths[2], 'utf-8')).toContain('codegraph explore');
-    expect(claude.describePaths('global')).toEqual(paths);
+    expect(canonicalPaths(claude.describePaths('global'))).toEqual(canonicalPaths(paths));
     expect(claude.printConfig('global')).toContain(`# Add to ${paths[0]}`);
 
     const before = paths.map((p) => fs.readFileSync(p, 'utf-8'));
@@ -2774,14 +2776,14 @@ describe('Installer targets — Claude CLAUDE_CONFIG_DIR override (#1627)', () =
     process.env.CLAUDE_CONFIG_DIR = custom;
     const claude = getTarget('claude')!;
     const result = claude.install('local', { autoAllow: true });
-    const canonicalCwd = fs.realpathSync(tmpCwd);
-    const mcpPath = path.join(canonicalCwd, '.mcp.json');
+    const mcpPath = path.join(tmpCwd, '.mcp.json');
 
-    expect(result.files.map((f) => f.path)).toEqual([
+    const paths = [
       mcpPath,
-      path.join(canonicalCwd, '.claude', 'settings.json'),
-      path.join(canonicalCwd, '.claude', 'CLAUDE.md'),
-    ]);
+      path.join(tmpCwd, '.claude', 'settings.json'),
+      path.join(tmpCwd, '.claude', 'CLAUDE.md'),
+    ];
+    expect(canonicalPaths(result.files.map((f) => f.path))).toEqual(canonicalPaths(paths));
     expect(JSON.parse(fs.readFileSync(mcpPath, 'utf-8')).mcpServers.codegraph).toBeDefined();
     expect(claude.detect('local')).toEqual({
       installed: true, alreadyConfigured: true, configPath: mcpPath,

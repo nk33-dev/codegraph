@@ -128,8 +128,8 @@ describe('结构化编辑事务', () => {
     fs.mkdirSync(mounted);
     fs.writeFileSync(path.join(mounted, 'service.ts'), SOURCE);
     await cg.indexFiles(['mounted/service.ts']);
-    __setEditTransactionDeviceForTests((target, device) => (
-      path.resolve(target) === path.resolve(mounted) ? device + 1 : device
+    __setEditTransactionDeviceForTests((_target, device, label) => (
+      label === 'mounted/service.ts' ? device + 1 : device
     ));
 
     const result = await cg.editCode({

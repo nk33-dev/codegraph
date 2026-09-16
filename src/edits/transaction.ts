@@ -66,7 +66,7 @@ const LOCK_FILE = 'edit-transactions.lock';
 class SimulatedEditInterruption extends Error {}
 let faultHook: ((point: string) => void) | null = null;
 let operationFaultHook: ((point: string) => void) | null = null;
-let deviceHook: ((target: string, device: number) => number) | null = null;
+let deviceHook: ((target: string, device: number, label: string) => number) | null = null;
 
 /** 仅供契约测试模拟进程在持久化边界被终止。 */
 export function __setEditTransactionFaultForTests(hook: ((point: string) => void) | null): void {
@@ -79,7 +79,9 @@ export function __setEditTransactionOperationFaultForTests(hook: ((point: string
 }
 
 /** 仅供契约测试模拟目标位于另一文件系统。 */
-export function __setEditTransactionDeviceForTests(hook: ((target: string, device: number) => number) | null): void {
+export function __setEditTransactionDeviceForTests(
+  hook: ((target: string, device: number, label: string) => number) | null,
+): void {
   deviceHook = hook;
 }
 
@@ -215,7 +217,7 @@ function assertSameDevice(stageRoot: string, target: string, label: string): voi
   const stageDevice = fs.statSync(stageRoot).dev;
   const targetDirectory = nearestExistingDirectory(target);
   const actualTargetDevice = fs.statSync(targetDirectory).dev;
-  const targetDevice = deviceHook?.(targetDirectory, actualTargetDevice) ?? actualTargetDevice;
+  const targetDevice = deviceHook?.(targetDirectory, actualTargetDevice, label) ?? actualTargetDevice;
   if (stageDevice !== targetDevice) {
     throw new CodeEditRefusal(
       `${label} is on another filesystem; cross-volume structured edits are refused before commit`,

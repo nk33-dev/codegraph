@@ -19,24 +19,33 @@ describe('Python LSP', () => {
   it('复用 Python 服务完成查询、诊断和编辑，并在关闭后释放进程', async () => {
     project = createFakeProject({ 'main.py': 'def target_value():\n    return 1\n\nresult = target_value()\n' },
       { serverArgs: ['--pull-diagnostics', '--rename'] });
-    project.writeConfig({ config: { servers: { python: project.serverCommand() } } });
+    project.writeConfig({ includeTypescript: false, config: { servers: { python: project.serverCommand() } } });
     cg = CodeGraph.initSync(project.root);
     await cg.indexAll();
+    const manager = cg.getLspManager();
+    let pythonPid: number | null = null;
+    const expectReusedPythonServer = () => {
+      const live = manager.status().filter((entry) => entry.pid !== null);
+      expect(live).toHaveLength(1);
+      expect(live[0]?.family).toBe('python');
+      if (pythonPid === null) pythonPid = live[0]!.pid;
+      else expect(live[0]?.pid).toBe(pythonPid);
+    };
 
     for (const mode of ['definitions', 'references', 'symbols', 'diagnostics'] as const) {
       const result = await cg.queryCodeWithBackend({ backend: 'auto', mode,
         query: mode === 'symbols' || mode === 'diagnostics' ? 'main.py' : 'target_value', file: 'main.py' });
       expect(result.status, result.warnings.join(' ')).toBe('ok');
       expect(result.routing).toMatchObject({ resolved: 'lsp', families: ['python'] });
+      expectReusedPythonServer();
     }
     const applied = await cg.editCode({ operation: 'rename', symbol: 'target_value', file: 'main.py', newName: 'next_value', apply: true });
     expect(applied.status).toBe('applied');
     expect(fs.readFileSync(path.join(project.root, 'main.py'), 'utf8')).toContain('result = next_value()');
-    const initializeEvents = project.events('initialize');
-    expect(initializeEvents.length).toBeGreaterThanOrEqual(1);
-    expect(new Set(initializeEvents.map((event) => event.pid))).toHaveProperty('size', 1);
+    expectReusedPythonServer();
+    expect(project.events('initialize')).toHaveLength(1);
     expect(project.events('textDocument/didOpen')[0]?.params.textDocument.languageId).toBe('python');
-    await cg.getLspManager().close();
-    expect(cg.getLspManager().status().find((entry) => entry.family === 'python')?.pid).toBeNull();
+    await manager.close();
+    expect(manager.status().find((entry) => entry.family === 'python')?.pid).toBeNull();
   }, 30_000);
 });
