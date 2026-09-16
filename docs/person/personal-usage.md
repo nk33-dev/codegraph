@@ -47,4 +47,4 @@ MCP 如果配置的是 `command = "codegraph"`，会跟随启动它的应用所�
 
 ## 开发验证
 
-构建和安装检查使用 `npm run build`、`npm test` 与 `npm run verify:personal-install`。具体改动、测试结果和环境范围见[开发验证记录](test-repairs.md)，项目首页只介绍功能和用法。
+日常修改先运行 `npm run check:quick`，或用 `npm run test:focused -- <test files>` 指定专项测试。`npm run build`、`npm test` 与 `npm run verify:personal-install` 留给共享核心、构建/安装器和发布前检查，不在每次小改动后重复执行。具体改动、测试结果和环境范围见[开发验证记录](test-repairs.md)，项目首页只介绍功能和用法。

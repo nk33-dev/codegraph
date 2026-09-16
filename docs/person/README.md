@@ -30,7 +30,7 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 
 ## 计划与维护
 
-[AI 优先能力与资源治理](../plans/2026-09-16-ai-first-capabilities-and-resource-governance.md)共六个阶段，阶段一至阶段五已实现并完成本地验证；阶段六的提交链、自动化、产物验证和首个 GitHub prerelease 已纳入本轮交付。首次三平台实跑暴露的跨平台问题已在 `v1.6.0-personal.2` 修复，修订版不等待远端矩阵结果；真实仓库 Agent A/B 和能耗测量仍待完成。本机验证与外部验证状态见[生产硬化与发布准备](release-readiness.md)。历史上游数字不作为本轮结果。独立的 LSP implementations 查询不再是阶段二前置需求：现有 `codegraph_explore` 会从统一图契约自动展开实现者；更深的 LSP 专用实现查询仍可后续评估。Serena 仅供参考，本项目不在其仓库中开发。
+[AI 优先能力与资源治理](../plans/2026-09-16-ai-first-capabilities-and-resource-governance.md)共六个阶段，阶段一至阶段五已实现并完成本地验证；阶段六的提交链、自动化、产物验证和首个 GitHub prerelease 已纳入本轮交付。`v1.6.0-personal.2` 的三平台复跑仍有 macOS 路径/事务测试和 Linux/macOS LSP fixture 隔离失败，不能记为跨平台通过；修复先进入 `personal`，后续发布不再用本机全量通过替代三平台结论。真实仓库 Agent A/B 和能耗测量仍待完成。本机验证与外部验证状态见[生产硬化与发布准备](release-readiness.md)。历史上游数字不作为本轮结果。独立的 LSP implementations 查询不再是阶段二前置需求：现有 `codegraph_explore` 会从统一图契约自动展开实现者；更深的 LSP 专用实现查询仍可后续评估。Serena 仅供参考，本项目不在其仓库中开发。
 
 - [分支、上游同步、迁移与个人发行](maintenance.md)
 - [开发参考](../development.md)

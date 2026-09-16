@@ -52,7 +52,9 @@ For persistent format changes, first verify upgrade, repeated startup, interrupt
 
 ## 4. Verification and merging back
 
-- Run `npm run build` and `npm test` before and after the merge; run the relevant evaluations per module, and follow the [validation methodology](../validation.md) for new languages/frameworks.
+- 日常开发先运行 `npm run check:quick`；它执行 `tsc --noEmit`，并按变更文件选择直接依赖测试和对应领域测试。需要手动收窄时使用 `npm run test:focused -- <test files>`。
+- 共享核心、构建/安装器、跨平台流程和发布前检查再运行 `npm run build` 与 `npm test`；同一份代码已经通过的全量检查不重复执行，纯文档修改不重跑代码测试。
+- Run the relevant evaluations per module, and follow the [validation methodology](../validation.md) for new languages/frameworks.
 - Regression coverage spans the scenarios that trigger upstream fixes and the personal features; check call counts, routing and cleanup behavior, since searching the source cannot replace running verification.
 - Verify the actual CLI/MCP path, source commit and build version, so that a globally installed old npm version does not mask local results. Installer or package-structure changes require verifying the packaged artifacts, not just the source directory.
 - Check Windows, Linux and macOS differences against the actual environments, and do not carry over the upstream maintainer's machine assumptions. Distinguish baseline failures, new failures and unverified items, and do not write a failing check as passing.

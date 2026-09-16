@@ -18,7 +18,16 @@ name: CI
 # "Windows-gated tests"。这里也不引入 cross-env 等新依赖；每个平台各自
 # `npm ci` 安装本地二进制（esbuild/rollup 的平台包不能跨平台复用）。
 
-on: [push, pull_request]
+on:
+  push:
+    branches: ['**']
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
 
 jobs:
   build-test:

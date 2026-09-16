@@ -14,6 +14,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- 开发验证新增 `typecheck`、`test:focused`、`test:changed` 与 `check:quick` 分层命令，日常改动不再重复执行完整构建和全量测试；普通 CI 忽略文档和 tag-only push。
+- 修正 `v1.6.0-personal.2` 三平台复跑暴露的 macOS canonical path 测试、跨卷失败注入标签和 Python LSP fixture 服务族污染。
 - `v1.6.0-personal.2` 修复 Windows worktree 短路径识别、macOS 临时目录路径断言和事务失败注入，校正跨平台 URI 契约与 LSP 进程复用验证，并升级 GitHub Actions Node 运行时。
 - `v1.6.0-personal.1` 作为首个个人 GitHub prerelease，提供经过隔离安装验证的 `.tgz` 与 SHA-256 校验文件，不发布到上游 npm scope。
 - Python 可以通过 Pyright 查询定义、引用、文件符号和诊断，并完成跨文件重命名。

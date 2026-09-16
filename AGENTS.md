@@ -14,7 +14,7 @@ CodeGraph 是本地代码图、CLI 与 MCP 工具的个人 fork。只做用户�
 - 已有 `.codegraph/` 时优先用 CodeGraph 查结构与调用链；索引不覆盖的内容再定向搜索，过期结果核对源码，不擅自建立新索引。
 - 公共入口是 `src/index.ts`；多处使用的图推导放 `src/graph/`，避免 CLI/MCP/UI 各算一套。MCP 用法说明只维护 `src/mcp/server-instructions.ts`。
 - 同步前读[维护流程](docs/person/maintenance.md)：按旧入口到现模块映射迁移行为，保持单一运行入口；Git 无冲突不能替代语义检查。大版本/重构在同步分支验证，保留合并历史，数据迁移先在副本验证恢复。
-- 代码变更运行 `npm run build` 与 `npm test`，安装器变更补契约测试及 CHANGELOG；纯文档检查差异和链接。核对实际产物与平台，未运行或失败的检查不得称为通过。
+- 开发中先运行 `npm run check:quick`，它只做类型检查和受影响测试；也可用 `npm run test:focused -- <test files>` 明确指定。只有共享核心、构建/安装器、跨平台流程、发布前检查或用户明确要求时才运行完整 `npm run build` 与 `npm test`，同一提交内容未变化时不重复跑全量。安装器变更补契约测试及 CHANGELOG；纯文档检查差异和链接。核对实际产物与平台，未运行或失败的检查不得称为通过。
 - 个人发布方案未适配前，不直接运行上游发布流程或向上游 npm 包名发布；不主动改版本和包名。
 
 ## 按任务读取
