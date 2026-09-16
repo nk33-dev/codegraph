@@ -12,6 +12,18 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Personal fork
+
+- `v1.6.0-personal.1` 作为首个个人 GitHub prerelease，提供经过隔离安装验证的 `.tgz` 与 SHA-256 校验文件，不发布到上游 npm scope。
+- Python 可以通过 Pyright 查询定义、引用、文件符号和诊断，并完成跨文件重命名。
+- `codegraph doctor` 显示实际运行入口和构建来源，个人版不再提示或执行官方升级，配置向导也不会覆盖个人安装。
+- 从 Git 安装个人分支时会准备 CLI、语法资源和可视化产物，无需提交构建目录。
+- 跨文件编辑现在先暂存再提交；后续文件失败会自动回滚，进程中断可在下次启动恢复，同一 operation ID 重试只返回持久结果而不会重复写入。
+- 常规 CI 扩展到 Windows、Linux、macOS；夜间任务覆盖真实 LSP、原生 kernel、daemon 恢复和个人安装产物。个人 fork 禁止误跑上游发布流程。
+- 正在执行的 LSP 查询不会被空闲清理中断，检索输出也明确区分源码片段和完整文件。
+- 语言服务器关闭输入管道时，未完成请求会收到明确错误，不再因异步 EPIPE 中断宿主进程。
+- `codegraph_explore` 现在能沿 Zustand 的解构 action、selector、`getState()` 和 store 内 `get()` 继续追踪，并把这类动态绑定标成带注册位置的启发式证据；局部遮蔽、普通工厂和未知成员链不会猜测同名目标。
+
 ### Highlights
 
 - **`codegraph ui` — your graph in a browser.** A local, read-only viewer for the project you already indexed: your code with its callers and callees in the margin, a map of the whole repository, and a strip that shows how one symbol reaches another.
@@ -24,6 +36,16 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Upgrading:** re-index your projects after this release — several of the new readings rest on edges that are written while indexing.
 
 ### New Features
+
+- **Ask the index for definitions, references, a file's symbols and its own state.** `codegraph explore` answers structured queries as versioned JSON, with the same shape from the CLI and from MCP, and says when a name matches several definitions or when a location has drifted from what is on disk.
+
+- **Real language servers answer when the index is not enough.** The same entry point takes `backend:"lsp"` for precise definitions, references, diagnostics and file outlines across C, C++, JavaScript, TypeScript, Java, Rust and Go. Servers start on first use, are reused per project, exit when idle, and restart after a crash. Commands come only from `.codegraph/lsp.json` or `CODEGRAPH_LSP_*` — nothing is installed for you — and a server that is missing answers `status:"unavailable"` with the remedy instead of an error. Positions are 1-based lines with UTF-16 columns, a name the server does not report is left empty rather than guessed, and locations outside the project are marked `external`.
+
+- **One entry point picks the right source, and says which it used.** `backend:"auto"` chooses the graph or a language server per query and falls back to the graph when no server is available; `backend:"both"` runs both, merges them, labels every item with its origin and marks the locations both sources independently agree on. Two new modes answer change questions: `mode:"impact"` — what a change reaches, with propagation distance — and `mode:"tests"` — which test files it reaches. Both are the same derivation behind `codegraph impact` and `codegraph affected`. When an MCP server is already running, `codegraph explore` sends its structured queries to it, so several windows share one index connection and one set of language servers (`CODEGRAPH_SHARED_SERVICE=0` opts out); with nothing running it stays in-process and never leaves a background process behind. Every structured result carries a `routing` block saying what was asked for, what answered, and why.
+- **Merged query pagination no longer skips results twice.** `backend:"both"` now collects the graph and LSP result sets before deduplication and applies `offset`/`limit` only to the merged list, so non-zero pages keep a stable total and do not silently lose rows.
+
+- **Edit a symbol, not a line: rename, replace a body, insert before or after it.** `codegraph_edit` (MCP) and `codegraph edit` (CLI) work on a symbol resolved through the index rather than on a text range you worked out yourself. They **preview by default** — nothing is written without `apply:true`, and the preview carries a hash you can hand back so the write refuses if the file changed in between — and they refuse rather than guess: an ambiguous name lists the candidates, a file whose index row no longer matches the disk says `status:"stale"` (run `codegraph sync`), a path outside the project is rejected, and after a write the index is refreshed for exactly the files touched. `rename` is a real whole-project rename through the language server (`textDocument/rename`, including renames that span files); with no server installed it answers `status:"unavailable"` instead of approximating the rename with text replacement. `replace-body`, `insert-before` and `insert-after` are graph-native and need no language server.
+- **Structured writes stay inside the project and are never replayed after an uncertain daemon call.** Path validation now resolves the nearest existing parent for a not-yet-created target, closing the case where an in-project directory link pointed outside the root. A CLI edit sent to an active shared daemon uses at-most-once delivery: if the daemon does not confirm the result, the CLI reports the uncertainty instead of applying the same edit again locally.
 
 - **Codex and Astra read project guidance from `AGENTS.md`.** The canonical agent guide now lives in `AGENTS.md` (with a nested `docs/AGENTS.md` for long validation notes); `CLAUDE.md` is a thin `@AGENTS.md` wrapper for Claude Code. Codex/Astra no longer miss the old CLAUDE-only instructions.
 
