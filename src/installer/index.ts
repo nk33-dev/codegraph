@@ -31,6 +31,7 @@ import { isGitRepo, isSyncHookInstalled, installGitSyncHook } from '../sync/git-
 import { getCodeGraphDir, codeGraphDirName } from '../directory';
 import { getTelemetry, TELEMETRY_DOCS } from '../telemetry';
 import { maybeOfferBetaSignup } from './beta-signup';
+import { PERSONAL_DISTRIBUTION, PERSONAL_UPDATE_COMMAND } from '../runtime-info';
 
 // Backwards-compat: keep these named exports — downstream code may
 // import them. The shim in `config-writer.ts` continues to re-export
@@ -102,9 +103,11 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     return;
   }
 
-  // Step 2: install the codegraph npm package on PATH (always offered;
-  // matches existing behavior). Skipped when --yes (assume present).
-  if (!useDefaults) {
+  // 个人版只配置客户端，不让配置向导把刚装好的个人包替换成官方包。
+  // 官方版保留原来的 CLI 安装询问；--yes 仍假定 CLI 已安装。
+  if (PERSONAL_DISTRIBUTION) {
+    clack.log.info(`Personal CLI:\n${PERSONAL_UPDATE_COMMAND}\nUse codegraph doctor to verify the active entry.`);
+  } else if (!useDefaults) {
     const shouldInstallGlobally = await clack.confirm({
       message: 'Install the codegraph CLI on your PATH? (Required so agents can launch the MCP server)',
       initialValue: true,

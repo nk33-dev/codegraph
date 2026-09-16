@@ -19,7 +19,7 @@ import {
   isInheritanceRef,
   isImportableKind,
 } from './types';
-import { isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
+import { isUnresolvedJsMemberChain, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesKnownFamily, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
 import { resolveViaImport, resolvePhpImportedStaticCall, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath } from './import-resolver';
 import { ResolverPool, minRefsForPool } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
@@ -34,6 +34,7 @@ import { lexicalPathWithinRoot } from '../utils';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { JS_BUILT_INS } from './js-builtins';
+import { resolveStoreBinding } from './store-binding';
 
 /** Node kinds that can declare supertypes (extends/implements). */
 const SUPERTYPE_BEARING_KINDS = new Set<Node['kind']>([
@@ -895,6 +896,17 @@ export class ReferenceResolver {
   }
 
   private resolveOneInner(ref: UnresolvedRef): ResolvedRef | null {
+    const storeBinding = resolveStoreBinding(ref, this.context);
+    if (storeBinding !== undefined) return storeBinding;
+
+    if (isUnresolvedJsMemberChain(ref)) {
+      // RN 桥接有明确模块身份；其余未知链不进入 import、框架或模糊猜测。
+      if (!/^NativeModules\.[A-Z][\w$]*\.[\w$]+$/.test(ref.referenceName)) return null;
+      const bridge = this.frameworks.find((framework) => framework.name === 'react-native-bridge');
+      const resolved = bridge?.resolve(ref, this.context);
+      return resolved && resolved.confidence >= 0.9 ? resolved : null;
+    }
+
     // Skip built-in/external references
     if (this.isBuiltInOrExternal(ref)) {
       return null;
@@ -1177,6 +1189,7 @@ export class ReferenceResolver {
         kind,
         line: ref.original.line,
         column: ref.original.column,
+        provenance: ref.provenance,
         metadata: {
           ...(t.metadata ?? {}),
           confidence: ref.confidence,
@@ -1243,7 +1256,8 @@ export class ReferenceResolver {
     const byRowId: Array<{ rowId: number; referenceName: string }> = [];
     const legacyKeys: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }> = [];
     for (const r of unresolved) {
-      if (r.rowId != null) byRowId.push({ rowId: r.rowId, referenceName: r.referenceName });
+      const retryName = r.retryName ?? r.referenceName;
+      if (r.rowId != null) byRowId.push({ rowId: r.rowId, referenceName: retryName });
       else legacyKeys.push({
         fromNodeId: r.fromNodeId,
         referenceName: r.referenceName,

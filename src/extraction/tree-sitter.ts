@@ -4870,14 +4870,9 @@ export class TreeSitterExtractor {
               TS_JS_CHAIN_RECEIVER_TYPES.has(receiver.type) &&
               isUnresolvedTsJsChain(receiver, this.source)
             ) {
-              // `holder.values.get()` has no inferred property type (#1566).
-              // Emitting bare `get` exact-matches an unrelated project method;
-              // preserving the chain alone would still allow receiver guessing.
-              // Emit nothing until the property type can be established. This
-              // also covers host chains such as `chrome.storage.local.get()`
-              // (#1707). Calls inside arguments are visited independently.
-              // Mirrored in the kernel's extract_call (tsjs/extractors.rs).
-              return;
+              // 保留完整调用供 Steps 分类外部效果；解析器禁止按末尾方法名猜边。
+              // 与 Rust 内核保持一致，参数里的调用仍独立遍历。
+              calleeName = getNodeText(func, this.source).replace(/\s+/g, '').replace(/\?\./g, '.');
             } else {
               calleeName = methodName;
             }

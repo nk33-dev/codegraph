@@ -54,7 +54,7 @@ import {
   getDaemonSocketCandidates,
   getDaemonSocketPath,
 } from './daemon-paths';
-import { CodeGraphPackageVersion } from './version';
+import { CodeGraphPackageVersion, CodeGraphBuildId } from './version';
 import { releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
 import { registerDaemon, deregisterDaemon } from './daemon-registry';
 
@@ -126,6 +126,7 @@ const MAX_HELLO_LINE_BYTES = 4096;
  * direct mode on mismatch rather than risk subtle wire incompatibilities.
  */
 export interface DaemonHello {
+  buildId?: string;
   codegraph: string; // package version (must match the proxy's own version)
   pid: number;       // daemon pid (informational; for `ps` debugging)
   socketPath: string; // echoed back so the proxy can log it
@@ -367,6 +368,7 @@ export class Daemon {
     // application bytes. The proxy reads exactly one line, then forwards.
     const hello: DaemonHello = {
       codegraph: CodeGraphPackageVersion,
+      buildId: CodeGraphBuildId,
       pid: process.pid,
       socketPath: this.socketPath,
       protocol: 1,

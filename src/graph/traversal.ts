@@ -523,87 +523,48 @@ export class GraphTraverser {
       return { nodes: new Map(), edges: [], roots: [] };
     }
 
-    const nodes = new Map<string, Node>();
+    const nodes = new Map<string, Node>([[nodeId, focalNode]]);
     const edges: Edge[] = [];
-    const visited = new Set<string>();
+    const expanded = new Set<string>();
+    const containerKinds = new Set(['class', 'interface', 'struct', 'union', 'trait', 'protocol', 'module', 'enum']);
+    let frontier = [nodeId];
 
-    // Add focal node
-    nodes.set(focalNode.id, focalNode);
-
-    // Traverse incoming edges to find all dependents
-    this.getImpactRecursive(nodeId, maxDepth, 0, nodes, edges, visited);
-
-    return {
-      nodes,
-      edges,
-      roots: [nodeId],
-    };
-  }
-
-  private getImpactRecursive(
-    nodeId: string,
-    maxDepth: number,
-    currentDepth: number,
-    nodes: Map<string, Node>,
-    edges: Edge[],
-    visited: Set<string>
-  ): void {
-    // Mark visited before the depth check so a node collected at the depth
-    // boundary still lands in `visited`. Otherwise it could sit in `nodes` but
-    // not `visited`, and the two loops below — which used different sets to
-    // gate re-processing — would disagree about it (#1089).
-    if (visited.has(nodeId)) {
-      return;
-    }
-    visited.add(nodeId);
-    if (currentDepth >= maxDepth) {
-      return;
-    }
-
-    // For container nodes (classes, interfaces, structs, etc.), also traverse
-    // into their children so that callers of contained methods appear in impact
-    const focalNode = this.queries.getNodeById(nodeId);
-    if (focalNode) {
-      const containerKinds = new Set(['class', 'interface', 'struct', 'union', 'trait', 'protocol', 'module', 'enum']);
-      if (containerKinds.has(focalNode.kind)) {
-        const containsEdges = this.queries.getOutgoingEdges(nodeId, ['contains']);
-        if (containsEdges.length > 0) {
-          const children = this.queries.getNodesByIds(containsEdges.map((e) => e.target));
-          for (const edge of containsEdges) {
-            const childNode = children.get(edge.target);
-            if (childNode && !visited.has(childNode.id)) {
-              nodes.set(childNode.id, childNode);
-              edges.push(edge);
-              // Recurse into children at the same depth (they're part of the same symbol)
-              this.getImpactRecursive(childNode.id, maxDepth, currentDepth, nodes, edges, visited);
-            }
-          }
+    // 按依赖层批量查询，避免一个高 fan-in 节点触发数百次 SQL。
+    // 最短路径先展开，也避免 DFS 先走长路后漏掉短路还能到达的节点。
+    for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+      const level: string[] = [];
+      let pending = frontier.filter((id) => !expanded.has(id));
+      while (pending.length > 0) {
+        for (const id of pending) expanded.add(id);
+        level.push(...pending);
+        // 容器成员属于当前符号，向下展开不消耗依赖深度；绝不向上走 contains。
+        const containers = pending.filter((id) => containerKinds.has(nodes.get(id)!.kind));
+        const contains = this.queries.getOutgoingEdgesFrom(containers, ['contains']);
+        const children = this.queries.getNodesByIds(contains.map((edge) => edge.target).filter((id) => !nodes.has(id)));
+        const next = new Set<string>();
+        for (const edge of contains) {
+          const child = nodes.get(edge.target) ?? children.get(edge.target);
+          if (!child || expanded.has(child.id)) continue;
+          nodes.set(child.id, child);
+          edges.push(edge);
+          next.add(child.id);
         }
+        pending = [...next];
       }
-    }
-
-    // Get all incoming edges (things that depend on this node). Exclude
-    // `contains`: a container "contains" its members but does not *depend* on
-    // them, so following it upward would climb to the parent class and then
-    // re-expand every sibling member — exploding impact for a leaf symbol. (#536)
-    const incomingEdges = this.queries.getIncomingEdges(nodeId).filter((e) => e.kind !== 'contains');
-    if (incomingEdges.length === 0) return;
-    const sources = this.queries.getNodesByIds(incomingEdges.map((e) => e.source));
-
-    for (const edge of incomingEdges) {
-      const sourceNode = sources.get(edge.source);
-      if (!sourceNode) continue;
-      // Record the dependency edge unconditionally. The gate used to also gate
-      // edge collection (`!nodes.has(...)`), so a second incoming edge into a
-      // node already collected via another path was silently dropped from
-      // `edges` even though it's a real dependency (#1089). Each node's incoming
-      // edges are fetched once (nodes are expanded once), so no edge repeats.
-      edges.push(edge);
-      if (!visited.has(sourceNode.id)) {
-        nodes.set(sourceNode.id, sourceNode);
-        this.getImpactRecursive(sourceNode.id, maxDepth, currentDepth + 1, nodes, edges, visited);
+      const incoming = this.queries.getIncomingEdgesTo(level).filter((edge) => edge.kind !== 'contains');
+      const sources = this.queries.getNodesByIds(incoming.map((edge) => edge.source).filter((id) => !nodes.has(id)));
+      const next = new Set<string>();
+      for (const edge of incoming) {
+        const source = nodes.get(edge.source) ?? sources.get(edge.source);
+        if (!source) continue;
+        // 保留平行边和汇合路径；去重的是节点展开，不是依赖关系。
+        nodes.set(source.id, source);
+        edges.push(edge);
+        if (!expanded.has(source.id)) next.add(source.id);
       }
+      frontier = [...next];
     }
+    return { nodes, edges, roots: [nodeId] };
   }
 
   /**

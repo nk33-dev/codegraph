@@ -657,6 +657,15 @@ export function isVisibleAcrossFiles(candidate: Node, ref: UnresolvedRef, contex
 
 const JS_FAMILY = new Set<string>(['typescript', 'tsx', 'javascript', 'jsx']);
 
+/** 未知属性链保留为外部调用，不能降级成末尾方法名匹配。 */
+export function isUnresolvedJsMemberChain(ref: UnresolvedRef): boolean {
+  return ref.referenceKind === 'calls' && JS_FAMILY.has(ref.language) &&
+    !/^(?:this|window)\./.test(ref.referenceName) &&
+    (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*){2,}$/.test(ref.referenceName) ||
+      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\[.+\](?:\.[A-Za-z_$][\w$]*)+$/.test(ref.referenceName));
+}
+
+
 /**
  * Whether a JS/TS `calls` ref is a RECEIVER-LESS call — `serialize(x)`, not
  * `this.serialize(x)` / `obj.serialize(x)`. The extractor emits `this.m()`
@@ -3039,6 +3048,8 @@ export function matchReference(
   ref: UnresolvedRef,
   context: ResolutionContext
 ): ResolvedRef | null {
+  if (isUnresolvedJsMemberChain(ref)) return null;
+
   // Function-as-value refs (#756) resolve ONLY through the dedicated matcher —
   // never the fuzzy/qualified fallthrough below (a wrong callback edge is
   // worse than none).

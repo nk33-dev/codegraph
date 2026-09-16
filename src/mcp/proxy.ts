@@ -26,7 +26,7 @@ import { EARLY_PPID } from './early-ppid';
 import { supervisionLostReason } from './ppid-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
 import { treatStdinFailureAsShutdown } from './stdin-teardown';
-import { CodeGraphPackageVersion } from './version';
+import { CodeGraphPackageVersion, CodeGraphBuildId } from './version';
 import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions } from './session';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { getStaticTools } from './tools';
@@ -86,6 +86,7 @@ export interface ProxyResult {
 export async function runProxy(
   socketPath: string,
   expectedVersion: string = CodeGraphPackageVersion,
+  expectedBuildId: string | undefined = CodeGraphBuildId,
 ): Promise<ProxyResult> {
   // POSIX: refuse to connect to a stale socket file that points at no
   // listening process. `fs.existsSync` is a cheap pre-check; a real
@@ -105,7 +106,7 @@ export async function runProxy(
     return { outcome: 'fallback-needed', reason: hello.message };
   }
 
-  if (hello.codegraph !== expectedVersion) {
+  if (hello.codegraph !== expectedVersion || hello.buildId !== expectedBuildId) {
     process.stderr.write(
       `[CodeGraph MCP] Found a daemon on ${socketPath} but version (${hello.codegraph}) ` +
       `differs from ours (${expectedVersion}); falling back to direct mode.\n`
@@ -134,6 +135,7 @@ export async function runProxy(
 export async function connectWithHello(
   socketPath: string,
   expectedVersion: string = CodeGraphPackageVersion,
+  expectedBuildId: string | undefined = CodeGraphBuildId,
 ): Promise<net.Socket | 'version-mismatch' | null> {
   if (process.platform !== 'win32' && !fs.existsSync(socketPath)) return null;
   const socket = net.createConnection(socketPath);
@@ -153,12 +155,12 @@ export async function connectWithHello(
     socket.destroy();
     return null; // no daemon yet — caller should keep polling
   }
-  if (hello.codegraph !== expectedVersion) {
+  if (hello.codegraph !== expectedVersion || hello.buildId !== expectedBuildId) {
     // A daemon IS up but it's the wrong version — definitive, not a "not yet".
     // Don't poll; the caller serves in-process so we never run stale-vs-new.
     process.stderr.write(
       `[CodeGraph MCP] Found a daemon on ${socketPath} but version (${hello.codegraph}) ` +
-      `differs from ours (${expectedVersion}); serving this session in-process.\n`
+      `or build (${hello.buildId ?? 'upstream'}) differs from ours (${expectedVersion}, ${expectedBuildId ?? 'upstream'}); serving this session in-process.\n`
     );
     socket.destroy();
     return 'version-mismatch';
@@ -396,7 +398,19 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
       );
       const orphaned = [...inflight.values()];
       inflight.clear();
-      for (const line of orphaned) void handleLocally(line);
+      for (const line of orphaned) {
+        const request = JSON.parse(line) as JsonRpc;
+        const params = request.params as { name?: string } | undefined;
+        // 已发送的写操作可能已落盘，断线后的本地回放会重复修改源码。
+        if (request.method === 'tools/call' && params?.name === 'codegraph_edit') {
+          writeClient({ jsonrpc: '2.0', id: request.id, error: {
+            code: -32603,
+            message: 'CodeGraph edit outcome is uncertain: the daemon disconnected before confirming. Inspect the files before retrying; the edit was not replayed.',
+          } });
+        } else {
+          void handleLocally(line);
+        }
+      }
     };
     socket.on('close', onDaemonLost);
     socket.on('error', onDaemonLost);

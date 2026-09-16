@@ -15,7 +15,7 @@
 import * as path from 'path';
 import { JsonRpcRequest, JsonRpcNotification, JsonRpcTransport, ErrorCodes } from './transport';
 import { MCPEngine } from './engine';
-import { tools } from './tools';
+import { allTools } from './tools';
 import { SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_NO_ROOT_INDEX } from './server-instructions';
 import { CodeGraphPackageVersion } from './version';
 import { resolveServerRoot } from '../directory';
@@ -296,7 +296,9 @@ export class MCPSession {
     const toolName = params.name;
     const toolArgs = params.arguments || {};
 
-    const tool = tools.find((t) => t.name === toolName);
+    // Every tool this fork defines — including `codegraph_edit`, which is not in the read-only
+    // `tools` array but is still callable over the protocol.
+    const tool = allTools.find((t) => t.name === toolName);
     if (!tool) {
       this.transport.sendError(
         request.id,

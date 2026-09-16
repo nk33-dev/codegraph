@@ -18,6 +18,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { PERSONAL_DISTRIBUTION, readBuildInfo } from '../runtime-info';
 
 function readPackageVersion(): string {
   try {
@@ -34,3 +35,6 @@ function readPackageVersion(): string {
 }
 
 export const CodeGraphPackageVersion = readPackageVersion();
+
+/** 版本号相同不代表代码相同，个人构建额外核对产物指纹。 */
+export const CodeGraphBuildId = PERSONAL_DISTRIBUTION ? readBuildInfo()?.buildId ?? 'personal-unbuilt' : undefined;

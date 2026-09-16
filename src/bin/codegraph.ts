@@ -14,6 +14,8 @@
  *   codegraph sync [path]        Sync changes since last index
  *   codegraph status [path]      Show index status
  *   codegraph query <search>     Search for symbols
+ *   codegraph explore <query>    Structured queries: definitions, references, symbols, diagnostics, impact, tests, status
+ *   codegraph edit <symbol>      Structured edits: rename, replace-body, insert-before, insert-after (preview by default)
  *   codegraph files [options]    Show project file structure
  *   codegraph context <task>     Build context for a task
  *   codegraph callers <symbol>   Find what calls a function/method
@@ -41,6 +43,7 @@ try {
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens, capPromptHookInjection } from '../directory';
 import { extractProseCandidates } from '../search/identifier-segments';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
@@ -60,8 +63,12 @@ import { getTelemetry, TELEMETRY_DOCS, recordIndexEvent } from '../telemetry';
 import { BROWSER_ENV, DEFAULT_UI_PORT } from '../ui-server/constants';
 import type { UiServerHandle } from '../ui-server';
 import { lookupSymbolNodes, describeSymbolNode, groupDefinitions } from '../graph/symbol-lookup';
+import { analyzeImpact, findAffectedTests } from '../graph/change-impact';
+import { PERSONAL_DISTRIBUTION, PERSONAL_UPDATE_COMMAND, runtimeInfo } from '../runtime-info';
+import { readResourceMetricsSnapshot, resourceMetrics, writeResourceMetricsSnapshot } from '../resource-metrics';
+import { describeResourceProfile, resolveResourceProfile, resolveQueryPoolSizing } from '../resource-profile';
+import { countLiveLspLeases } from '../lsp/lease-registry';
 import type { Node, Edge } from '../types';
-import { isTestPath } from '../search/query-utils';
 
 // Decided once, before `--color`/`--no-color` are stripped from argv below
 // (#1281). Piped/redirected stdout, NO_COLOR, or --no-color -> plain output.
@@ -77,7 +84,7 @@ async function loadCodeGraph(): Promise<typeof import('../index')> {
     console.error(`${red}${getGlyphs().err}${reset} Failed to load CodeGraph modules.`);
     console.error(`\n  Node: ${process.version}  Platform: ${process.platform} ${process.arch}`);
     console.error(`\n  Error: ${msg}`);
-    console.error('\n  Try reinstalling with: npm install -g @colbymchenry/codegraph\n');
+    console.error(`\n  Try reinstalling with:\n${PERSONAL_DISTRIBUTION ? PERSONAL_UPDATE_COMMAND : 'npm install -g @colbymchenry/codegraph'}\n`);
     process.exit(1);
   }
 }
@@ -744,6 +751,9 @@ async function runInit(
     } catch { /* non-fatal */ }
 
     clack.outro('Done');
+    // 阶段一：把这次全量索引的耗时/文件数留成基线（`codegraph status` 的
+    // Baselines 段读取的就是这份快照）。
+    persistResourceBaseline(projectPath);
     cg.destroy();
   } catch (err) {
     clack.log.error(`Failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -887,6 +897,7 @@ program
           // Quiet mode: no UI, just run against the freshly-recreated graph.
           const result = await cg.indexAll();
           if (!result.success) process.exit(1);
+          persistResourceBaseline(projectPath);
           cg.destroy();
           return;
         }
@@ -924,6 +935,7 @@ program
         }
 
         clack.outro('Done');
+        persistResourceBaseline(projectPath);
         cg.destroy();
       } finally {
         supervision.stop();
@@ -957,6 +969,7 @@ program
 
       if (options.quiet) {
         await cg.sync();
+        persistResourceBaseline(projectPath);
         cg.destroy();
         return;
       }
@@ -987,6 +1000,7 @@ program
       }
 
       clack.outro('Done');
+      persistResourceBaseline(projectPath);
       cg.destroy();
     } catch (err) {
       if (!options.quiet) {
@@ -995,6 +1009,48 @@ program
       process.exit(1);
     }
   });
+
+/**
+ * 资源治理状态（阶段一）。
+ *
+ * 只读三样东西：环境变量解析出的档位、本进程刚记录到的指标、以及磁盘上由
+ * daemon 周期写入的快照与全局 LSP 租约文件。**刻意不启动任何语言服务器**，
+ * 因此 `codegraph status` 在任何时刻都能安全执行（开发计划 §5 验收标准）。
+ */
+function collectResourceReport(projectPath: string): {
+  profile: ReturnType<typeof resolveResourceProfile>;
+  description: string;
+  poolMax: number;
+  poolSource: string;
+  snapshot: ReturnType<typeof readResourceMetricsSnapshot>;
+  liveLeases: number;
+} {
+  const profile = resolveResourceProfile();
+  const sizing = resolveQueryPoolSizing(process.env, os.cpus().length, profile);
+  let liveLeases = 0;
+  try {
+    liveLeases = countLiveLspLeases();
+  } catch {
+    liveLeases = 0; // 租约目录不可读只是少一个数字，不影响 status。
+  }
+  return {
+    profile,
+    description: describeResourceProfile(profile),
+    poolMax: sizing.max,
+    poolSource: sizing.source,
+    snapshot: readResourceMetricsSnapshot(projectPath),
+    liveLeases,
+  };
+}
+
+/** 把本进程记录的资源基线写进 `.codegraph/`，让没跑 daemon 的 status 也能看到。 */
+function persistResourceBaseline(projectPath: string): void {
+  try {
+    writeResourceMetricsSnapshot(projectPath, resourceMetrics().snapshot());
+  } catch {
+    /* best-effort：基线写不进去不影响索引结果 */
+  }
+}
 
 /**
  * codegraph status [path]
@@ -1043,6 +1099,8 @@ program
       // Zero on a healthy index; non-zero at rest means a resolution pass was
       // interrupted, so some files' call edges are missing (#1187).
       const pendingRefs = cg.getPendingReferenceCount();
+      // 资源治理（阶段一）：档位 + 实际资源状态，全程不启动 LSP。
+      const resources = collectResourceReport(projectPath);
 
       // JSON output mode
       if (options.json) {
@@ -1083,6 +1141,15 @@ program
             // interrupted resolution pass left edges missing; the next
             // sync sweeps them (#1187).
             pendingRefs,
+          },
+          resources: {
+            profile: resources.profile,
+            description: resources.description,
+            queryPoolMax: resources.poolMax,
+            queryPoolSource: resources.poolSource,
+            liveLspLeases: resources.liveLeases,
+            // daemon 周期写入的快照；daemon 未运行时为 null。
+            reported: resources.snapshot,
           },
         }));
         cg.destroy();
@@ -1139,6 +1206,45 @@ program
         ? chalk.green('wal')
         : chalk.yellow(`${journalMode || 'unknown'} ${getGlyphs().dash} WAL inactive; reads can block on writes`);
       console.log(`  Journal:   ${journalLabel}`);
+      console.log();
+
+      // Resource governance (阶段一). Purely informational: reading the profile
+      // and the daemon's metrics snapshot starts no language server.
+      console.log(chalk.bold('Resource Governance:'));
+      const profileLabel = resources.profile.governanceEnabled
+        ? resources.profile.name
+        : `${resources.profile.name} ${getGlyphs().dash} disabled (CODEGRAPH_RESOURCE_GOVERNANCE=0)`;
+      console.log(`  Profile:   ${profileLabel}`);
+      const shrink = resources.profile.queryIdleShrinkMs > 0
+        ? `${Math.round(resources.profile.queryIdleShrinkMs / 1000)}s->${resources.profile.queryWorkersMin}`
+        : 'off';
+      console.log(`  Workers:   ${resources.profile.queryWorkersInitial}..${resources.poolMax} query (idle shrink ${shrink}, ${resources.poolSource}), resolve <=${resources.profile.resolveWorkersMax}`);
+      console.log(`  LSP:       ${resources.profile.lspPerProjectSoftMax}/project, ${resources.profile.lspGlobalMax}/global, ${Math.round(resources.profile.lspIdleTimeoutMs / 1000)}s idle exit, live leases: ${resources.liveLeases}`);
+      const reported = resources.snapshot;
+      if (!reported) {
+        console.log(`  Daemon:    no metrics reported ${getGlyphs().dash} daemon not running? (status itself starts no LSP)`);
+      } else {
+        const age = Math.max(0, Math.round((Date.now() - reported.updatedAt) / 1000));
+        const q = reported.query;
+        const cache = q.cacheHits + q.cacheMisses > 0
+          ? `, cache ${q.cacheHits}/${q.cacheHits + q.cacheMisses}`
+          : '';
+        console.log(
+          `  Daemon:    pool ${q.liveWorkers} live/${q.idleWorkers} idle of ${q.poolMax}, queue ${q.queueDepth}, ` +
+          `queries ${q.started} (p95 ${q.run.p95Ms}ms)${cache}`
+        );
+        const idx = reported.index;
+        if (idx.fullRuns + idx.incrementalRuns > 0) {
+          console.log(
+            `  Baselines: full ${idx.fullRuns}x last ${idx.fullLastMs}ms, incremental ${idx.incrementalRuns}x last ${idx.incrementalLastMs}ms`
+          );
+        }
+        const lsp = reported.lsp;
+        console.log(
+          `  LSP usage: ${lsp.liveServers} live, ${lsp.starts} starts/${lsp.stops} stops (idle ${lsp.idleStops}, budget ${lsp.budgetStops}), ` +
+          `reported ${age}s ago by pid ${reported.pid}`
+        );
+      }
       console.log();
 
       // Node breakdown
@@ -1292,7 +1398,21 @@ program
   .description('Explore an area: relevant symbols\' source + call paths in one shot (same output as the codegraph_explore MCP tool)')
   .option('-p, --path <path>', 'Project path')
   .option('--max-files <number>', 'Maximum number of files to include source from')
-  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string }) => {
+  .option('--mode <mode>', 'explore, definitions, references, symbols, diagnostics, impact, tests, or status; structured modes return JSON (tests takes the changed files as the query)', 'explore')
+  .option('--backend <backend>', 'Structured query backend: graph (index, default), lsp (language server), auto (pick one), or both (merge)', 'graph')
+  .option('--file <file>', 'Exact project-relative file for structured queries')
+  .option('--line <number>', 'backend=lsp definitions/references: 1-based line for a position query')
+  .option('--column <number>', 'backend=lsp definitions/references: 0-based UTF-16 column (default 0)')
+  .option('--severity <number>', 'mode=diagnostics: minimum severity 1=error … 4=hint (default 4)')
+  .option('--exclude-declaration', 'backend=lsp references: omit the declaration itself')
+  .option('--depth <number>', 'mode=impact/tests: propagation depth 1–10 (impact default 2, tests default 5)')
+  .option('--offset <number>', 'Structured result offset (0-based)')
+  .option('--limit <number>', 'Structured page size (1–200)')
+  .option('--check-files', 'Status mode: inspect disk changes without syncing')
+  .option('--changes', 'Attach Git changed symbols, semantic edge deltas, affected entries, and related tests')
+  .option('--base <ref>', 'Git commit/ref used as the change-analysis baseline (default: HEAD)')
+  .option('--deep-changes', 'Build an isolated temporary baseline index for resolved semantic edge comparison')
+  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; mode?: string; backend?: string; file?: string; line?: string; column?: string; severity?: string; excludeDeclaration?: boolean; depth?: string; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
 
     try {
@@ -1301,13 +1421,45 @@ program
         process.exit(1);
       }
 
+      const args: Record<string, unknown> = { query: queryParts.join(' ') };
+      if (options.maxFiles) args.maxFiles = parseInt(options.maxFiles, 10);
+      args.mode = options.mode;
+      args.backend = options.backend;
+      if (options.file !== undefined) args.file = options.file;
+      if (options.line !== undefined) args.line = Number(options.line);
+      if (options.column !== undefined) args.column = Number(options.column);
+      if (options.severity !== undefined) args.severity = Number(options.severity);
+      if (options.excludeDeclaration) args.includeDeclaration = false;
+      if (options.depth !== undefined) args.depth = Number(options.depth);
+      if (options.offset !== undefined) args.offset = Number(options.offset);
+      if (options.limit !== undefined) args.limit = Number(options.limit);
+      if (options.checkFiles) args.checkFiles = true;
+      if (options.changes) args.includeChanges = true;
+      if (options.base !== undefined) args.baseRef = options.base;
+      if (options.deepChanges) args.deepChanges = true;
+
+      // Structured queries prefer an already-running daemon: reuse its index
+      // connection and language-server process (shared across windows). No daemon, a
+      // version mismatch or a timeout all return null → fall back to an in-process query.
+      // Text explore is not included: its output depends on session state.
+      const structured = typeof options.mode === 'string' && options.mode !== 'explore';
+      if (structured) {
+        const { callViaSharedDaemon, sharedServiceEnabled } = await import('../mcp/daemon-client');
+        if (sharedServiceEnabled()) {
+          const shared = await callViaSharedDaemon(projectPath, 'codegraph_explore', args);
+          if (shared) {
+            const text = (shared.result.content as Array<{ text?: string }> | undefined)?.[0]?.text;
+            console.log(typeof text === 'string' ? text : JSON.stringify(shared.result.structuredContent ?? shared.result));
+            if (shared.result.isError) process.exit(1);
+            return;
+          }
+        }
+      }
+
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
       const { ToolHandler } = await import('../mcp/tools');
       const handler = new ToolHandler(cg);
-
-      const args: Record<string, unknown> = { query: queryParts.join(' ') };
-      if (options.maxFiles) args.maxFiles = parseInt(options.maxFiles, 10);
       const result = await handler.execute('codegraph_explore', args);
 
       console.log(result.content[0]?.text ?? '');
@@ -1315,6 +1467,90 @@ program
       if (result.isError) process.exit(1);
     } catch (err) {
       error(`Explore failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
+ * codegraph edit <symbol>
+ *
+ * Structured editing (phase 4): the same single edit flow the MCP `codegraph_edit` tool uses.
+ * A preview (the default) writes nothing; `--apply` writes the files and refreshes the index.
+ * Rename needs a language server from `.codegraph/lsp.json` (or CODEGRAPH_LSP_*); the other three
+ * operations are graph-native. Output is the same JSON contract as the MCP tool.
+ */
+program
+  .command('edit [symbol]')
+  .description('Structured symbol edit: rename, replace-body, insert-before, insert-after (previews unless --apply)')
+  .option('-p, --path <path>', 'Project path')
+  .option('--operation <operation>', 'rename, replace-body, insert-before, or insert-after', 'rename')
+  .option('--file <file>', 'Exact project-relative file; pins the target when a name matches several definitions')
+  .option('--line <number>', 'rename only: 1-based line for a position-based rename')
+  .option('--column <number>', 'rename only: 0-based UTF-16 column (default 0)')
+  .option('--new-name <name>', 'rename: the new symbol name')
+  .option('--content <text>', 'replace-body/insert-*: the text to replace the body with, or to insert')
+  .option('--content-file <file>', 'replace-body/insert-*: read the text from this file ("-" reads stdin)')
+  .option('--apply', 'Write the files (without this flag the command only previews)')
+  .option('--expect-preview-hash <hash>', 'apply only: refuse to write unless the preview hash matches')
+  .option('--operation-id <id>', 'Stable idempotency key from preview; reuse it for apply and retries')
+  .action(async (symbol: string | undefined, options: {
+    path?: string; operation?: string; file?: string; line?: string; column?: string; newName?: string;
+    content?: string; contentFile?: string; apply?: boolean; expectPreviewHash?: string; operationId?: string;
+  }) => {
+    const projectPath = resolveProjectPath(options.path);
+
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph isn't available here — no .codegraph/ index exists in ${projectPath}. The project owner can enable CodeGraph with 'codegraph init'.`);
+        process.exit(1);
+      }
+
+      const args: Record<string, unknown> = { operation: options.operation ?? 'rename' };
+      if (symbol) args.symbol = symbol;
+      if (options.file !== undefined) args.file = options.file;
+      if (options.line !== undefined) args.line = Number(options.line);
+      if (options.column !== undefined) args.column = Number(options.column);
+      if (options.newName !== undefined) args.newName = options.newName;
+      let content = options.content;
+      if (options.contentFile !== undefined) {
+        content = options.contentFile === '-'
+          ? fs.readFileSync(0, 'utf-8')
+          : fs.readFileSync(path.resolve(options.contentFile), 'utf-8');
+      }
+      if (content !== undefined) args.content = content;
+      if (options.apply) args.apply = true;
+      if (options.expectPreviewHash !== undefined) args.expectPreviewHash = options.expectPreviewHash;
+      if (options.operationId !== undefined) args.operationId = options.operationId;
+
+      // 编辑只复用已经运行的 daemon；一旦找到活动 daemon，调用未确认时也不在本进程重放。
+      const { callViaSharedDaemonAtMostOnce, sharedServiceEnabled } = await import('../mcp/daemon-client');
+      if (sharedServiceEnabled()) {
+        const shared = await callViaSharedDaemonAtMostOnce(projectPath, 'codegraph_edit', args);
+        if (shared.state === 'completed') {
+          const result = shared.call.result;
+          const text = (result.content as Array<{ text?: string }> | undefined)?.[0]?.text;
+          console.log(typeof text === 'string' ? text : JSON.stringify(result.structuredContent ?? result));
+          if (result.isError) process.exit(1);
+          return;
+        }
+        if (shared.state === 'uncertain') {
+          throw new Error(
+            `the shared daemon (pid ${shared.daemonPid}) did not confirm the edit. Retry with the same --operation-id so the persisted transaction result is replayed instead of writing twice.`,
+          );
+        }
+      }
+
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+      const { ToolHandler } = await import('../mcp/tools');
+      const handler = new ToolHandler(cg);
+      const result = await handler.execute('codegraph_edit', args);
+
+      console.log(result.content[0]?.text ?? '');
+      cg.destroy();
+      if (result.isError) process.exit(1);
+    } catch (err) {
+      error(`Edit failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
   });
@@ -2346,14 +2582,15 @@ program
         const note = filteredOut
           ? `no definition of "${symbol}" matches file "${options.file}" — showing all definitions instead.`
           : undefined;
+        // Impact scope and distance derivation live in src/graph/change-impact.ts and
+        // share one implementation with MCP's mode:"impact": the CLI and the tool must
+        // not each compute their own "impact radius".
         const collected = groups.map((group) => {
+          const analysis = analyzeImpact(cg, group, depth);
           const nodes = new Map<string, Node>();
+          for (const entry of analysis.entries.values()) nodes.set(entry.node.id, entry.node);
           const edges = new Map<string, Edge>();
-          for (const target of group) {
-            const impact = cg.getImpactRadius(target.id, depth);
-            for (const [id, node] of impact.nodes) nodes.set(id, node);
-            for (const edge of impact.edges) edges.set(`${edge.source}->${edge.target}:${edge.kind}`, edge);
-          }
+          for (const edge of analysis.edges) edges.set(`${edge.source}->${edge.target}:${edge.kind}`, edge);
           return { group, nodes, edges };
         });
 
@@ -2493,54 +2730,21 @@ program
       // `_test.go`, Python's `test_x.py` or the JVM's `FooTest.kt` — so
       // `affected` reported "no tests" for whole ecosystems while `search` and
       // the MCP tools counted those very files as tests.
-      function isTestFile(filePath: string): boolean {
-        if (customFilter) return customFilter.test(filePath);
-        return isTestPath(filePath);
-      }
-
-      // BFS to find all transitive dependents of changed files, filtered to test files
-      const affectedTests = new Set<string>();
-      const allDependents = new Set<string>();
-
-      for (const file of changedFiles) {
-        // If the changed file is itself a test file, include it
-        if (isTestFile(file)) {
-          affectedTests.add(file);
-          continue;
-        }
-
-        // BFS through dependents
-        const queue: Array<{ file: string; depth: number }> = [{ file, depth: 0 }];
-        const visited = new Set<string>();
-        visited.add(file);
-
-        while (queue.length > 0) {
-          const current = queue.shift()!;
-          if (current.depth >= maxDepth) continue;
-
-          const dependents = cg.getFileDependents(current.file);
-          for (const dep of dependents) {
-            if (visited.has(dep)) continue;
-            visited.add(dep);
-            allDependents.add(dep);
-
-            if (isTestFile(dep)) {
-              affectedTests.add(dep);
-            } else {
-              queue.push({ file: dep, depth: current.depth + 1 });
-            }
-          }
-        }
-      }
-
-      const sortedTests = Array.from(affectedTests).sort();
+      // Derived related tests share src/graph/change-impact.ts with MCP's mode:"tests":
+      // one question allows only one implementation, otherwise the CLI's "related tests"
+      // and the tool would give different answers.
+      const analysis = findAffectedTests(cg, changedFiles, {
+        depth: maxDepth,
+        ...(customFilter ? { isTest: (filePath: string) => customFilter!.test(filePath) } : {}),
+      });
+      const sortedTests = analysis.tests.map((test) => test.filePath);
 
       // Output
       if (options.json) {
         console.log(JSON.stringify({
           changedFiles,
           affectedTests: sortedTests,
-          totalDependentsTraversed: allDependents.size,
+          totalDependentsTraversed: analysis.dependentsTraversed,
         }, null, 2));
       } else if (options.quiet) {
         for (const t of sortedTests) console.log(t);
@@ -2769,6 +2973,11 @@ program
   .option('--check', 'Check whether an update is available without installing')
   .option('-f, --force', 'Reinstall even if already on the target version')
   .action(async (versionArg: string | undefined, options: { check?: boolean; force?: boolean }) => {
+    if (PERSONAL_DISTRIBUTION) {
+      console.log(`Personal build:\n${PERSONAL_UPDATE_COMMAND}`);
+      console.log('This build does not install upstream releases. Use a tested commit or tag to pin an update.');
+      return;
+    }
     const up = await import('../upgrade');
     const method = up.detectInstallMethod({
       filename: __filename,
@@ -2814,6 +3023,25 @@ program
   });
 
 // Parse and run
+program
+  .command('doctor')
+  .description('Show the actual CLI, Node runtime, build identity and competing PATH entries')
+  .option('--json', 'Print machine-readable runtime information')
+  .action((options: { json?: boolean }) => {
+    const info = runtimeInfo();
+    if (options.json) {
+      console.log(JSON.stringify(info, null, 2));
+      return;
+    }
+    console.log(`CodeGraph ${info.version} (${info.distribution})`);
+    console.log(`Entry: ${info.entry}`);
+    console.log(`Node: ${info.node.version} (${info.node.executable})`);
+    console.log(`Build: ${info.build?.buildId ?? 'unknown'}; commit: ${info.build?.commit ?? 'unknown'}${info.build?.dirty ? ' (uncommitted changes)' : ''}`);
+    console.log(`Viewer: ${info.viewerAvailable ? 'available' : 'missing'}`);
+    console.log(`Update: ${info.updateCommand}`);
+    console.log(`PATH entries:\n${info.pathCommands.map((file) => `  ${file}`).join('\n') || '  none'}`);
+  });
+
 program.parse();
 
 } // end main()

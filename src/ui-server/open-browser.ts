@@ -70,6 +70,7 @@ export function openBrowser(url: string, platform: NodeJS.Platform = process.pla
       stdio: 'ignore',
       // `start` is a shell builtin reached through `cmd /c`, so no shell here.
       shell: false,
+      windowsHide: true,
     });
     child.on('error', () => {
       /* no opener installed — the printed URL is the fallback */

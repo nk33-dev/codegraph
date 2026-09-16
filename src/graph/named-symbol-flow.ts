@@ -146,6 +146,11 @@ export const FLOW_EDGE_KINDS: ReadonlySet<string> = new Set(['calls', 'navigates
  */
 const DYN_KINDS: ReadonlySet<string> = new Set(['constant', 'variable', 'field', 'property']);
 
+/** 可直接查询并展开运行时实现者的类型声明。 */
+const HIERARCHY_ENDPOINT_KINDS: ReadonlySet<string> = new Set([
+  'class', 'interface', 'struct', 'trait', 'protocol', 'type_alias', 'union',
+]);
+
 /** Only a REAL file extension is stripped from a token — `Class.method` is kept. */
 const FILE_EXT =
   /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro|erl|hrl)$/i;
@@ -216,10 +221,14 @@ export interface NamedSymbolFlow {
   tokens: string[];
   /** Every CALLABLE the tokens resolved to, by node id. */
   named: Map<string, Node>;
+  /** 查询直接命中的接口、trait、protocol 与类，用于实现者展开，不参与调用链遍历。 */
+  namedTypes: Map<string, Node>;
   /** Non-callable endpoints of synthesized edges (RTK thunks and friends). */
   dynNamed: Map<string, Node>;
   /** token → the node ids it resolved to. */
   tokenNodes: Map<string, string[]>;
+  /** token → 所有精确命中的符号 id，用于区分未索引与未连边。 */
+  tokenResolved: Map<string, string[]>;
   /** token → its whole same-name callable family, before the container filter. */
   tokenFamily: Map<string, Node[]>;
   /** Ids whose token was a (near-)unique callable name — at most 3 defs. */
@@ -233,8 +242,10 @@ export interface NamedSymbolFlow {
 const EMPTY_FLOW = (): NamedSymbolFlow => ({
   tokens: [],
   named: new Map(),
+  namedTypes: new Map(),
   dynNamed: new Map(),
   tokenNodes: new Map(),
+  tokenResolved: new Map(),
   tokenFamily: new Map(),
   uniqueNamedNodeIds: new Set(),
   preciseNamedIds: new Set(),
@@ -289,7 +300,7 @@ export function resolveNamedTokens(
   const out = EMPTY_FLOW();
   const tokens = flowTokens(query);
   out.tokens = tokens;
-  if (tokens.length < 2) return out;
+  if (tokens.length < (directed ? 2 : 1)) return out;
 
   // Pool of name SEGMENTS (Class + method from every token), used to keep an
   // ambiguous simple name only where its CONTAINER class is itself named.
@@ -309,6 +320,11 @@ export function resolveNamedTokens(
 
   for (const t of tokens) {
     const hits = findAllSymbols(cg, t).nodes;
+    out.tokenResolved.set(t, hits.slice(0, MAX_CANDIDATES_DIRECTED).map((node) => node.id));
+    for (const node of hits) {
+      if (HIERARCHY_ENDPOINT_KINDS.has(node.kind)) out.namedTypes.set(node.id, node);
+      if (out.namedTypes.size >= MAX_NAMED) break;
+    }
     const cands = hits.filter((n) => FLOW_CALLABLE_KINDS.has(n.kind));
     out.tokenFamily.set(t, cands);
     // A qualified or otherwise-specific name (<=3 hits) keeps all of them.

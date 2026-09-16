@@ -33,6 +33,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { resolveLatestVersion, isUpdateAvailable, parseSemver } from './index';
 import { CodeGraphPackageVersion } from '../mcp/version';
+import { PERSONAL_DISTRIBUTION } from '../runtime-info';
 
 /** Re-check the release feed after this long (successful checks). */
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -51,6 +52,7 @@ export interface UpdateCheckCacheFile {
 }
 
 export interface UpdateCheckDeps {
+  distribution?: 'personal' | 'upstream';
   /** Global state dir; defaults to ~/.codegraph. Tests inject a temp dir. */
   dir?: string;
   env?: NodeJS.ProcessEnv;
@@ -60,6 +62,7 @@ export interface UpdateCheckDeps {
 }
 
 interface ResolvedDeps {
+  distribution: 'personal' | 'upstream';
   dir: string;
   env: NodeJS.ProcessEnv;
   now: () => number;
@@ -69,6 +72,7 @@ interface ResolvedDeps {
 
 function resolveDeps(deps: UpdateCheckDeps = {}): ResolvedDeps {
   return {
+    distribution: deps.distribution ?? (PERSONAL_DISTRIBUTION ? 'personal' : 'upstream'),
     dir: deps.dir ?? path.join(os.homedir(), '.codegraph'),
     env: deps.env ?? process.env,
     now: deps.now ?? Date.now,
@@ -167,7 +171,7 @@ function cacheIsFresh(cache: UpdateCheckCacheFile | null, nowMs: number): boolea
  */
 export async function refreshUpdateCheck(deps: UpdateCheckDeps = {}): Promise<string | null> {
   const d = resolveDeps(deps);
-  if (updateCheckDisabled(d.env)) return null;
+  if (d.distribution === 'personal' || updateCheckDisabled(d.env)) return null;
 
   const cached = readUpdateCheckCache(d.dir);
   const nowMs = d.now();
@@ -208,7 +212,7 @@ let noticeMemo: { at: number; value: string | null } | null = null;
  */
 export function getUpdateNotice(deps: UpdateCheckDeps = {}): string | null {
   const d = resolveDeps(deps);
-  if (updateCheckDisabled(d.env)) return null;
+  if (d.distribution === 'personal' || updateCheckDisabled(d.env)) return null;
 
   const useMemo = deps.dir === undefined && deps.now === undefined;
   const nowMs = d.now();

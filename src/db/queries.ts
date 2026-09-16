@@ -22,6 +22,7 @@ import { kindBonus, nameMatchBonus, scorePathRelevance } from '../search/query-u
 import { parseQuery, boundedEditDistance } from '../search/query-parser';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { splitIdentifierSegments } from '../search/identifier-segments';
+import { recordQueryCache } from '../resource-metrics';
 
 /**
  * Files that should not be candidates for "dominant file" detection: test/spec
@@ -838,8 +839,11 @@ export class QueryBuilder {
       // Move to end to implement LRU (delete and re-add)
       this.nodeCache.delete(id);
       this.nodeCache.set(id, cached);
+      // 阶段一基线：命中/未命中只在指标收集器存在时计数（见 recordQueryCache）。
+      recordQueryCache(true);
       return cached;
     }
+    recordQueryCache(false);
 
     if (!this.stmts.getNodeById) {
       this.stmts.getNodeById = this.db.prepare('SELECT * FROM nodes WHERE id = ?');

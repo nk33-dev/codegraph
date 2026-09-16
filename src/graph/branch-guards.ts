@@ -159,6 +159,7 @@ interface CachedTree {
   key: string;
   tree: Tree;
   source: string;
+  guards?: Map<string, BranchGuard[]>;
 }
 
 const TREE_CACHE_SIZE = 8;
@@ -184,7 +185,8 @@ function remember(path: string, entry: CachedTree): void {
   }
 }
 
-async function treeFor(absPath: string, language: Language): Promise<CachedTree | null> {
+async function treeFor(absPath: string, language: Language, deadline = Infinity): Promise<CachedTree | null> {
+  if (Date.now() >= deadline) return null;
   let stat: fs.Stats;
   try {
     stat = fs.statSync(absPath);
@@ -201,19 +203,28 @@ async function treeFor(absPath: string, language: Language): Promise<CachedTree 
   } catch {
     return null;
   }
-  const tree = await parse(source, language);
+  const tree = await parse(source, language, deadline);
   if (!tree) return null;
   const entry = { key, tree, source };
   remember(absPath, entry);
   return entry;
 }
 
-async function parse(source: string, language: Language): Promise<Tree | null> {
+async function parse(source: string, language: Language, deadline = Infinity): Promise<Tree | null> {
   try {
     await loadGrammarsForLanguages([language]);
     const parser = getParser(language);
-    if (!parser) return null;
-    return parser.parse(source) ?? null;
+    if (!parser || Date.now() >= deadline) return null;
+    // 限时标注可以取消一个大文件的解析；共享 parser 必须重置，不能把半棵树带到下次请求。
+    let tree: Tree | null = null;
+    try {
+      tree = parser.parse(source, null, Number.isFinite(deadline)
+        ? { progressCallback: () => Date.now() >= deadline }
+        : undefined);
+      return tree;
+    } finally {
+      if (!tree) parser.reset();
+    }
   } catch {
     return null;
   }
@@ -248,18 +259,33 @@ export function siteKey(site: CallSite): string {
 export async function guardsForFile(
   absPath: string,
   language: Language,
-  sites: readonly CallSite[]
+  sites: readonly CallSite[],
+  deadline = Infinity
 ): Promise<Map<string, BranchGuard[]>> {
   const out = new Map<string, BranchGuard[]>();
   if (!supportsBranchGuards(language) || sites.length === 0) return out;
-  const cached = await treeFor(absPath, language);
+  const cached = await treeFor(absPath, language, deadline);
   if (!cached) return out;
   for (const site of sites) {
+    if (Date.now() >= deadline) break;
     const key = siteKey(site);
     if (out.has(key)) continue;
-    out.set(key, guardsInTree(cached.tree.rootNode, cached.source, language, site.line, site.column ?? null));
+    out.set(key, cachedGuards(cached, language, site));
   }
   return out;
+}
+
+/** 重复查看同一调用点时复用推导；文件变化会连同语法树一起失效。 */
+function cachedGuards(cached: CachedTree, language: Language, site: CallSite): BranchGuard[] {
+  const guards = cached.guards ??= new Map<string, BranchGuard[]>();
+  const key = siteKey(site);
+  let result = guards.get(key);
+  if (!result) {
+    result = guardsInTree(cached.tree.rootNode, cached.source, language, site.line, site.column ?? null);
+    if (guards.size >= 4000) guards.clear();
+    guards.set(key, result);
+  }
+  return result.map((guard) => ({ ...guard }));
 }
 
 /**
@@ -300,7 +326,7 @@ export function guardsForFileSync(
   }
   for (const site of sites) {
     const k = siteKey(site);
-    if (!out.has(k)) out.set(k, guardsInTree(cached.tree.rootNode, cached.source, language, site.line, site.column ?? null));
+    if (!out.has(k)) out.set(k, cachedGuards(cached, language, site));
   }
   return out;
 }

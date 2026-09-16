@@ -64,7 +64,7 @@ export async function annotateWhen(cg: CodeGraph, projectRoot: string, batches: 
   const started = Date.now();
   for (const [file, edges] of byFile) {
     if (files >= MAX_FILES || sites >= MAX_SITES) return;
-    if (files > 0 && Date.now() - started > BUDGET_MS) return;
+    if (Date.now() - started >= BUDGET_MS) return;
     const found = findIndexedFile(cg, file);
     if (!found || !supportsBranchGuards(found.record.language)) continue;
     if (hasDriftedOnDisk(projectRoot, found.storedPath, found.record)) continue;
@@ -74,14 +74,15 @@ export async function annotateWhen(cg: CodeGraph, projectRoot: string, batches: 
     } catch {
       continue;
     }
-    const withLine = edges.filter((e) => typeof e.line === 'number' && e.line > 0);
+    const withLine = edges.filter((e) => typeof e.line === 'number' && e.line > 0).slice(0, MAX_SITES - sites);
     if (withLine.length === 0) continue;
     files++;
     sites += withLine.length;
     const guards = await guardsForFile(
       abs,
       found.record.language as Language,
-      withLine.map((e) => ({ line: e.line!, column: typeof e.col === 'number' ? e.col : null }))
+      withLine.map((e) => ({ line: e.line!, column: typeof e.col === 'number' ? e.col : null })),
+      started + BUDGET_MS
     );
     for (const edge of withLine) {
       const g = guards.get(siteKey({ line: edge.line!, column: typeof edge.col === 'number' ? edge.col : null }));

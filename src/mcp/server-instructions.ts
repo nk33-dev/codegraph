@@ -12,10 +12,11 @@
  *   - Anti-patterns (don't re-verify with grep; don't hand-reconstruct flows)
  *
  * Keep it tight. The agent reads this every session — long instructions
- * burn tokens. The DEFAULT MCP surface is `codegraph_explore` ALONE (see
- * DEFAULT_MCP_TOOLS in tools.ts) — reference only that tool here. The other
- * tools (node/search/callers/…) stay defined and are re-enablable via
- * CODEGRAPH_MCP_TOOLS, but they are NOT listed to agents, so don't name them.
+ * burn tokens. The DEFAULT MCP surface is `codegraph_explore` plus this fork's
+ * phase-4 `codegraph_edit` (see DEFAULT_MCP_TOOLS in tools.ts) — reference only
+ * those two here. The other tools (node/search/callers/…) stay defined and are
+ * re-enablable via CODEGRAPH_MCP_TOOLS, but they are NOT listed to agents, so
+ * don't name them.
  */
 export const SERVER_INSTRUCTIONS = `# Codegraph — code intelligence over an indexed knowledge graph
 
@@ -32,14 +33,17 @@ blast radius in view. More accurate context, in far fewer tokens and
 round-trips than reading files yourself.
 
 ## One tool: codegraph_explore — use it instead of reading files
-
 There is a single tool, \`codegraph_explore\`, and it is Read-equivalent. It
 takes either a natural-language question or a bag of symbol/file names and
 returns the **verbatim, line-numbered source** of the relevant symbols
 grouped by file — the same \`<n>\\t<line>\` shape \`Read\` gives you, safe to
 \`Edit\` from — PLUS the call path among them (including dynamic-dispatch hops
 like callbacks, React re-render, and JSX children that grep can't follow) and
-a blast-radius summary of what depends on them.
+a blast-radius summary of what depends on them. Flow evidence is labelled as
+static/LSP/corroborated/heuristic/boundary; interface, trait and abstract-method
+queries include bounded runtime implementation candidates. A candidate is not
+claimed as a confirmed call, and an unconnected path reports the concrete break
+reason instead of inventing an edge.
 
 Whether you're answering "how does X work" or implementing a change (fixing a
 bug, adding a feature), call \`codegraph_explore\` before you Read. ONE call
@@ -54,9 +58,26 @@ calls; a grep/read exploration is dozens.
 - **Almost any question — "how does X work", architecture, a bug, "what/where is X", or surveying an area** → \`codegraph_explore\` with a natural-language question or the relevant names. ONE capped call returns the verbatim source grouped by file; most often the ONLY call you need.
 - **"How does X reach/become Y? / the flow / the path from X to Y"** → \`codegraph_explore\`, naming the symbols that span the flow (e.g. \`mutateElement renderScene\`) — it surfaces the call path among them, riding dynamic-dispatch hops, and returns their source.
 - **Reading or editing a file/symbol you can name** → put its name or file path in the \`codegraph_explore\` query — it returns that current line-numbered source (safe to \`Edit\` from) with the call path and blast radius attached, so you don't Read it separately. For an overloaded name it returns every matching definition's body in one call.
+- **Reviewing current changes or asking for change impact** → use the same \`codegraph_explore\`. Review/change/impact intent automatically attaches changed symbols, call/inheritance/route edge deltas, affected entries, and related tests. Pass \`baseRef\` for another Git baseline; request \`deepChanges:true\` only when a temporary baseline index is worth the extra work.
 - **Need more?** Call \`codegraph_explore\` again with more specific names — treat the source it returns as already Read. Suggested call counts are advisory only, NOT a quota; extra calls are never rejected or rate-limited.
+- Numbered source is verbatim, but a gap or truncation marker means part of the file was omitted. Only the displayed ranges have been read; fetch missing symbols or ranges before editing them.
 - Qualified symbol names accept dots, \`::\`, or slashes, including containers whose names contain dots (for example, \`AppWeb.Format.group\`).
 - Named-symbol call paths require exact matches; partial or mistyped names are never silently substituted as flow endpoints. If a graph query reports a missing symbol with did-you-mean suggestions, query the suggested name explicitly.
+
+## Editing a symbol: codegraph_edit
+
+When you already know which symbol to change, \`codegraph_edit\` changes it **by symbol** rather
+than by a line range you worked out yourself: \`rename\` (whole project, through the project's
+language server), \`replace-body\` (replaces the indexed definition), \`insert-before\` /
+\`insert-after\` (insert whole lines next to it). It **previews by default**: the call writes
+nothing and returns the resolved target, the per-file diff, a \`previewHash\` and an \`operationId\`;
+call it again with \`apply:true\`, the hash as \`expectPreviewHash\`, and the same \`operationId\`
+to write it transactionally. Reuse that operation ID after a timeout or disconnect: a terminal result
+is replayed without writing twice, and a cross-file failure is rolled back with a per-file recovery
+manifest when manual repair is needed. Refusals are explicit —
+an ambiguous name lists the candidates, a file that drifted from the index answers
+\`status:"stale"\` (run \`codegraph sync\` and retry), and a rename with no usable language server
+answers \`status:"unavailable"\` rather than a guessed text edit. Read the preview before applying.
 
 ## Anti-patterns
 
@@ -69,6 +90,9 @@ calls; a grep/read exploration is dozens.
 - **Source is re-served on every call by default**, including for fresh subagents and after context compaction. Cross-call dedup requires \`CODEGRAPH_EXPLORE_DEDUP=1\` and is only suitable for hosts that guarantee one durable context per connection. With that opt-in, **"Already sent earlier in this conversation"** points to exact, unchanged source returned by an earlier \`codegraph_explore\` in that context. Use that copy; don't re-fetch it and don't Read the file. The bytes it freed went into source you have not seen yet, elsewhere in the same response.
 
 ## Limitations
+
+- For structured navigation use this SAME tool with mode=definitions or references and a symbol query; mode=symbols with a project-relative file query; mode=status with query="status"; mode=impact with a symbol name (what changing it reaches, with propagation distance); mode=tests with the changed files (space/comma separated, or a files array) to get the test files they reach. These modes return versioned JSON and structuredContent, including ambiguity, pagination, freshness and a \`routing\` block saying which source answered and why. Graph references are indexed relationships, not all LSP usage occurrences. Optional file narrows targets exactly; offset/limit page results (depth, 1-10, applies to impact/tests). Only status accepts checkFiles=true to inspect disk changes without syncing. Default mode still returns source and flow.
+- Add backend="lsp" when the graph's best-effort answer is not enough: it runs the project's real language server for definitions, references, mode=symbols and mode=impact (the symbols containing a reference, one hop), and it is the only backend for mode=diagnostics (graph has no diagnostics). Position queries take file + line (1-based) + column. backend="auto" picks one source per query and falls back to the graph when no server is available (the \`routing\` block says what happened); backend="both" runs both and merges, labelling each item's \`origin\` and marking locations both sources corroborate. The server must already be installed and pointed at from \`.codegraph/lsp.json\` (or CODEGRAPH_LSP_* env vars) — codegraph never installs one. With nothing configured you get status="unavailable" plus the remedy, which is a fact about the machine, not a failure: keep using backend="graph" (or your own tools) there. LSP locations can sit outside the index (marked "external", absolute paths) and its reference list includes the declaration.
 
 - If a tool reports a project isn't indexed (no \`.codegraph/\`), stop calling codegraph tools for that project for the rest of the session and use your built-in tools there instead. Indexing is the user's decision — mention they can run \`codegraph init\` if it comes up, but don't run it yourself.
 - Index lags file writes by ~1 second.

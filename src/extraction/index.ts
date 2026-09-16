@@ -125,6 +125,8 @@ export interface SyncResult {
   filesRemoved: number;
   nodesUpdated: number;
   durationMs: number;
+  /** 未执行同步，因为另一个进程持有索引写锁。 */
+  lockUnavailable?: boolean;
   changedFilePaths?: string[];
   /**
    * Symbol names whose set of definitions this sync CHANGED — names the synced
@@ -362,7 +364,7 @@ function readGitExcludeExtraPatterns(rootDir: string): string {
     const configured = execFileSync(
       'git',
       ['-C', rootDir, 'config', '--get', 'core.excludesFile'],
-      { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] },
+      { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
     ).trim();
     if (configured) {
       const abs = expandUserPath(configured);
@@ -393,6 +395,7 @@ function listGitIgnoredDirectories(rootDir: string): string[] {
         timeout: 60_000,
         maxBuffer: 50 * 1024 * 1024,
         stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
       },
     );
     const dirs: string[] = [];

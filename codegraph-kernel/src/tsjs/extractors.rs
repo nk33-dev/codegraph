@@ -1174,19 +1174,14 @@ impl<'t> Walker<'t> {
                         if is_literal_receiver(r.kind()) {
                             return;
                         }
-                        // `holder.values.get()` has no inferred property type
-                        // (#1566). Dropping the receiver or merely preserving it
-                        // would allow unrelated same-name method guesses. Emit
-                        // nothing, as for host chains (#1707); argument calls are
-                        // visited independently. Mirrors extractCall in TS.
-                        if self.is_unresolved_member_chain(r) {
-                            return;
-                        }
                     }
                     let recv_ident = receiver.filter(|r| {
                         matches!(r.kind(), "identifier" | "simple_identifier" | "field_identifier")
                     });
-                    if let Some(r) = recv_ident {
+                    // 完整链只保留调用事实；解析器不会据此猜测同名项目方法。
+                    if receiver.is_some_and(|r| self.is_unresolved_member_chain(r)) {
+                        callee_name = self.text(func).chars().filter(|c| !c.is_whitespace()).collect::<String>().replace("?.", ".");
+                    } else if let Some(r) = recv_ident {
                         let receiver_name = self.text(r);
                         if !matches!(receiver_name, "self" | "this" | "cls" | "super") {
                             callee_name = format!("{receiver_name}.{method_name}");

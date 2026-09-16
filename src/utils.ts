@@ -137,6 +137,12 @@ export function validatePathWithinRoot(
     return null;
   }
   const normalizedRoot = path.resolve(projectRoot);
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(normalizedRoot);
+  } catch {
+    return null;
+  }
 
   // 2. Symlink-aware containment — resolve symlinks on both sides and re-check,
   //    so an in-repo symlink whose real target escapes the root is rejected.
@@ -144,19 +150,27 @@ export function validatePathWithinRoot(
   //    it stays consistent with the directory walk, which already followed the
   //    in-root symlink to enumerate these files (#935).
   try {
-    const realRoot = fs.realpathSync(normalizedRoot);
     const realResolved = fs.realpathSync(resolved);
     if (options?.allowSymlinkEscape) {
       return realResolved;
     }
     return isWithinDir(realResolved, realRoot) ? realResolved : null;
   } catch (err) {
-    // ENOENT: the path doesn't exist yet (a file about to be written, or an
-    // index entry for a since-deleted file) — no symlink to follow, and the
-    // lexical check already passed, so allow the lexical path. Any other
-    // resolution failure (ELOOP, EACCES, …) is treated as unsafe → reject.
+    // ENOENT 可能只是末端尚未创建；仍需解析最近的已有父目录，防止父目录符号链接逃逸。
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return resolved;
+      if (options?.allowSymlinkEscape) return resolved;
+      let ancestor = path.dirname(resolved);
+      while (true) {
+        try {
+          const realAncestor = fs.realpathSync(ancestor);
+          return isWithinDir(realAncestor, realRoot) ? resolved : null;
+        } catch (ancestorError) {
+          if ((ancestorError as NodeJS.ErrnoException).code !== 'ENOENT') return null;
+          const parent = path.dirname(ancestor);
+          if (parent === ancestor) return null;
+          ancestor = parent;
+        }
+      }
     }
     return null;
   }

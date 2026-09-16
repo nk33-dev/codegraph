@@ -6,6 +6,8 @@
 
 import type CodeGraph from '../index';
 import type { QueryPool } from './query-pool';
+import { resourceMetrics } from '../resource-metrics';
+import { describeResourceProfile, resolveResourceProfile } from '../resource-profile';
 import { findNearestCodeGraphRoot } from '../directory';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
@@ -30,7 +32,10 @@ import {
   type WorktreeIndexMismatch,
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
-import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
+import { indexedFileFreshness } from '../sync/file-freshness';
+import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
+import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
+import { editTools } from './edit-tool';
 import { isTestFile, normalizeNameToken } from '../search/query-utils';
 import { groupDefinitions, lastQualifierPart, matchesSymbol } from '../graph/symbol-lookup';
 import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
@@ -39,11 +44,20 @@ import {
   readFileSync,
   statSync,
 } from 'fs';
-import { createHash } from 'crypto';
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranchGuardGrammars } from '../graph/branch-guards';
-import { findDynamicBoundaries, type BoundarySite } from '../graph/dynamic-boundary-report';
+import { findDynamicBoundaries, type BoundarySite, type NodeBoundary } from '../graph/dynamic-boundary-report';
 import { countImplementers } from '../graph/type-hierarchy';
+import {
+  buildFlowEvidenceReport,
+  type FlowEvidenceReport,
+} from '../graph/flow-evidence';
+import {
+  analyzeChangeContext,
+  formatChangeContext,
+  queryRequestsChangeContext,
+  type ChangeContext,
+} from '../graph/change-context';
 import {
   findAllSymbols,
   resolveNamedSymbolFlow,
@@ -55,6 +69,7 @@ import {
   EXPLORE_SESSION_VIEW_ARG,
   ExploreSessionState,
   readExploreSessionView,
+  servedEvidenceKeys,
   viewForProject,
   type ExploreEmission,
   type ExploreFileEmission,
@@ -1126,12 +1141,16 @@ interface PropertySchema {
   description: string;
   enum?: string[];
   default?: unknown;
+  /** JSON Schema for array properties (mode=tests `files`). */
+  items?: PropertySchema;
 }
 
 /**
  * Tool execution result
  */
 export interface ToolResult {
+  /** Structured queries、编辑和默认 explore 都提供稳定的机器可读结果。 */
+  structuredContent?: CodeQueryResult | CodeEditResult | ExploreStructuredContent;
   content: Array<{
     type: 'text';
     text: string;
@@ -1146,6 +1165,19 @@ export interface ToolResult {
    * {@link EXPLORE_EMISSION_KEY}; the two must stay in sync.
    */
   _cgExploreEmission?: ExploreEmission;
+}
+
+export interface ExploreStructuredContent {
+  schemaVersion: 1;
+  kind: 'explore';
+  query: string;
+  projectRoot: string;
+  evidence: FlowEvidenceReport | null;
+  changes: ChangeContext | null;
+  source: {
+    files: string[];
+    bytes: number;
+  };
 }
 
 /**
@@ -1333,6 +1365,52 @@ export const tools: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        mode: {
+          type: 'string',
+          description: 'explore keeps the original source + call-path output; definitions finds definitions by name; references finds references; symbols lists a file\'s symbols; diagnostics reads language-server diagnostics; impact reports what a symbol change reaches; tests lists the test files a change reaches; status reports index and language-server state. Structured modes return versioned JSON.',
+          enum: ['explore', ...CODE_QUERY_MODES],
+          default: 'explore',
+        },
+        backend: {
+          type: 'string',
+          description: 'Structured-mode data source. graph (default) reads the existing index and returns best-effort relationships; lsp runs the project\'s real language server (command from .codegraph/lsp.json or CODEGRAPH_LSP_* env vars) for precise locations; auto picks one source per query and falls back to the graph when no server is available; both runs both and merges, labelling each item with origin and marking locations both sources corroborate. diagnostics is lsp-only, tests is graph-only. lsp/auto need an already-installed server: when none is configured you get status="unavailable", never an error.',
+          enum: [...CODE_QUERY_BACKENDS],
+          default: 'graph',
+        },
+        file: {
+          type: 'string',
+          description: 'Structured modes: exact project-relative file path, narrowing definition/reference targets or selecting the file to outline.',
+        },
+        files: {
+          type: 'array',
+          items: { type: 'string', description: 'Project-relative path of a changed file.' },
+          description: 'mode=tests only: the changed files (project-relative). Alternatively put them in query, space- or comma-separated.',
+        },
+        depth: {
+          type: 'number',
+          description: 'mode=impact/tests only: propagation depth, 1–10 (impact defaults to 2, tests to 5).',
+        },
+        line: {
+          type: 'number',
+          description: 'backend=lsp definitions/references only: 1-based line for a position query. Omit to query by symbol name (resolved through the graph index).',
+        },
+        column: {
+          type: 'number',
+          description: 'backend=lsp definitions/references only: 0-based column in UTF-16 code units (default 0). Pass back the column from an earlier LSP result as-is.',
+        },
+        severity: {
+          type: 'number',
+          description: 'mode=diagnostics only: minimum severity — 1=error, 2=warning, 3=information, 4=hint (default: everything).',
+          default: 4,
+        },
+        includeDeclaration: {
+          type: 'boolean',
+          description: 'backend=lsp references only: count the declaration itself as a reference (default true).',
+          default: true,
+        },
+        offset: { type: 'number', description: 'Structured modes: 0-based result offset.', default: 0 },
+        limit: { type: 'number', description: 'Structured modes: page size, 1–200.', default: 50 },
+        checkFiles: { type: 'boolean', description: 'status + backend=graph only: scan for unsynced added/modified/removed files without changing the index. Off by default.', default: false },
         query: {
           type: 'string',
           description: 'Symbol names, file names, or short code terms to explore (e.g., "AuthService loginUser session-manager", "GraphTraverser BFS impact traversal.ts"). For a flow question, name the symbols spanning the flow (e.g. "mutateElement renderScene"). A natural-language question works too — no prior codegraph_search needed.',
@@ -1341,6 +1419,20 @@ export const tools: ToolDefinition[] = [
           type: 'number',
           description: 'Maximum number of files to include source code from (default: 12)',
           default: 12,
+        },
+        includeChanges: {
+          type: 'boolean',
+          description: 'Explicitly attach Git changed symbols, semantic edge deltas, affected entries, and related tests. Review/change/impact queries enable this automatically.',
+          default: false,
+        },
+        baseRef: {
+          type: 'string',
+          description: 'Git commit/ref to compare against (default: HEAD). Passing it explicitly enables change context.',
+        },
+        deepChanges: {
+          type: 'boolean',
+          description: 'Explicitly build an isolated temporary index at baseRef to compare resolved semantic edges. Expensive; ordinary change analysis keeps using the current index and local diff only.',
+          default: false,
         },
         projectPath: projectPathProperty,
       },
@@ -1399,6 +1491,15 @@ export const tools: ToolDefinition[] = [
 ];
 
 /**
+ * Every MCP tool this fork defines: the read-only query tools above plus the phase-4 edit tool.
+ *
+ * The edit tool lives in its own module so the read-only annotation contract stays assertable over
+ * `tools` alone (see `__tests__/mcp-tool-annotations.test.ts`); every *surface* — the static proxy
+ * list, `getTools()` and the allowlist — is built from this merged list.
+ */
+export const allTools: ToolDefinition[] = [...tools, ...editTools];
+
+/**
  * Return `defs` with `projectPath` marked `required` in each tool's inputSchema.
  *
  * Used for the NO-DEFAULT-PROJECT tool surface (issue #993): when the MCP server
@@ -1437,24 +1538,27 @@ function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
 export function getStaticTools(): ToolDefinition[] {
   const raw = process.env.CODEGRAPH_MCP_TOOLS;
   if (!raw || !raw.trim()) {
-    return tools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
+    return allTools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
   }
   const allow = new Set(raw.split(',').map(s => s.trim().replace(/^codegraph_/, '')).filter(Boolean));
-  return allow.size ? tools.filter(t => allow.has(t.name.replace(/^codegraph_/, ''))) : tools;
+  return allow.size ? allTools.filter(t => allow.has(t.name.replace(/^codegraph_/, ''))) : allTools;
 }
 
 /**
- * The MCP tools served by DEFAULT (short names). Pared to ONLY `codegraph_explore`
- * — the single tool that reliably earns its place: one capped call returns the
- * verbatim source of the relevant symbols grouped by file. Every other tool is a
- * narrower slice of what explore already does, and presence itself steers
- * mis-picks, so they are no longer LISTED to agents.
+ * The MCP tools served by DEFAULT (short names). Pared to `codegraph_explore` — the single tool that
+ * reliably earns its place: one capped call returns the verbatim source of the relevant symbols
+ * grouped by file — plus this fork's `codegraph_edit` (phase 4), which is the one capability explore
+ * cannot cover: a structured write. Every other tool is a narrower slice of what explore already
+ * does, and presence itself steers mis-picks, so they are no longer LISTED to agents.
  *
  * The other defined tools (`node`, `search`, `callers`, plus callees/impact/files/
  * status) remain fully functional — handlers stay, the library API and CLI are
  * untouched, and `CODEGRAPH_MCP_TOOLS=explore,node,...` re-enables any of them.
+ *
+ * Personal-fork deviation: upstream lists `explore` alone. `edit` is added here because a write
+ * capability that is never advertised cannot be used at all; the tool still previews by default.
  */
-const DEFAULT_MCP_TOOLS = new Set(['explore']);
+const DEFAULT_MCP_TOOLS = new Set(['explore', 'edit']);
 
 /**
  * Tool handler that executes tools against a CodeGraph instance
@@ -1630,12 +1734,11 @@ export class ToolHandler {
    */
   getTools(): ToolDefinition[] {
     const allow = this.toolAllowlist();
-    // No explicit allowlist → the default 4-tool surface (see
-    // DEFAULT_MCP_TOOLS for the evidence). An allowlist replaces the
-    // default entirely, so any defined tool can be re-enabled.
+    // No explicit allowlist → the default surface (see DEFAULT_MCP_TOOLS for the evidence).
+    // An allowlist replaces the default entirely, so any defined tool can be re-enabled.
     let visible = allow
-      ? tools.filter(t => allow.has(t.name.replace(/^codegraph_/, '')))
-      : tools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
+      ? allTools.filter(t => allow.has(t.name.replace(/^codegraph_/, '')))
+      : allTools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
     // No default project loaded → no-root-index case (#993): a gateway server
     // started outside any repo, or a monorepo root whose indexes live in
     // sub-projects. With nothing to fall back to, EVERY call needs an explicit
@@ -1680,6 +1783,9 @@ export class ToolHandler {
         'codegraph_explore',
         'codegraph_search',
         'codegraph_node',
+        // Personal fork: the edit tool stays listed on a small repo too — a write capability that
+        // disappears exactly where it is first tried would be worse than one extra tool definition.
+        'codegraph_edit',
       ]);
       if (stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
         visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name));
@@ -1976,26 +2082,10 @@ export class ToolHandler {
     const now = Date.now();
     const hit = this.driftCache.get(key);
     if (hit && now - hit.at < ToolHandler.DRIFT_TTL_MS) return hit.stale;
+    // Shares the on-disk check with structured queries; keeps the legacy text mode's
+    // handling of read failures.
     let stale = false;
-    try {
-      const rec = cg.getFile(relPath);
-      const absPath = rec ? validatePathWithinRoot(root, relPath) : null;
-      if (rec && absPath && existsSync(absPath)) {
-        const st = statSync(absPath);
-        // Same freshness test as the sync fast path (extraction/index.ts):
-        // equal size + equal floored mtime ⇒ unchanged, no read needed.
-        if (st.size !== rec.size || Math.floor(st.mtimeMs) !== Math.floor(rec.modifiedAt)) {
-          const data = content ?? readFileSync(absPath, 'utf-8');
-          // Must stay byte-identical to extraction's `hashContent` (sha256 over
-          // the utf-8 string) — the identical-rewrite test in
-          // mcp-stale-slice.test.ts pins the parity. Inlined (not imported)
-          // to keep the extraction module off the MCP startup path.
-          stale = createHash('sha256').update(data).digest('hex') !== rec.contentHash;
-        }
-      }
-    } catch {
-      stale = false;
-    }
+    try { stale = indexedFileFreshness(root, cg.getFile(relPath), content) === 'changed'; } catch { /* keep legacy behavior */ }
     this.driftCache.set(key, { at: now, stale });
     return stale;
   }
@@ -2152,6 +2242,19 @@ export class ToolHandler {
         return await this.handleStatus(args);
       }
 
+      // Structured queries read watcher status on the main connection and do not wrap
+      // the JSON in a text notice banner.
+      if (toolName === 'codegraph_explore' && args.mode !== undefined && args.mode !== 'explore') {
+        return this.handleCodeQuery(args);
+      }
+
+      // Structured edits write to disk and may start a language server, so they always run
+      // here on the main thread (never in a query-pool worker) and skip the staleness banner:
+      // the JSON result carries its own status, preview and warnings.
+      if (toolName === 'codegraph_edit') {
+        return await this.handleCodeEdit(args);
+      }
+
       // Read tools: off-load the CPU-heavy dispatch to the worker pool when one
       // is attached, healthy, AND has finished its first cold start (daemon
       // mode), so the daemon's single event loop stays free for the MCP
@@ -2175,7 +2278,7 @@ export class ToolHandler {
       const dispatchArgs = this.withSessionView(toolName, args, sessionState);
       const raw = (this.queryPool && this.queryPool.healthy && this.queryPool.ready)
         ? await this.queryPool.run(toolName, dispatchArgs)
-        : await this.executeReadTool(toolName, dispatchArgs);
+        : await this.runInProcessWithMetrics(toolName, dispatchArgs);
       // Record + STRIP before anything else touches the result: the emission is
       // internal bookkeeping and must never reach the client, whether or not a
       // caller passed session state.
@@ -2280,6 +2383,27 @@ export class ToolHandler {
         'This is an internal codegraph error — retry the call once; if it persists, ' +
         'continue without codegraph for this task.'
       );
+    }
+  }
+
+  /**
+   * 主线程内联执行 + 资源指标（阶段一）。
+   *
+   * 查询池不可用（直连模式、平台不支持、崩溃熔断、首个 worker 还没预热）时走
+   * 这里；耗时按「等待 0 + 执行」计入同一份指标，status 才不会把内联路径的查询
+   * 当成没有发生。走 worker 池时由 {@link QueryPool} 记录，两条路径不重复计数。
+   */
+  private async runInProcessWithMetrics(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const metrics = resourceMetrics();
+    metrics.recordQueryStart();
+    const started = Date.now();
+    try {
+      const result = await this.executeReadTool(toolName, args);
+      metrics.recordQueryEnd(0, Date.now() - started, result.isError ? 'error' : 'ok');
+      return result;
+    } catch (err) {
+      metrics.recordQueryEnd(0, Date.now() - started, 'error');
+      throw err;
     }
   }
 
@@ -2741,11 +2865,33 @@ export class ToolHandler {
    * whose qualifiedName contains another named token (`PmsProductServiceImpl::list`),
    * dropping unrelated `OmsOrderService::list`.
    */
-  private buildFlowFromNamedSymbols(cg: CodeGraph, query: string): { text: string; pathNodeIds: Set<string>; namedNodeIds: Set<string>; uniqueNamedNodeIds: Set<string>; spineCallSites: Map<string, number> } {
+  private buildFlowFromNamedSymbols(
+    cg: CodeGraph,
+    query: string,
+    priorEvidenceKeys: ReadonlySet<string> = new Set(),
+  ): {
+    text: string;
+    pathNodeIds: Set<string>;
+    namedNodeIds: Set<string>;
+    uniqueNamedNodeIds: Set<string>;
+    spineCallSites: Map<string, number>;
+    evidence: FlowEvidenceReport | null;
+    evidenceKeys: string[];
+    evidenceText: string;
+  } {
     // spineCallSites: for each spine node, the line where it CALLS the next hop —
     // lets the source assembler window an oversize spine method (e.g. n8n's 962-line
     // processRunExecutionData) to the call site instead of dumping the whole body.
-    const EMPTY = { text: '', pathNodeIds: new Set<string>(), namedNodeIds: new Set<string>(), uniqueNamedNodeIds: new Set<string>(), spineCallSites: new Map<string, number>() };
+    const EMPTY = {
+      text: '',
+      pathNodeIds: new Set<string>(),
+      namedNodeIds: new Set<string>(),
+      uniqueNamedNodeIds: new Set<string>(),
+      spineCallSites: new Map<string, number>(),
+      evidence: null,
+      evidenceKeys: [],
+      evidenceText: '',
+    };
     try {
       // Token resolution — parsing, overload disambiguation, the CONSTANT/
       // VARIABLE synth endpoints — is shared with `/api/flow`, so a name written
@@ -2753,7 +2899,7 @@ export class ToolHandler {
       const flow = resolveNamedSymbolFlow(cg, query);
       const { named, dynNamed, tokenNodes, tokenFamily, uniqueNamedNodeIds, preciseNamedIds } =
         flow;
-      if (flow.tokens.length < 2) return EMPTY;
+      if (flow.tokens.length < 1) return EMPTY;
       // Surface synthesized (heuristic) edges incident to a named symbol — INCLUDING
       // the non-callable CONSTANT endpoints in `dynNamed`. `skipInChain` drops a hop
       // already shown in the rendered main chain (a 2-node chain renders nothing, so a
@@ -2807,13 +2953,22 @@ export class ToolHandler {
        * question that happens to exact-match a callable must not earn importance 9.
        * Same distinction, same test, as the gather path's `isPreciseToken`.
        */
-      const identityOnly = () => (preciseNamedIds.size === 0 ? EMPTY : {
-        text: '',
-        pathNodeIds: new Set<string>(),
-        namedNodeIds: new Set<string>(preciseNamedIds),
-        uniqueNamedNodeIds: new Set<string>([...uniqueNamedNodeIds].filter((id) => preciseNamedIds.has(id))),
-        spineCallSites: new Map<string, number>(),
-      });
+      const identityOnly = () => {
+        const built = buildFlowEvidenceReport(cg, flow, [], { priorEvidenceKeys });
+        const evidenceText = this.buildEvidenceSection(built.report);
+        return preciseNamedIds.size === 0 && flow.namedTypes.size === 0 && !evidenceText
+          ? EMPTY
+          : {
+              text: '',
+              pathNodeIds: new Set<string>(),
+              namedNodeIds: new Set<string>([...preciseNamedIds, ...flow.namedTypes.keys()]),
+              uniqueNamedNodeIds: new Set<string>([...uniqueNamedNodeIds].filter((id) => preciseNamedIds.has(id))),
+              spineCallSites: new Map<string, number>(),
+              evidence: built.report,
+              evidenceKeys: built.observedEvidenceKeys,
+              evidenceText,
+            };
+      };
       if (named.size < 2) {
         // <2 CALLABLES resolved. Two recoveries before giving up: (1) synthesized
         // edges among named CONSTANT/VARIABLE endpoints — RTK thunk→thunk is
@@ -2821,16 +2976,32 @@ export class ToolHandler {
         // whole chain; (2) the one resolved callable's body may hold the
         // dynamic-dispatch site that EXPLAINS a half-connected flow.
         const synthLines = collectSynthLinks(null);
-        const boundaries = named.size === 0 ? '' : (this.buildDynamicBoundaries(cg, [...named.values()], named) || '');
+        const boundaryReports = named.size === 0
+          ? []
+          : findDynamicBoundaries(cg, [...named.values()], { named, maxSites: 4 });
+        const boundaries = this.renderDynamicBoundaries(boundaryReports);
+        const built = buildFlowEvidenceReport(cg, flow, boundaryReports, { priorEvidenceKeys });
+        const evidenceText = this.buildEvidenceSection(built.report);
         if (synthLines.length === 0 && !boundaries) return identityOnly();
         const out: string[] = [];
-        if (synthLines.length) out.push(
+        const hasNewHeuristic = built.report.evidence.some((item) => item.kind === 'heuristic');
+        const hasNewBoundary = built.report.evidence.some((item) => item.kind === 'boundary');
+        if (synthLines.length && (priorEvidenceKeys.size === 0 || hasNewHeuristic)) out.push(
           '**Dynamic-dispatch links among your symbols**',
           '(synthesized — the indirect hops grep/Read would reconstruct; the `@file:line` is the wiring site)',
           '', ...synthLines, '');
-        if (boundaries) out.push(boundaries);
+        if (boundaries && (priorEvidenceKeys.size === 0 || hasNewBoundary)) out.push(boundaries);
         out.push('> Full source for these symbols is below.\n');
-        return { text: out.join('\n'), pathNodeIds: new Set(), namedNodeIds: new Set<string>([...named.keys(), ...dynNamed.keys()]), uniqueNamedNodeIds, spineCallSites: new Map<string, number>() };
+        return {
+          text: out.join('\n'),
+          pathNodeIds: new Set(),
+          namedNodeIds: new Set<string>([...named.keys(), ...flow.namedTypes.keys(), ...dynNamed.keys()]),
+          uniqueNamedNodeIds,
+          spineCallSites: new Map<string, number>(),
+          evidence: built.report,
+          evidenceKeys: built.observedEvidenceKeys,
+          evidenceText,
+        };
       }
       // The search itself lives in `../graph/named-symbol-flow`, so the viewer's
       // Flow strip rides exactly this path finder rather than a second one that
@@ -2850,6 +3021,7 @@ export class ToolHandler {
       // first (where the partial flow stops), then the disconnected symbols,
       // agent-specific (unique-named) ones first.
       let boundaryText = '';
+      let boundaryReports: NodeBoundary[] = [];
       {
         const uncovered: Node[] = [];
         if (!hasMain) {
@@ -2869,7 +3041,8 @@ export class ToolHandler {
           if (hasMain) scanList.push(best![best!.length - 1]!.node);
           scanList.push(...uncovered.sort((a, b) =>
             (uniqueNamedNodeIds.has(b.id) ? 1 : 0) - (uniqueNamedNodeIds.has(a.id) ? 1 : 0)));
-          boundaryText = this.buildDynamicBoundaries(cg, scanList, named);
+          boundaryReports = findDynamicBoundaries(cg, scanList, { named, maxSites: 4 });
+          boundaryText = this.renderDynamicBoundaries(boundaryReports);
         }
       }
 
@@ -2906,9 +3079,16 @@ export class ToolHandler {
         hasMain ? (e: Edge) => pathIds.has(e.source) && pathIds.has(e.target) : null
       );
 
+      const built = buildFlowEvidenceReport(cg, flow, boundaryReports, { priorEvidenceKeys });
+      const evidenceText = this.buildEvidenceSection(built.report);
+      const pathEvidenceKeys = built.observedEvidenceKeys.slice(0, Math.max(0, (best?.length ?? 1) - 1));
+      const showMain = hasMain && !(
+        pathEvidenceKeys.length > 0 && pathEvidenceKeys.every((key) => priorEvidenceKeys.has(key))
+      );
+
       if (!hasMain && synthLines.length === 0 && !boundaryText && !polyText) return identityOnly();
       const out: string[] = [];
-      if (hasMain) {
+      if (showMain) {
         out.push('**Flow (call path among the symbols you queried)**', '');
         for (let i = 0; i < best!.length; i++) {
           const step = best![i]!;
@@ -2921,7 +3101,9 @@ export class ToolHandler {
         }
         out.push('');
       }
-      if (synthLines.length) {
+      if (synthLines.length && (
+        priorEvidenceKeys.size === 0 || built.report.evidence.some((item) => item.kind === 'heuristic')
+      )) {
         out.push(
           '**Dynamic-dispatch links among your symbols**',
           '(synthesized — the indirect hops grep/Read would reconstruct; the `@file:line` is the wiring site)',
@@ -2930,7 +3112,9 @@ export class ToolHandler {
           ''
         );
       }
-      if (boundaryText) out.push(boundaryText);
+      if (boundaryText && (
+        priorEvidenceKeys.size === 0 || built.report.evidence.some((item) => item.kind === 'boundary')
+      )) out.push(boundaryText);
       if (polyText) out.push(polyText);
       out.push('> Full source for these symbols is below — the call flow among them, followed by their bodies.', '');
       // namedNodeIds = every callable the agent explicitly named (a superset of
@@ -2938,7 +3122,16 @@ export class ToolHandler {
       // must keep full source even if it's an off-spine polymorphic sibling — the
       // agent named `getResponseWithInterceptorChain` / `SQLCompiler.execute_sql`
       // as the mechanism, not as an interchangeable leaf. See the skeleton gate.
-      return { text: out.join('\n'), pathNodeIds: pathIds, namedNodeIds: new Set<string>([...named.keys(), ...dynNamed.keys()]), uniqueNamedNodeIds, spineCallSites };
+      return {
+        text: out.join('\n'),
+        pathNodeIds: pathIds,
+        namedNodeIds: new Set<string>([...named.keys(), ...flow.namedTypes.keys(), ...dynNamed.keys()]),
+        uniqueNamedNodeIds,
+        spineCallSites,
+        evidence: built.report,
+        evidenceKeys: built.observedEvidenceKeys,
+        evidenceText,
+      };
     } catch {
       return EMPTY;
     }
@@ -2955,12 +3148,8 @@ export class ToolHandler {
    * at runtime. Query-time, deterministic, zero graph mutation; a fully
    * connected flow never reaches this method.
    */
-  private buildDynamicBoundaries(cg: CodeGraph, scanList: Node[], named: Map<string, Node>): string {
+  private renderDynamicBoundaries(reports: readonly NodeBoundary[]): string {
     const MAX_NOTES = 4; // boundary bullets per explore
-    // The verdict is not derived here — `findDynamicBoundaries` produces it and
-    // the viewer's end cap renders the same object, so the two can never
-    // disagree about where a flow stops. What is left here is the prose.
-    const reports = findDynamicBoundaries(cg, scanList, { named, maxSites: MAX_NOTES });
     const notes: string[] = [];
     for (const report of reports) {
       if (notes.length >= MAX_NOTES) break;
@@ -2983,6 +3172,47 @@ export class ToolHandler {
       '> These sites choose their call target at runtime (registry / bus / reflection) — the site shown IS where the flow continues. To follow it, run codegraph_explore or codegraph_node on a candidate; source for the sites above is included below.',
       '',
     ].join('\n');
+  }
+
+  /** 把共享证据报告压成适合模型阅读的短段落，详细字段留在 structured content。 */
+  private buildEvidenceSection(report: FlowEvidenceReport): string {
+    const lines: string[] = [];
+    if (report.evidence.length > 0) {
+      const counts = new Map<string, number>();
+      for (const item of report.evidence) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
+      const summary = [...counts.entries()].map(([kind, count]) => `${count} ${kind}`).join(', ');
+      lines.push(`**Evidence** — ${summary}.`);
+      lines.push('');
+    }
+    if (report.deduplicatedEvidence > 0) {
+      lines.push(`- ${report.deduplicatedEvidence} previously returned evidence item(s) omitted.`, '');
+    }
+
+    if (report.implementations.length > 0) {
+      lines.push('**Runtime implementations**', '');
+      for (const expansion of report.implementations) {
+        lines.push(`- \`${expansion.symbol}\` can dispatch through \`${expansion.contract}\` to **${expansion.total}** implementation(s):`);
+        for (const candidate of expansion.candidates) {
+          lines.push(`  - \`${candidate.name}\` (${candidate.location.filePath}:${candidate.location.line}) [candidate, not a confirmed call]`);
+        }
+        if (expansion.truncated) lines.push('  - ... additional implementations omitted by the evidence budget');
+      }
+      lines.push('');
+    }
+
+    const plainBreaks = report.breaks.filter((item) => item.reason !== 'dynamic_key');
+    if (plainBreaks.length > 0) {
+      lines.push('**Unconnected points**', '');
+      for (const item of plainBreaks) {
+        const at = item.at ? ` (${item.at.filePath}:${item.at.line})` : '';
+        const symbol = item.symbol ? ` \`${item.symbol}\`` : '';
+        lines.push(`- [${item.reason}]${symbol}${at}: ${item.detail}`);
+      }
+      lines.push('');
+    }
+
+    if (report.truncated) lines.push('> Evidence details were trimmed before source code to stay within the evidence budget.', '');
+    return lines.join('\n');
   }
 
   /**
@@ -3280,6 +3510,15 @@ export class ToolHandler {
    * tax on small projects while earning its keep on large ones.
    */
   private async handleExplore(args: Record<string, unknown>): Promise<ToolResult> {
+    if (args.mode !== undefined && args.mode !== 'explore') return this.handleCodeQuery(args);
+    // backend only means anything for structured modes; silently ignoring the argument
+    // misleads callers more than an error would.
+    if (args.backend === 'lsp') {
+      return this.errorResult(
+        'backend "lsp" only applies to structured modes (definitions/references/symbols/diagnostics/status); ' +
+        'mode "explore" returns indexed source and call paths from the graph.'
+      );
+    }
     const rawQuery = this.validateString(args.query, 'query');
     if (typeof rawQuery !== 'string') return rawQuery;
     // One normalization point so the flow-builder, relevance search, and
@@ -3288,6 +3527,18 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const projectRoot = cg.getProjectRoot();
+    const explicitChangeContext = args.includeChanges === true
+      || typeof args.baseRef === 'string'
+      || args.deepChanges === true;
+    const changeIntent = explicitChangeContext || queryRequestsChangeContext(query);
+    let changeContext: ChangeContext | null = null;
+    if (changeIntent) {
+      changeContext = await analyzeChangeContext(cg, {
+        baseRef: typeof args.baseRef === 'string' ? args.baseRef : undefined,
+        depth: typeof args.depth === 'number' ? args.depth : undefined,
+        deep: args.deepChanges === true,
+      });
+    }
 
     // Resolve adaptive output budget from project size. Falls back to the
     // largest-tier defaults if stats aren't available, which preserves
@@ -3342,6 +3593,7 @@ export class ToolHandler {
     const priorCalls = viewForProject(readExploreSessionView(args), projectRoot);
     diag?.noteSession(priorCalls);
     const dedupEnabled = exploreDedupEnabled() && (priorCalls?.calls.length ?? 0) > 0;
+    const priorEvidenceKeys = dedupEnabled ? servedEvidenceKeys(priorCalls) : new Set<string>();
 
     // Cross-call dedup accounting (CG-18). `newSourceChars` is the load-bearing
     // one: a response whose source is ENTIRELY back-references is the shape that
@@ -3394,6 +3646,29 @@ export class ToolHandler {
       minScore: 0.2,
     });
 
+    // “review current changes” 一类查询可能不含任何符号名；用改动文件中的定义补种子，
+    // 让同一次 explore 仍能返回源码，而不是落入空搜索。
+    if (changeContext) {
+      const changedFiles = new Set(
+        changeContext.files.filter((file) => file.change !== 'deleted').map((file) => file.path),
+      );
+      for (const filePath of changedFiles) {
+        let nodes: Node[] = [];
+        try { nodes = cg.getNodesInFile(filePath); } catch { continue; }
+        for (const node of nodes) {
+          if (node.kind === 'file' || node.kind === 'import' || node.kind === 'export') continue;
+          subgraph.nodes.set(node.id, node);
+          subgraph.roots.push(node.id);
+        }
+      }
+    } else if (subgraph.nodes.size > 0) {
+      // 普通查询只对相关性搜索已命中的文件做路径限定 Git 探测；只有其中确有改动，
+      // 才读取完整工作区状态和 diff。
+      changeContext = await analyzeChangeContext(cg, {
+        candidateFiles: [...new Set([...subgraph.nodes.values()].map((node) => node.filePath))],
+      });
+    }
+
     // Pinned files' symbols enter the gather unconditionally — the agent named
     // the file itself, so its contents ARE the answer regardless of what the
     // stripped query text matched (which, for a pure-path query, is nothing).
@@ -3413,12 +3688,14 @@ export class ToolHandler {
       const missNote = unresolvedPathSpans.length > 0
         ? ` (no indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')})`
         : '';
-      const empty = `No relevant code found for "${query}"${missNote}`;
+      const empty = changeContext
+        ? `${formatChangeContext(changeContext)}\n\nNo indexed source is available for the changed files.`
+        : `No relevant code found for "${query}"${missNote}`;
       // Still an explore call, so it is still recorded: an empty answer spends a
       // call against the tier budget even though it emits no source.
       return this.exploreResult(empty, {
         projectRoot, query, files: [], sourceBytes: 0, responseBytes: empty.length,
-      });
+      }, null, changeContext);
     }
 
     // Graph-aware glue: findRelevantContext builds the subgraph from name/text
@@ -4195,6 +4472,10 @@ export class ToolHandler {
     ];
     const summaryLineIdx = 2;
 
+    // 改动解释有独立预算，不挤占原有源码预算；structured content 保留更完整的有界字段。
+    const changeContextText = changeContext ? formatChangeContext(changeContext) : '';
+    if (changeContextText) lines.push(changeContextText, '');
+
     // Blast radius (always-on, compact): for the entry symbols, who depends on
     // them + which tests cover them — locations only, no source — so the agent
     // knows what to update/verify before editing without a separate call.
@@ -4243,7 +4524,7 @@ export class ToolHandler {
     // The Flow section labels each hop with its branch conditions; that read
     // is synchronous, so the grammars it needs are loaded here, once.
     await warmBranchGuardGrammars();
-    const flow = this.buildFlowFromNamedSymbols(cg, matchQuery);
+    const flow = this.buildFlowFromNamedSymbols(cg, matchQuery, priorEvidenceKeys);
 
     // Snapshot every ranked candidate's scoring inputs, in final sort order, so
     // the diagnostic can show what each file's share of the envelope was BOUGHT
@@ -4358,14 +4639,15 @@ export class ToolHandler {
     // Recorded so the drift pass below (#1474) can append a per-file exception
     // to this guarantee after the render loop knows which files drifted.
     const verbatimHeaderIdx = lines.length;
-    lines.push('> The code below is the **verbatim, current on-disk source** of these files — re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.');
+    lines.push('> The numbered lines below are **verbatim, current on-disk source excerpts**. A `gap` or truncation marker means source was omitted; these excerpts are not necessarily complete files or symbol bodies. Reuse the lines shown here. If a needed implementation is missing, query that symbol or read the missing range.');
     lines.push('');
 
     // The response's absolute cap. It MUST stay under the host's inline
     // tool-result limit (~25K chars): above it the result is externalized to a
     // file the agent Reads back (a 35K vscode explore did exactly this in the
     // n=4 A/B).
-    const hardCeiling = Math.min(Math.round(budget.maxOutputChars * 1.5), 25000);
+    const hardCeiling = Math.min(Math.round(budget.maxOutputChars * 1.5), 25000)
+      + changeContextText.length;
     // What the epilogue is OWED — the part of it the loop must not spend (CG-26).
     // Not a flat margin: the old 600 was neither the epilogue's size (1,064 on
     // gin, 2,231 on excalidraw) nor a bound on it, so the loop budgeted for a
@@ -5934,12 +6216,10 @@ export class ToolHandler {
       pointerOmitted = Math.max(0, remainingFiles.length - pointerEntries.length);
     }
 
-    // Completeness signal so agents know they don't need to re-read these files.
-    // On small projects the budget gates this off — but if we actually had to
-    // trim or drop clusters, surface a brief note so the agent knows it can
-    // still Read for more detail.
+    // 标明已返回的源码范围，不能把裁剪后的片段称为完整文件。
+    // 小项目省略常规提示，但确实发生裁剪时仍提示如何补齐。
     const completenessBlock: string[] = budget.includeCompletenessSignal
-      ? ['', '---', `> **Complete source for ${filesIncluded} files is included above — do NOT re-read them.** If your question also needs files/symbols listed under "Not shown above" (or any area this call didn't cover), make ANOTHER codegraph_explore targeting those names — it returns the same source with line numbers and is cheaper and more complete than reading. Reserve Read for a single specific line range explore can't surface.`]
+      ? ['', '---', `> **Source excerpts from ${filesIncluded} files are shown above.** Reuse the displayed lines; omitted ranges and entries under "Not shown above" have not been read. Query the missing symbols with codegraph_explore, or read their specific ranges when needed.`]
       : anyFileTrimmed
         ? ['', `> Some file sections were trimmed for size. Elided symbols are named inside gap markers as \`name (file:line)\` and preferred in the file header — run another \`codegraph_explore\` (or \`codegraph_node\`) with those exact names for their source.`]
         : [];
@@ -5959,6 +6239,9 @@ export class ToolHandler {
         // Stats unavailable — skip budget note
       }
     }
+    const evidenceBlock = flow.evidenceText
+      ? ['', '---', ...flow.evidenceText.trimEnd().split('\n')]
+      : [];
 
     // FIT THE EPILOGUE (CG-26). Before this, the epilogue was emitted whole and
     // then, on a saturated response, discarded whole by the hard ceiling — four
@@ -6006,11 +6289,15 @@ export class ToolHandler {
     // one line that carries its instruction forward.
     const pointersLost = pointerEntries.length > 0 && pointerBlock.length === 0;
 
+    const keepEvidence = evidenceBlock.length > 0 && roomFor(evidenceBlock) <= room;
+    if (keepEvidence) room -= roomFor(evidenceBlock);
+
     const keepBudgetNote = budgetBlock.length > 0 && roomFor(budgetBlock) <= room;
     if (keepBudgetNote) room -= roomFor(budgetBlock);
 
     lines.push(...pointerBlock);
     if (keepCompleteness) lines.push(...completenessBlock);
+    if (keepEvidence) lines.push(...evidenceBlock);
     if (keepBudgetNote) lines.push(...budgetBlock);
     if (pointersLost && roomFor([EPILOGUE_LOST_NOTE, '']) <= room) {
       lines.push('', EPILOGUE_LOST_NOTE);
@@ -6111,7 +6398,8 @@ export class ToolHandler {
       files: emittedFiles,
       sourceBytes,
       responseBytes: finalText.length,
-    });
+      evidenceKeys: flow.evidenceKeys,
+    }, flow.evidence, changeContext);
   }
 
   /**
@@ -6119,8 +6407,25 @@ export class ToolHandler {
    * rides the result only as far as {@link execute}, which files it into the
    * calling session's state and deletes it — see {@link EXPLORE_EMISSION_KEY}.
    */
-  private exploreResult(text: string, emission: ExploreEmission): ToolResult {
+  private exploreResult(
+    text: string,
+    emission: ExploreEmission,
+    evidence: FlowEvidenceReport | null = null,
+    changes: ChangeContext | null = null,
+  ): ToolResult {
     const result = this.textResult(text);
+    result.structuredContent = {
+      schemaVersion: 1,
+      kind: 'explore',
+      query: emission.query,
+      projectRoot: emission.projectRoot,
+      evidence,
+      changes,
+      source: {
+        files: emission.files.map((file) => file.path),
+        bytes: emission.sourceBytes,
+      },
+    };
     result[EXPLORE_EMISSION_KEY] = emission;
     return result;
   }
@@ -6514,10 +6819,70 @@ export class ToolHandler {
   }
 
   /**
-   * Handle codegraph_status
+   * Structured modes keep the JSON parseable; an expected not-indexed state is not
+   * returned as a tool failure.
    */
-  private async handleStatus(args: Record<string, unknown>): Promise<ToolResult> {
-    let cg = this.getCodeGraph(args.projectPath as string | undefined);
+  private async handleCodeQuery(args: Record<string, unknown>): Promise<ToolResult> {
+    if (!CODE_QUERY_MODES.includes(args.mode as CodeQueryMode)) return this.errorResult('Unknown explore mode');
+    const mode = args.mode as CodeQueryMode;
+    // An explicit value must pass through unchanged: quietly downgrading auto/both to
+    // graph would make callers believe routing took effect.
+    const backend: CodeQueryBackend = CODE_QUERY_BACKENDS.includes(args.backend as CodeQueryBackend)
+      ? args.backend as CodeQueryBackend
+      : 'graph';
+    let result = emptyCodeQueryResult(mode, typeof args.query === 'string' ? args.query : '', backend);
+    try {
+      let cg = this.getCodeGraph(args.projectPath as string | undefined);
+      // When an explicit projectPath hits the default project, reuse the connection
+      // that carries the watcher.
+      if (this.cg && resolvePath(cg.getProjectRoot()) === resolvePath(this.cg.getProjectRoot())) cg = this.cg;
+      result = await cg.queryCodeWithBackend(args as unknown as CodeQueryRequest);
+      const mismatch = this.worktreeMismatchFor(args.projectPath as string | undefined);
+      if (mismatch) result.warnings.push(worktreeMismatchNotice(mismatch));
+    } catch (error) {
+      result.status = error instanceof NotIndexedError ? 'not_indexed' : 'error';
+      result.warnings.push(error instanceof Error ? error.message : String(error));
+    }
+    return {
+      structuredContent: result,
+      content: [{ type: 'text', text: JSON.stringify(result) }],
+      ...(result.status === 'error' ? { isError: true } : {}),
+    };
+  }
+
+  /**
+   * `codegraph_edit` — the phase-4 structured edit tool.
+   *
+   * Unlike a structured query, a refusal here is NOT a successful answer: `isError` is set for every
+   * status other than preview/applied, so an agent cannot read "the edit did not happen" as if it
+   * had. The JSON (both in `structuredContent` and as the text) carries the status, the resolved
+   * target, the per-file preview and the warnings.
+   */
+  private async handleCodeEdit(args: Record<string, unknown>): Promise<ToolResult> {
+    const operation = typeof args.operation === 'string' ? args.operation : '';
+    let result: CodeEditResult;
+    try {
+      let cg = this.getCodeGraph(args.projectPath as string | undefined);
+      // Same connection reuse as the structured query path: prefer the watched default instance.
+      if (this.cg && resolvePath(cg.getProjectRoot()) === resolvePath(this.cg.getProjectRoot())) cg = this.cg;
+      result = await cg.editCode(args as unknown as CodeEditRequest);
+      const mismatch = this.worktreeMismatchFor(args.projectPath as string | undefined);
+      if (mismatch) result.warnings.push(worktreeMismatchNotice(mismatch));
+    } catch (error) {
+      const known = (CODE_EDIT_OPERATIONS as readonly string[]).includes(operation);
+      result = emptyCodeEditResult(known ? operation as CodeEditOperation : 'replace-body');
+      result.status = error instanceof NotIndexedError ? 'not_indexed' : 'error';
+      result.warnings.push(error instanceof Error ? error.message : String(error));
+    }
+    const failed = result.status !== 'preview' && result.status !== 'applied';
+    return {
+      structuredContent: result,
+      content: [{ type: 'text', text: JSON.stringify(result) }],
+      ...(failed ? { isError: true } : {}),
+    };
+  }
+
+  private async handleStatus(args: Record<string, unknown>): Promise<ToolResult> {    let cg = this.getCodeGraph(args.projectPath as string | undefined);
     // Same trick as withStalenessNotice — when an explicit projectPath
     // resolves to the same project as the default session cg, prefer the
     // default so getPendingFiles() (only populated by the default's watcher)
@@ -6567,6 +6932,20 @@ export class ToolHandler {
       lines.push(
         `**Journal mode:** ⚠ ${journalMode || 'unknown'} — WAL not active, so reads ` +
         `can block on a concurrent write (WAL appears unsupported on this filesystem)`
+      );
+    }
+
+    // 资源治理（阶段一）：生效档位 + 查询池实际状态。这里只读配置和内存计数，
+    // 不启动任何语言服务器，所以 status 在任何时刻都是安全调用。
+    lines.push(`**Resources:** ${describeResourceProfile(resolveResourceProfile())}`);
+    const poolState = this.queryPool?.poolState();
+    if (poolState) {
+      const shrink = poolState.idleShrinkMs > 0
+        ? `${Math.round(poolState.idleShrinkMs / 1000)}s->${poolState.min}`
+        : 'off';
+      lines.push(
+        `**Query pool:** ${poolState.live} live / ${poolState.idle} idle / ${poolState.queued} queued ` +
+        `(max ${poolState.max}, idle shrink ${shrink})`
       );
     }
 

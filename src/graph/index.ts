@@ -29,6 +29,45 @@ export {
   MAX_DEAD_CODE_CANDIDATES,
   MAX_OVERRIDE_ANCESTOR_DEPTH,
 } from './dead-code';
+export {
+  buildFlowEvidenceReport,
+  DEFAULT_FLOW_EVIDENCE_BUDGET,
+  FLOW_EVIDENCE_SCHEMA_VERSION,
+} from './flow-evidence';
+export {
+  analyzeChangeContext,
+  formatChangeContext,
+  queryRequestsChangeContext,
+  CHANGE_CONTEXT_SCHEMA_VERSION,
+  DEFAULT_CHANGE_CONTEXT_DEPTH,
+} from './change-context';
+export type {
+  AffectedEntryContext,
+  AnalyzeChangeContextOptions,
+  ChangeContext,
+  ChangedEdgeContext,
+  ChangedFileContext,
+  ChangedLineRange,
+  ChangedSymbolContext,
+  ChangeKind,
+  MissingTestRisk,
+  SemanticDeltaKind,
+} from './change-context';
+export type {
+  BuildFlowEvidenceOptions,
+  BuiltFlowEvidence,
+  FlowBreak,
+  FlowBreakReason,
+  FlowConfidence,
+  FlowEvidence,
+  FlowEvidenceBudget,
+  FlowEvidenceKind,
+  FlowEvidenceReport,
+  FlowEvidenceSource,
+  FlowLocation,
+  ImplementerExpansion,
+  RuntimeCandidate,
+} from './flow-evidence';
 export type {
   DeadCodeEntry,
   DeadCodeExclusions,

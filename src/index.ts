@@ -6,9 +6,28 @@
  */
 
 import * as path from 'path';
+import { queryCode, type CodeQueryRequest, type CodeQueryResult } from './graph/code-query';
+import { queryCodeRouted, type LspAvailability } from './graph/code-query-route';
+import { editCode, type CodeEditRequest, type CodeEditResult } from './edits';
+import { completeEditTransaction, recoverPendingEditTransactions } from './edits/transaction';
+import { queryCodeLsp, LspManager } from './lsp';
+import { familyForLanguage } from './lsp/servers';
+import { resourceMetrics, readResourceMetricsSnapshot, type ResourceMetricsSnapshot } from './resource-metrics';
+import { describeResourceProfile, resolveResourceProfile } from './resource-profile';
+export type {
+  CodeQueryRequest, CodeQueryResult, CodeQueryMode, CodeQueryBackend, CodeQuerySource,
+  CodeQueryItem, CodeSymbol, CodeReference, ImpactItem, ImpactVia, AffectedTestItem,
+  MergedCodeQueryItem, RoutingBlock, LspSymbolItem, LspReferenceItem, LspDocumentSymbolItem,
+  LspDiagnosticItem, LspResultBlock, IndexBlock,
+} from './graph/code-query';
+export type {
+  CodeEditApplied, CodeEditOperation, CodeEditRequest, CodeEditResult, CodeEditStatus, CodeEditTarget,
+  CodeEditSummary, EditFilePreview, EditTextEdit, EditPreviewLine, EditFileOperation,
+} from './edits/contract';
 import {
   Node,
   NodeKind,
+  Language,
   Edge,
   FileRecord,
   ExtractionResult,
@@ -95,6 +114,45 @@ export {
 export { Mutex, FileLock, processInBatches, debounce, throttle, MemoryMonitor } from './utils';
 export { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
 export { MCPServer } from './mcp';
+export {
+  buildFlowEvidenceReport,
+  DEFAULT_FLOW_EVIDENCE_BUDGET,
+  FLOW_EVIDENCE_SCHEMA_VERSION,
+} from './graph/flow-evidence';
+export type {
+  BuildFlowEvidenceOptions,
+  BuiltFlowEvidence,
+  FlowBreak,
+  FlowBreakReason,
+  FlowConfidence,
+  FlowEvidence,
+  FlowEvidenceBudget,
+  FlowEvidenceKind,
+  FlowEvidenceReport,
+  FlowEvidenceSource,
+  FlowLocation,
+  ImplementerExpansion,
+  RuntimeCandidate,
+} from './graph/flow-evidence';
+export {
+  analyzeChangeContext,
+  formatChangeContext,
+  queryRequestsChangeContext,
+  CHANGE_CONTEXT_SCHEMA_VERSION,
+  DEFAULT_CHANGE_CONTEXT_DEPTH,
+} from './graph/change-context';
+export type {
+  AffectedEntryContext,
+  AnalyzeChangeContextOptions,
+  ChangeContext,
+  ChangedEdgeContext,
+  ChangedFileContext,
+  ChangedLineRange,
+  ChangedSymbolContext,
+  ChangeKind,
+  MissingTestRisk,
+  SemanticDeltaKind,
+} from './graph/change-context';
 
 /**
  * Options for initializing a new CodeGraph project
@@ -160,6 +218,14 @@ export class CodeGraph {
 
   // File watcher for auto-sync on file changes
   private watcher: FileWatcher | null = null;
+
+  /**
+   * Language-server manager, created on demand (only structured queries with
+   * `backend: "lsp"` use it). One CodeGraph instance = one manager per project,
+   * so in daemon mode every MCP client of the same project shares the same
+   * language-server processes.
+   */
+  private lspManager: LspManager | null = null;
 
   private constructor(
     db: DatabaseConnection,
@@ -355,6 +421,8 @@ export class CodeGraph {
 
     const instance = new CodeGraph(db, queries, resolvedRoot);
 
+    await instance.recoverInterruptedEdits();
+
     // Sync if requested
     if (options.sync) {
       await instance.sync();
@@ -448,6 +516,11 @@ export class CodeGraph {
    */
   close(): void {
     this.unwatch();
+    // The language server is an external process and must be shut down explicitly:
+    // if shutdown/exit does not get through, kill it.
+    const lsp = this.lspManager;
+    this.lspManager = null;
+    if (lsp) void lsp.close().catch(() => undefined);
     // Release file lock if held
     this.fileLock.release();
     this.db.close();
@@ -468,8 +541,19 @@ export class CodeGraph {
    * Index all files in the project
    *
    * Uses a mutex to prevent concurrent indexing operations.
+   *
+   * 阶段一基线：全量索引耗时/文件数记入进程内资源指标，供 `codegraph status`
+   * 与后续阶段的「索引时间相对阶段一基线增长」比较；记录本身不参与索引逻辑。
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
+    const result = await this.runIndexAll(options);
+    if (result.durationMs > 0) {
+      resourceMetrics().recordIndexRun('full', result.durationMs, result.filesIndexed);
+    }
+    return result;
+  }
+
+  private async runIndexAll(options: IndexOptions = {}): Promise<IndexResult> {
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
@@ -774,13 +858,33 @@ export class CodeGraph {
    * Sync with current file state (incremental update)
    *
    * Uses a mutex to prevent concurrent indexing operations.
+   *
+   * 阶段一基线：增量同步耗时与变更文件数记入资源指标。拿不到文件锁的零结果
+   * （durationMs 为 0）不计入基线，避免把「被别的进程挡住」误当成一次增量。
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
+    const result = await this.runSync(options);
+    if (result.durationMs > 0) {
+      const changed = result.filesAdded + result.filesModified + result.filesRemoved;
+      resourceMetrics().recordIndexRun('incremental', result.durationMs, changed);
+    }
+    return result;
+  }
+
+  private async runSync(options: IndexOptions = {}): Promise<SyncResult> {
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
       } catch {
-        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+        return {
+          filesChecked: 0,
+          filesAdded: 0,
+          filesModified: 0,
+          filesRemoved: 0,
+          nodesUpdated: 0,
+          durationMs: 0,
+          lockUnavailable: true,
+        };
       }
       // Defer WAL auto-checkpointing for the whole incremental run, exactly
       // as indexAll does for the bulk path (#1231): sync's store loop and its
@@ -1615,6 +1719,133 @@ export class CodeGraph {
    */
   searchNodes(query: string, options?: SearchOptions): SearchResult[] {
     return this.queries.searchNodes(query, options);
+  }
+
+  /** Structured graph query; CLI and MCP share its matching, pagination and freshness rules. */
+  queryCode(request: CodeQueryRequest): CodeQueryResult {
+    return queryCode(this, request);
+  }
+
+  /**
+   * Single entry point for structured queries:
+   *   - `graph` (default) goes through the graph index;
+   *   - `lsp` goes through the language server;
+   *   - `auto` **picks one** source from the mode and language-server availability, and falls back as it is when none is available;
+   *   - `both` runs both and merges them (phase 3).
+   *
+   * All four paths return the same contract; the differences show up in the `backend`,
+   * `coordinates` and `lsp` blocks and in the new `routing` block (what was requested,
+   * what was actually used, why, and whether a shared daemon served it).
+   * Language servers start lazily per project and are reused; repeated calls in one
+   * process never spawn another one.
+   */
+  async queryCodeWithBackend(request: CodeQueryRequest): Promise<CodeQueryResult> {
+    const backend = request.backend ?? 'graph';
+    if (backend === 'graph') return this.queryCode(request);
+    if (backend === 'lsp') return queryCodeLsp(this, this.getLspManager(), request);
+    return queryCodeRouted(this, request, {
+      queryGraph: (routed) => this.queryCode(routed),
+      queryLsp: (routed) => queryCodeLsp(this, this.getLspManager(), routed),
+      lspAvailability: (language) => this.lspAvailability(language),
+    });
+  }
+
+  /**
+   * Whether a language family's language server is currently available — this only
+   * probes for the executable, it **starts no process**. auto routing and the status
+   * output share this one judgment, so "can it be used" never gets two answers.
+   */
+  lspAvailability(language: Language | null): LspAvailability {
+    const family = familyForLanguage(language);
+    if (!family) {
+      return {
+        family: null,
+        available: false,
+        reason: language
+          ? `no language server is mapped to "${language}" in this phase`
+          : 'the query does not name an indexed file or symbol, so no language could be determined',
+        command: [],
+      };
+    }
+    const described = this.getLspManager().describeFamily(family);
+    return {
+      family,
+      available: described.resolvedPath !== null,
+      reason: described.reason,
+      command: described.command,
+    };
+  }
+
+  /** This project's language-server manager (lazily created, starts no process). */
+  getLspManager(): LspManager {
+    if (!this.lspManager) this.lspManager = new LspManager(this.projectRoot);
+    return this.lspManager;
+  }
+
+  /**
+   * 资源治理状态（阶段一）：生效档位 + 本进程已上报的实际资源状态。
+   *
+   * 刻意只读内存与磁盘上的快照：**不启动任何 LSP、不探测进程**，所以
+   * `codegraph status` 可以在任何时刻安全调用。语言服务器的跨 daemon 实时数量
+   * 由 `listLiveLspLeases()` 单独读取，不在这里触发。
+   */
+  resourceStatus(): {
+    profile: ReturnType<typeof resolveResourceProfile>;
+    description: string;
+    /** 本进程内的实时计数（CLI 单独运行时通常是零值）。 */
+    process: ResourceMetricsSnapshot;
+    /** daemon 周期写入的快照；不存在时为 null（例如 daemon 未运行）。 */
+    reported: ResourceMetricsSnapshot | null;
+  } {
+    const profile = resolveResourceProfile();
+    const metrics = resourceMetrics();
+    return {
+      profile,
+      description: describeResourceProfile(profile),
+      process: metrics.snapshot(),
+      reported: readResourceMetricsSnapshot(this.projectRoot),
+    };
+  }
+
+  /**
+   * Structured editing (phase 4): rename a symbol, replace a symbol's body, or insert code before or
+   * after a symbol.
+   *
+   * The default is a **preview**: nothing is written unless the request passes `apply: true`, and
+   * even then every file is re-verified against the bytes the preview was computed from. `rename`
+   * uses the project's language server (never a textual approximation); the other three operations
+   * are graph-native and need no server. The result carries the target, the per-file preview, a
+   * `previewHash` and — after a write — what was written and whether the index was refreshed.
+   */
+  async editCode(request: CodeEditRequest): Promise<CodeEditResult> {
+    return editCode(this, this.getLspManager(), request);
+  }
+
+  /** 启动时恢复中断事务；完整提交保留源码结果并补做一次索引刷新。 */
+  private async recoverInterruptedEdits(): Promise<void> {
+    const recovered = recoverPendingEditTransactions(this.projectRoot);
+    const committed = recovered.filter((item) => item.needsIndexSync);
+    if (committed.length === 0) return;
+    let synced = false;
+    let indexFiles = 0;
+    let warning: string | null = null;
+    try {
+      const outcome = await this.sync();
+      indexFiles = outcome.filesAdded + outcome.filesModified + outcome.filesRemoved;
+      synced = !outcome.lockUnavailable;
+      if (!synced) warning = 'The recovered edit is committed, but the index writer lock was busy; run `codegraph sync`.';
+    } catch (error) {
+      warning = `The recovered edit is committed, but index recovery failed (${error instanceof Error ? error.message : String(error)}).`;
+    }
+    for (const item of committed) {
+      if (item.result.applied) {
+        item.result.applied.indexSynced = synced;
+        item.result.applied.indexFiles = indexFiles;
+        if (warning) item.result.applied.warnings.push(warning);
+      }
+      if (warning) item.result.warnings.push(warning);
+      completeEditTransaction(this.projectRoot, item.operationId, item.result);
+    }
   }
 
   /**

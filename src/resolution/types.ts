@@ -26,6 +26,11 @@ export interface UnresolvedRef {
   language: Language;
   /** Possible qualified names it might resolve to */
   candidates?: string[];
+  /**
+   * 失败引用重新入队时使用的定义名。动态别名仍保留原始 referenceName，
+   * 但目标恢复可能需要按真实 action 名触发重试。
+   */
+  retryName?: string;
   /** `unresolved_refs.id` when loaded from the database — post-pass cleanup
    * targets exactly this row instead of every same-key sibling (#1269). */
   rowId?: number;
@@ -52,6 +57,11 @@ export interface ResolvedRef {
   edgeKind?: EdgeKind;
   /** Extra metadata the strategy wants persisted on the edge (`href`, …). */
   metadata?: Record<string, unknown>;
+  /**
+   * 解析策略生成推导边时显式标记来源。普通语法/名称解析留空；动态绑定等
+   * 需要在证据层展示为启发式的关系使用 `heuristic`。
+   */
+  provenance?: 'tree-sitter' | 'scip' | 'heuristic';
   /**
    * The OTHER targets, when one reference names several.
    *

@@ -39,6 +39,7 @@
  */
 
 import * as path from 'path';
+import { resolveResourceProfile } from '../resource-profile';
 
 /**
  * Property on a {@link ../mcp/tools.ToolResult} carrying what an explore call
@@ -92,6 +93,8 @@ export interface ExploreEmission {
   sourceBytes: number;
   /** Total chars of the response the agent received. */
   responseBytes: number;
+  /** 本轮观察到并已纳入回答的证据 ID；用于后续调用只补充新证据。 */
+  evidenceKeys?: string[];
 }
 
 /** A recorded call: an emission plus where it fell in the session. */
@@ -141,6 +144,8 @@ export const EXPLORE_SESSION_LIMITS = {
   MAX_RANGES_PER_FILE: 24,
   /** Most-recent calls per project included in {@link ExploreSessionView}. */
   MAX_VIEW_CALLS: 4,
+  /** 每次调用保留的证据 ID 上限。 */
+  MAX_EVIDENCE_KEYS_PER_CALL: 64,
 } as const;
 
 /**
@@ -213,6 +218,12 @@ export class ExploreSessionState {
   /** Insertion-ordered; a touched project is re-inserted, so the head is the LRU. */
   private readonly projects = new Map<string, MutableProjectState>();
 
+  private readonly maxBytes: number;
+
+  constructor(maxBytes = resolveResourceProfile().sessionCacheMb * 1024 * 1024) {
+    this.maxBytes = Math.max(1024, Math.floor(maxBytes));
+  }
+
   /**
    * File an emission. Returns the record as stored (with its session call
    * index), or `null` if the emission was unusable.
@@ -232,11 +243,16 @@ export class ExploreSessionState {
       files: this.boundFiles(emission.files),
       sourceBytes: Math.max(0, emission.sourceBytes || 0),
       responseBytes: Math.max(0, emission.responseBytes || 0),
+      evidenceKeys: Array.isArray(emission.evidenceKeys)
+        ? [...new Set(emission.evidenceKeys.filter((key) => typeof key === 'string' && key.length > 0))]
+          .slice(0, EXPLORE_SESSION_LIMITS.MAX_EVIDENCE_KEYS_PER_CALL)
+        : [],
     };
     state.calls.push(record);
     if (state.calls.length > EXPLORE_SESSION_LIMITS.MAX_CALLS_RETAINED) {
       state.calls.splice(0, state.calls.length - EXPLORE_SESSION_LIMITS.MAX_CALLS_RETAINED);
     }
+    this.trimToByteBudget(state);
     return record;
   }
 
@@ -270,7 +286,11 @@ export class ExploreSessionState {
         responseBytes: state.responseBytes,
         calls: state.calls
           .slice(-EXPLORE_SESSION_LIMITS.MAX_VIEW_CALLS)
-          .map((c) => ({ ...c, files: c.files.map((f) => ({ ...f, ranges: [...f.ranges] })) })),
+          .map((c) => ({
+            ...c,
+            files: c.files.map((f) => ({ ...f, ranges: [...f.ranges] })),
+            evidenceKeys: [...(c.evidenceKeys ?? [])],
+          })),
       })),
     };
   }
@@ -325,6 +345,17 @@ export class ExploreSessionState {
       .sort((a, b) => b.bytes - a.bytes)
       .slice(0, EXPLORE_SESSION_LIMITS.MAX_FILES_PER_CALL);
   }
+
+  /**
+   * 会话缓存按实际序列化字节受 profile 约束。只淘汰可重建的调用明细，
+   * `callCount` 与累计响应字节继续保留，避免预算淘汰重置调用历史。
+   */
+  private trimToByteBudget(state: MutableProjectState): void {
+    const retainedBytes = (): number => Buffer.byteLength(JSON.stringify(cloneProject(state)), 'utf8');
+    while (state.calls.length > 0 && retainedBytes() > this.maxBytes) {
+      state.calls.shift();
+    }
+  }
 }
 
 function cloneProject(state: MutableProjectState): ExploreProjectState {
@@ -332,8 +363,21 @@ function cloneProject(state: MutableProjectState): ExploreProjectState {
     projectRoot: state.projectRoot,
     callCount: state.callCount,
     responseBytes: state.responseBytes,
-    calls: state.calls.map((c) => ({ ...c, files: c.files.map((f) => ({ ...f, ranges: [...f.ranges] })) })),
+    calls: state.calls.map((c) => ({
+      ...c,
+      files: c.files.map((f) => ({ ...f, ranges: [...f.ranges] })),
+      evidenceKeys: [...(c.evidenceKeys ?? [])],
+    })),
   };
+}
+
+/** 已记录证据 ID 的有界集合；调用方只在启用跨轮去重时使用。 */
+export function servedEvidenceKeys(state: ExploreProjectState | null): Set<string> {
+  const keys = new Set<string>();
+  for (const call of state?.calls ?? []) {
+    for (const key of call.evidenceKeys ?? []) keys.add(key);
+  }
+  return keys;
 }
 
 /**

@@ -16,6 +16,7 @@ import * as os from 'os';
 import type { Edge, UnresolvedReference } from '../types';
 import type { ResolvedRef, UnresolvedRef } from './types';
 import { memoryBudgetBytes } from './memory-budget';
+import { resolveResourceProfile } from '../resource-profile';
 
 /** One synthesis pass's output: its edge list + worker-measured wall clock. */
 export interface SynthPassResult {
@@ -109,6 +110,23 @@ export class ResolverPool {
   }
 
   /**
+   * 阶段一：把推导出来的解析 worker 数按资源档位收紧。
+   *
+   * 规则与查询池一致：显式 `CODEGRAPH_RESOLVE_WORKERS` 完全覆盖档位；
+   * `CODEGRAPH_RESOURCE_GOVERNANCE=0` 时不收紧；收紧后低于 2 个 worker 的池
+   * 不值得启动开销，回退顺序解析（沿用 {@link resolvePoolSize} 的既有结论）。
+   */
+  static capByResourceProfile(size: number | null, env: NodeJS.ProcessEnv = process.env): number | null {
+    if (size === null) return null;
+    const explicit = env.CODEGRAPH_RESOLVE_WORKERS;
+    if (explicit !== undefined && explicit !== '') return size;
+    const profile = resolveResourceProfile(env);
+    if (!profile.governanceEnabled) return size;
+    const capped = Math.min(size, profile.resolveWorkersMax);
+    return capped < 2 ? null : capped;
+  }
+
+  /**
    * Create a pool when the compiled worker exists (absent when running from
    * source in tests → callers use the sequential path), the kill switch is
    * off, and the machine has the cores AND memory to carry it. Returns null
@@ -131,16 +149,22 @@ export class ResolverPool {
       memoryBudget: budget,
       dbSizeBytes,
     });
+    // 阶段一：资源档位给全量解析 worker 一个上限（battery 2 / balanced 5 /
+    // performance 8）。只约束推导出来的尺寸——CODEGRAPH_RESOLVE_WORKERS 的显式
+    // 值仍然完全覆盖档位，关闭资源治理时也不生效。
+    const cappedSize = ResolverPool.capByResourceProfile(size, process.env);
+    const effectiveSize = cappedSize;
     // Both outcomes log under SYNTH_TIMINGS — a silent null is how §7a.1's
     // diagnostic run hid the memory-term misfire for a whole 25-minute cycle.
     if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+      const detail = cappedSize !== size ? ` computed=${size}` : '';
       console.error(
-        `[pool-timing] pool ${size === null ? 'disabled' : `size=${size}`} (ap=${ap} budget=${Math.round(budget / 1024 / 1024)}MB db=${Math.round(dbSizeBytes / 1024 / 1024)}MB)`
+        `[pool-timing] pool ${effectiveSize === null ? 'disabled' : `size=${effectiveSize}`}${detail} (ap=${ap} budget=${Math.round(budget / 1024 / 1024)}MB db=${Math.round(dbSizeBytes / 1024 / 1024)}MB)`
       );
     }
-    if (size === null) return null;
+    if (effectiveSize === null) return null;
     try {
-      return new ResolverPool(workerScript, dbPath, projectRoot, size);
+      return new ResolverPool(workerScript, dbPath, projectRoot, effectiveSize);
     } catch {
       return null;
     }

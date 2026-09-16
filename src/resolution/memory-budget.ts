@@ -87,7 +87,7 @@ export function cgroupMemoryAvailable(): number | null {
 export function darwinMemoryAvailable(): number | null {
   if (process.platform !== 'darwin') return null;
   try {
-    const out = execFileSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 2000 });
+    const out = execFileSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 2000, windowsHide: true });
     const pageMatch = /page size of (\d+) bytes/.exec(out);
     const pageSize = pageMatch ? Number.parseInt(pageMatch[1]!, 10) : 16384;
     const count = (label: string): number => {

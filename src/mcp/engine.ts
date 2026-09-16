@@ -17,7 +17,9 @@ import { resolveServerRoot } from '../directory';
 import { watchDisabledReason } from '../sync';
 import { ToolHandler } from './tools';
 import { releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
-import { QueryPool, resolvePoolSize } from './query-pool';
+import { QueryPool } from './query-pool';
+import { describeResourceProfile, resolveQueryPoolSizing, resolveResourceProfile } from '../resource-profile';
+import { resourceMetrics, writeResourceMetricsSnapshot } from '../resource-metrics';
 
 // Lazy-load the heavy CodeGraph chain (sqlite + query/graph/context layers) OFF
 // the MCP startup path. It's only needed once a tool actually opens a project —
@@ -30,6 +32,9 @@ const loadCodeGraph = (): typeof import('../index').default =>
 
 /** How often the per-tool-call retry may re-run the sub-project down-scan. */
 const RETRY_SUBSCAN_TTL_MS = 5_000;
+
+/** 资源指标快照的写入间隔；越短 status 越新，写入本身只有几 KB。 */
+const METRICS_SNAPSHOT_INTERVAL_MS = 10_000;
 
 export interface MCPEngineOptions {
   /**
@@ -75,6 +80,9 @@ export class MCPEngine {
   // Off-loop read-tool pool (daemon mode only). Created lazily once the default
   // project is open — workers each hold their own WAL read connection.
   private queryPool: QueryPool | null = null;
+  // 指标快照的写入目标与定时器（阶段一）。daemon 退出前写最后一次。
+  private metricsRoot: string | null = null;
+  private metricsTimer: NodeJS.Timeout | null = null;
 
   constructor(opts: MCPEngineOptions = {}) {
     this.opts = { watch: opts.watch ?? true, queryPool: opts.queryPool ?? false };
@@ -89,20 +97,53 @@ export class MCPEngine {
    */
   private maybeStartPool(root: string): void {
     if (!this.opts.queryPool || this.queryPool || this.closed) return;
-    const size = resolvePoolSize(process.env.CODEGRAPH_QUERY_POOL_SIZE, os.cpus().length);
-    if (size <= 0) {
+    const profile = resolveResourceProfile();
+    const sizing = resolveQueryPoolSizing(process.env, os.cpus().length, profile);
+    if (sizing.max <= 0) {
       process.stderr.write('[CodeGraph MCP] Query pool disabled (CODEGRAPH_QUERY_POOL_SIZE=0); serving reads in-process.\n');
       return;
     }
     try {
-      this.queryPool = new QueryPool({ root, size });
+      // 阶段一：初始 worker、上限和空闲缩容全部来自资源档位（显式环境变量覆盖
+      // 档位；CODEGRAPH_RESOURCE_GOVERNANCE=0 回退到治理前的尺寸且不缩容）。
+      this.queryPool = new QueryPool({
+        root,
+        size: sizing.max,
+        initialSize: sizing.initial,
+        minSize: sizing.min,
+        idleShrinkMs: sizing.idleShrinkMs,
+      });
       this.toolHandler.setQueryPool(this.queryPool);
-      process.stderr.write(`[CodeGraph MCP] Query pool: up to ${size} worker thread(s) for concurrent reads.\n`);
+      process.stderr.write(
+        `[CodeGraph MCP] Query pool: ${sizing.initial}..${sizing.max} worker thread(s) for concurrent reads ` +
+        `(${sizing.source}, ${describeResourceProfile(profile)}).\n`
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[CodeGraph MCP] Query pool unavailable (${msg}); serving reads in-process.\n`);
       this.queryPool = null;
     }
+  }
+
+  /**
+   * 定期把进程内资源指标写进项目的 `.codegraph/resource-metrics.json`，
+   * 让不启动 daemon、也不启动 LSP 的 `codegraph status` 能看到实际资源状态。
+   * 原子替换、best-effort：写入失败只影响展示，绝不影响查询与索引。
+   */
+  private startMetricsReporting(root: string): void {
+    const profile = resolveResourceProfile();
+    resourceMetrics().setProfile(profile.name, profile.governanceEnabled);
+    this.metricsRoot = root;
+    this.writeMetricsSnapshot();
+    process.stderr.write(`[CodeGraph MCP] Resource governance: ${describeResourceProfile(profile)}\n`);
+    if (this.metricsTimer) return;
+    this.metricsTimer = setInterval(() => this.writeMetricsSnapshot(), METRICS_SNAPSHOT_INTERVAL_MS);
+    this.metricsTimer.unref?.();
+  }
+
+  private writeMetricsSnapshot(): void {
+    if (!this.metricsRoot) return;
+    writeResourceMetricsSnapshot(this.metricsRoot, resourceMetrics().snapshot());
   }
 
   /**
@@ -193,7 +234,9 @@ export class MCPEngine {
       this.toolHandler.setDefaultCodeGraph(this.cg);
       this.startWatching();
       this.catchUpSync();
+      // 先建池再开始上报，第一份快照就带上查询池尺寸。
       this.maybeStartPool(resolvedRoot);
+      this.startMetricsReporting(resolvedRoot);
     } catch {
       // Still failing — caller will try again on the next tool call.
     }
@@ -216,6 +259,12 @@ export class MCPEngine {
     if (this.queryPool) {
       void this.queryPool.destroy();
       this.queryPool = null;
+    }
+    // 停机前写最后一次快照，让 status 看到的是退出时的实际状态。
+    this.writeMetricsSnapshot();
+    if (this.metricsTimer) {
+      clearInterval(this.metricsTimer);
+      this.metricsTimer = null;
     }
     this.toolHandler.closeAll();
     if (this.cg) {
@@ -260,7 +309,9 @@ export class MCPEngine {
       this.toolHandler.setDefaultCodeGraph(this.cg);
       this.startWatching();
       this.catchUpSync();
+      // 先建池再开始上报，第一份快照就带上查询池尺寸。
       this.maybeStartPool(resolvedRoot);
+      this.startMetricsReporting(resolvedRoot);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[CodeGraph MCP] Failed to open project at ${resolvedRoot}: ${msg}\n`);
