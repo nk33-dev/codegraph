@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { Telemetry, getTelemetry, TELEMETRY_ENDPOINT } from '../src/telemetry';
+import { expectWithinBudget } from './perf-utils';
 
 type FetchCall = { url: string; body: Record<string, unknown> };
 
@@ -231,7 +232,7 @@ describe('Telemetry', () => {
       t.recordLifecycle('install', { scope: 'local', kind: 'fresh' });
       const started = Date.now();
       await t.flushNow(100);
-      expect(Date.now() - started).toBeLessThan(2000);
+      expectWithinBudget(Date.now() - started, 2000, 'flushNow 对挂起端点由 flush 超时兜底（不等网络）');
       expect(fs.readFileSync(t.queuePath, 'utf8')).toContain('"install"'); // re-queued
     });
   });

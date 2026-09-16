@@ -20,6 +20,7 @@ import * as os from 'os';
 import * as path from 'path';
 import CodeGraph from '../src/index';
 import { createGraphApi, startUiServer, type GraphApi, type UiServerHandle } from '../src/ui-server';
+import { expectWithinBudget } from './perf-utils';
 
 interface Response {
   status: number;
@@ -337,7 +338,7 @@ describe('GET /api/stats', () => {
     // 24 depth-3 traversals over a 500-caller graph are not free; a cached
     // answer is. The margin is wide because this is a smoke test for the
     // memo existing at all, not a benchmark.
-    expect(Date.now() - started).toBeLessThan(250);
+    expectWithinBudget(Date.now() - started, 250, 'GET /api/stats 命中 blast-radius 缓存后的第二次调用');
   });
 });
 
@@ -639,7 +640,7 @@ describe('GET /api/node/<id> — the busiest symbol', () => {
     expect(body.blast.direct).toBe(body.counts.callers);
 
     // 500 callers resolved one query at a time would be nowhere near this.
-    expect(elapsed).toBeLessThan(100);
+    expectWithinBudget(elapsed, 100, 'GET /api/node/<id> 对 500 callers 的分组截断热路径');
   });
 });
 
@@ -1044,7 +1045,7 @@ describe.runIf(CodeGraph.isInitialized(path.resolve(__dirname, '..')))(
     const repoGet = (requestPath: string): Promise<Response> =>
       requestOn(repoServer.port, requestPath);
 
-    it('answers in under 100 ms with grouped, capped lists and correct counts', async () => {
+    it('answers within the re-baselined budget with grouped, capped lists and correct counts', async () => {
       const search = JSON.parse(
         (await repoGet('/api/search?q=' + encodeURIComponent('LRUCache.get'))).body
       );
@@ -1081,7 +1082,12 @@ describe.runIf(CodeGraph.isInitialized(path.resolve(__dirname, '..')))(
       expect(body.blast.direct).toBe(body.counts.callers);
       expect(body.tests.reached).toBe(true);
 
-      expect(elapsed).toBeLessThan(100);
+      // 重新建立的个人版基线（阶段一资源治理）：这个断言量的是**本仓库自身索引**
+      // 上的热路径，成本随索引规模变化，不是固定 fixture 的预算。当前索引（892 个
+      // 文件、LRUCache.get 有 1035 条入边）串行实测 139～177ms；旧的 100ms 预算是
+      // 该符号入边约 500 条时定的，在串行门禁里已不成立。250ms 保留约 1.4 倍余量，
+      // 仍能抓住「一次一条 caller 查询」级别的回归。
+      expectWithinBudget(elapsed, 250, 'GET /api/node/<id> 在本仓库自身索引上的热路径');
     });
   }
 );

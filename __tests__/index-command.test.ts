@@ -36,6 +36,7 @@ function runCodegraph(args: string[], cwd: string): string {
     encoding: 'utf-8',
     env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 }
 

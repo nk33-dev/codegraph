@@ -18,7 +18,7 @@ import { encodeLockInfo, getDaemonPidPath } from '../src/mcp/daemon-paths';
 
 /** A pid that's guaranteed dead: spawn a trivial process, let it exit, reap it. */
 async function deadPid(): Promise<number> {
-  const child = spawn(process.execPath, ['-e', 'process.exit(0)']);
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
   const pid = child.pid!;
   await new Promise<void>((r) => child.on('exit', () => r()));
   await new Promise((r) => setTimeout(r, 50)); // let the OS reap it

@@ -119,6 +119,7 @@ describe.skipIf(process.platform === 'win32')('MCP PPID watchdog (#277)', () => 
     `;
     wrapper = spawn(process.execPath, ['-e', wrapperSrc], {
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     }) as ChildProcessWithoutNullStreams;
 
     const pids = await new Promise<{ pid: number; stdinHolderPid: number }>((resolve, reject) => {

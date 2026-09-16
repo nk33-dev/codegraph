@@ -28,7 +28,8 @@ function runContext(cwd: string, extraArgs: string[], taskParts: string[] = ['pa
   return execFileSync(process.execPath, [BIN, 'context', ...extraArgs, '-p', cwd, ...taskParts], {
     encoding: 'utf-8',
     env: ENV,
-    stdio: ['ignore', 'pipe', 'ignore'], // drop stderr (SQLite experimental warning)
+    stdio: ['ignore', 'pipe', 'ignore'], // drop stderr (SQLite experimental warning),
+    windowsHide: true,
   });
 }
 
@@ -88,6 +89,7 @@ describe('codegraph context — registered CLI command (#1611)', () => {
         encoding: 'utf-8',
         env: ENV,
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       });
       throw new Error('expected non-zero exit');
     } catch (err: any) {
@@ -104,6 +106,7 @@ describe('codegraph context — registered CLI command (#1611)', () => {
         encoding: 'utf-8',
         env: ENV,
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       });
       throw new Error('expected non-zero exit');
     } catch (err: any) {

@@ -191,6 +191,8 @@ describe('codegraph_explore output respects the adaptive budget', () => {
     // Allow a small overshoot for the trailing markers — the cap is enforced
     // per-file rather than as an absolute output ceiling.
     expect(text.length).toBeLessThan(smallBudget.maxOutputChars + 500);
+    expect(text).toContain('current on-disk source excerpts');
+    expect(text).not.toMatch(/Complete source for \d+ files/);
   });
 
   it('omits the meta-text gated off for small projects', async () => {

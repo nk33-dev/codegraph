@@ -21,6 +21,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { expectWithinBudget } from './perf-utils';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -374,7 +375,7 @@ describe('cost', () => {
     expect(result.engine).toBe('tree-sitter');
     // The whole point of CG-57's swap: the TextMate grammar took ~700 ms here.
     // Generous against a loaded CI box; the dev Mac measures 24–41 ms.
-    expect(elapsed).toBeLessThan(400);
+    expectWithinBudget(elapsed, 400, '3000 行 TypeScript 的 tree-sitter 高亮');
   });
 
   it('answers a cached slice without re-classifying it', async () => {

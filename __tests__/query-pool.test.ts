@@ -66,12 +66,16 @@ describe('resolvePoolSize', () => {
   it('caps the override at the hard ceiling', () => {
     expect(resolvePoolSize('999', 8)).toBe(16);
   });
-  it('defaults to clamp(cores-1, 1, 16) when unset/blank/non-numeric', () => {
-    expect(resolvePoolSize(undefined, 8)).toBe(7);
-    expect(resolvePoolSize('', 8)).toBe(7);
-    expect(resolvePoolSize('abc', 8)).toBe(7);
+  it('defaults to the resource profile cap, bounded by the machine (§阶段一)', () => {
+    // balanced 档位上限 4；不再按 cores-1 直接给到 15。
+    expect(resolvePoolSize(undefined, 8)).toBe(4);
+    expect(resolvePoolSize('', 8)).toBe(4);
+    expect(resolvePoolSize('abc', 8)).toBe(4);
     expect(resolvePoolSize(undefined, 1)).toBe(1);   // never zero
-    expect(resolvePoolSize(undefined, 64)).toBe(16); // never above the ceiling
+    expect(resolvePoolSize(undefined, 64)).toBe(4);  // 档位上限优先于核心数
+    expect(resolvePoolSize(undefined, 8, 2)).toBe(2);   // battery
+    expect(resolvePoolSize(undefined, 64, 8)).toBe(8);  // performance
+    expect(resolvePoolSize('0', 8, 8)).toBe(0);      // 显式关闭仍优先于档位
   });
 });
 
@@ -193,6 +197,113 @@ describe('QueryPool', () => {
     const pool = new QueryPool({ root: '/x', size: 1, createWorker: () => new FakeWorker(() => ({ hang: true }), /* readyOk */ false) });
     await sleep(5);
     expect(pool.ready).toBe(false); // hard open failure — keep serving in-process
+    await pool.destroy();
+  });
+});
+
+/**
+ * 阶段一：空闲自动缩容（开发计划 §5 验收标准）。
+ * —— 8 个并发只读调用完成后，balanced 档位应在空闲窗口后缩回 1 个；
+ * —— 缩容不丢请求、不关闭活跃 worker。
+ */
+describe('QueryPool idle shrink', () => {
+  it('warms the configured initial worker count (performance 档位预热 2 个)', async () => {
+    let created = 0;
+    const pool = new QueryPool({
+      root: '/x', size: 4, initialSize: 2,
+      createWorker: () => { created++; return new FakeWorker(() => ({ hang: true })); },
+    });
+    expect(created).toBe(2);
+    expect(pool.liveWorkers).toBe(2);
+    await pool.destroy();
+  });
+
+  it('shrinks idle workers back to the floor after a burst drains', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const behavior = (m: CallMsg): Action => ({
+      wait: (async () => { await gate; return ok(`r${m.id}`); })(),
+    });
+    const pool = new QueryPool({
+      root: '/x', size: 4, minSize: 1, idleShrinkMs: 25,
+      createWorker: () => new FakeWorker(behavior),
+    });
+    const calls = Promise.all(Array.from({ length: 4 }, (_, i) => pool.run('codegraph_explore', { i })));
+    await sleep(30);
+    expect(pool.liveWorkers).toBe(4); // burst grown to the profile cap
+    release();
+    const results = await calls;
+    expect(results.every((r) => !r.isError)).toBe(true);
+    await sleep(80); // 空闲窗口 + 终止
+    expect(pool.liveWorkers).toBe(1);
+    expect(pool.floorSize).toBe(1);
+    await pool.destroy();
+  });
+
+  it('never terminates an in-flight worker, and the in-flight call still resolves', async () => {
+    let releaseSlow!: (r: ToolResult) => void;
+    const slow = new Promise<ToolResult>((r) => { releaseSlow = r; });
+    let seen = 0;
+    const pool = new QueryPool({
+      root: '/x', size: 3, minSize: 1, idleShrinkMs: 20,
+      createWorker: () => new FakeWorker((m) => {
+        seen++;
+        // 第 1 个调用一直挂在 worker 里，其余立即返回。
+        return m.id === 1 ? { wait: slow } : { result: ok(`fast:${m.id}`) };
+      }),
+    });
+    const hanging = pool.run('codegraph_explore', { id: 1 });
+    const fast = [pool.run('codegraph_node', { id: 2 }), pool.run('codegraph_node', { id: 3 })];
+    await Promise.all(fast);
+    await sleep(60); // 空闲窗口过去，只有 idle worker 会被回收
+    expect(pool.liveWorkers).toBe(1);
+    expect(seen).toBe(3);
+    releaseSlow(ok('slow-done'));
+    const res = await hanging; // 缩容不能丢请求
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toBe('slow-done');
+    await pool.destroy();
+  });
+
+  it('does not shrink while calls are queued', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const pool = new QueryPool({
+      root: '/x', size: 2, minSize: 1, idleShrinkMs: 15,
+      createWorker: () => new FakeWorker((m) => ({ wait: (async () => { await gate; return ok(`r${m.id}`); })() })),
+    });
+    const calls = Promise.all(Array.from({ length: 2 }, (_, i) => pool.run('codegraph_explore', { i })));
+    await sleep(40); // 缩容窗口已过，但两个 worker 都在途
+    expect(pool.liveWorkers).toBe(2);
+    release();
+    await calls;
+    await sleep(60);
+    expect(pool.liveWorkers).toBe(1);
+    await pool.destroy();
+  });
+
+  it('idleShrinkMs = 0 disables shrinking entirely', async () => {
+    const pool = new QueryPool({
+      root: '/x', size: 3, minSize: 1, idleShrinkMs: 0,
+      createWorker: () => new FakeWorker((m) => ({ result: ok(`r${m.id}`) })),
+    });
+    await Promise.all([1, 2, 3].map((i) => pool.run('codegraph_node', { i })));
+    await sleep(40);
+    expect(pool.liveWorkers).toBe(3);
+    await pool.destroy();
+  });
+
+  it('a new call after shrinking still works (fresh worker on demand)', async () => {
+    const pool = new QueryPool({
+      root: '/x', size: 2, minSize: 1, idleShrinkMs: 20,
+      createWorker: () => new FakeWorker((m) => ({ result: ok(`r${m.id}`) })),
+    });
+    await Promise.all([1, 2].map((i) => pool.run('codegraph_node', { i })));
+    await sleep(60);
+    expect(pool.liveWorkers).toBe(1);
+    const res = await pool.run('codegraph_explore', { query: 'after-shrink' });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toMatch(/^r\d+$/);
     await pool.destroy();
   });
 });

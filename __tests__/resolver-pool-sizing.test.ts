@@ -66,6 +66,36 @@ describe('ResolverPool.resolvePoolSize', () => {
   });
 });
 
+/**
+ * 阶段一：档位对全量解析 worker 的收紧（开发计划 §4 表格里的
+ * 「全量解析 worker 最大值」）。只约束推导出来的尺寸，显式覆盖和关闭开关优先。
+ */
+describe('ResolverPool.capByResourceProfile', () => {
+  const cap = (n: number | null, env: NodeJS.ProcessEnv = {} as NodeJS.ProcessEnv) =>
+    ResolverPool.capByResourceProfile(n, env);
+
+  it('balanced 默认把 6 收到 5，performance 放到 8，battery 收到 2', () => {
+    expect(cap(6)).toBe(5);
+    expect(cap(6, { CODEGRAPH_RESOURCE_PROFILE: 'performance' } as NodeJS.ProcessEnv)).toBe(6);
+    expect(cap(8, { CODEGRAPH_RESOURCE_PROFILE: 'performance' } as NodeJS.ProcessEnv)).toBe(8);
+    expect(cap(6, { CODEGRAPH_RESOURCE_PROFILE: 'battery' } as NodeJS.ProcessEnv)).toBe(2);
+  });
+
+  it('显式 CODEGRAPH_RESOLVE_WORKERS 完全覆盖档位', () => {
+    expect(cap(6, { CODEGRAPH_RESOLVE_WORKERS: '6' } as NodeJS.ProcessEnv)).toBe(6);
+    expect(cap(3, { CODEGRAPH_RESOLVE_WORKERS: '3', CODEGRAPH_RESOURCE_PROFILE: 'battery' } as NodeJS.ProcessEnv)).toBe(3);
+  });
+
+  it('关闭资源治理时不收紧', () => {
+    expect(cap(6, { CODEGRAPH_RESOURCE_GOVERNANCE: '0' } as NodeJS.ProcessEnv)).toBe(6);
+  });
+
+  it('收紧到低于 2 个 worker 时回退顺序解析；null 保持 null', () => {
+    expect(cap(1)).toBeNull();
+    expect(cap(null)).toBeNull();
+  });
+});
+
 describe('memory budget helpers', () => {
   it('memoryBudgetBytes is positive and finite on every platform', () => {
     const b = memoryBudgetBytes();

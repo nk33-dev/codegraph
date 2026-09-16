@@ -37,6 +37,7 @@ function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
     // EPERM no matter how long rmSync retries (the class documented for
     // the mcp-initialize/mcp-roots suites).
     env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
+    windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
 }
 

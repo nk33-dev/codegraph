@@ -89,6 +89,7 @@ describe.skipIf(process.platform === 'win32')('index/init orphan supervision (#9
     `;
     wrapper = spawn(process.execPath, ['-e', wrapperSrc], {
       stdio: ['pipe', 'pipe', 'inherit'],
+      windowsHide: true,
     }) as ChildProcessWithoutNullStreams;
 
     const { pid } = await new Promise<{ pid: number }>((resolve, reject) => {

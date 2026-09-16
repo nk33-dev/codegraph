@@ -195,6 +195,18 @@ describe('Symlink escape prevention (#527)', () => {
     fs.writeFileSync(path.join(outside, 'pkg', 'secret.txt'), 'TOP-SECRET\n');
   });
 
+  it('rejects a missing file below a symlinked directory that escapes the project', () => {
+    const linked = path.join(root, 'linked-outside');
+    try {
+      fs.symlinkSync(outside, linked, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw error;
+    }
+
+    expect(validatePathWithinRoot(root, path.join('linked-outside', 'new-file.ts'))).toBeNull();
+  });
+
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });

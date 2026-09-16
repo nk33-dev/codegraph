@@ -31,7 +31,7 @@ const asset = `codegraph-${target}.tar.gz`;
 const isWindows = process.platform === 'win32';
 
 function hasOpenssl(): boolean {
-  try { execSync('openssl version', { stdio: 'ignore' }); return true; } catch { return false; }
+  try { execSync('openssl version', { stdio: 'ignore', windowsHide: true }); return true; } catch { return false; }
 }
 const CAN_NET = !isWindows && hasOpenssl();
 
@@ -72,6 +72,7 @@ function runShim(pkgDir: string, args: string[], env: Record<string, string>) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
     const child = spawn(process.execPath, [path.join(pkgDir, 'npm-shim.js'), ...args], {
       env: { ...process.env, ...env },
+      windowsHide: true,
     });
     let stdout = '', stderr = '';
     child.stdout.on('data', (d) => { stdout += d.toString(); });
@@ -218,14 +219,14 @@ describe.skipIf(!CAN_NET)('npm-shim download fallback (local HTTPS)', () => {
     const certP = path.join(cdir, 'cert.pem');
     execSync(
       `openssl req -x509 -newkey rsa:2048 -nodes -keyout ${keyP} -out ${certP} -days 1 -subj "/CN=localhost"`,
-      { stdio: 'ignore' },
+      { stdio: 'ignore', windowsHide: true },
     );
 
     // Build a fake bundle archive (codegraph-<target>/bin/codegraph), like a real release asset.
     const work = mkTmp('fixture');
     writeLauncher(path.join(work, `codegraph-${target}`, 'bin'));
     const archive = path.join(work, asset);
-    execSync(`tar -czf ${JSON.stringify(archive)} -C ${JSON.stringify(work)} codegraph-${target}`);
+    execSync(`tar -czf ${JSON.stringify(archive)} -C ${JSON.stringify(work)} codegraph-${target}`, { windowsHide: true });
     fixtureBytes = fs.readFileSync(archive);
     fixtureSha = crypto.createHash('sha256').update(fixtureBytes).digest('hex');
 

@@ -25,6 +25,7 @@ function spawnMcp(
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, ...env },
+    windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
   child.on('error', () => {});
   child.stdin.on('error', () => {});

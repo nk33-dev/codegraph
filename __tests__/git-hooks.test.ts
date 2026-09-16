@@ -20,7 +20,7 @@ import {
 } from '../src/sync/git-hooks';
 
 function gitInit(dir: string): void {
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore', windowsHide: true });
 }
 
 function isExecutable(file: string): boolean {
@@ -109,7 +109,7 @@ describe('git sync hooks', () => {
     gitInit(repo);
     const customHooks = path.join(repo, '.husky');
     fs.mkdirSync(customHooks);
-    execFileSync('git', ['config', 'core.hooksPath', '.husky'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['config', 'core.hooksPath', '.husky'], { cwd: repo, stdio: 'ignore', windowsHide: true });
 
     const result = installGitSyncHook(repo, ['post-commit']);
     expect(result.hooksDir).toBe(customHooks);

@@ -16,6 +16,7 @@ function runCodegraph(args: string[], cwd: string): string {
     encoding: 'utf8',
     env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 }
 
@@ -24,7 +25,7 @@ function runCodegraphAsync(args: string[], cwd: string): Promise<string> {
     execFile(
       process.execPath,
       [BIN, ...args],
-      { cwd, encoding: 'utf8', env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' } },
+      { cwd, encoding: 'utf8', env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' }, windowsHide: true },
       (error, stdout, stderr) => {
         if (error) reject(new Error(`${error.message}\n${stderr}`));
         else resolve(stdout);

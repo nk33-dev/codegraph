@@ -3,7 +3,7 @@
  * .get(k)`, `document.body.querySelector(s)` — ends in a platform API. Emitting
  * the bare method name for it let every such call exact-match whatever project
  * symbol shared the name, so a storage wrapper's `get` called itself (#1707).
- * Those are dropped, as are untyped identifier chains (#1566). The existing
+ * 未知属性链保留为未解析引用，但不能生成猜测的调用边。The existing
  * `window.MyNs.run()` and `this.<field>.m()` paths remain outside that guard.
  */
 
@@ -36,6 +36,7 @@ beforeAll(async () => {
       '  return document.body.querySelector("tr");\n' +
       '}\n'
   );
+  w('computed.ts', 'export function get() {}\nfunction key() { return 0; }\nexport function computed(holder: any) { holder[key()].values.get(); }\n');
   w(
     'service.ts',
     'declare const window: any;\n' +
@@ -80,12 +81,20 @@ describe('TS/JS call through a host-global chain (#1707)', () => {
     const get = fn('get', 'storage.ts');
     expect(get).toBeDefined();
     expect(callTargets(get.id)).not.toContain(get.id);
+    expect(cg.getUnresolvedReferencesFrom(get.id).map((r) => r.referenceName)).toContain('chrome.storage.local.get');
   });
 
   it('does not bind document.body.querySelector to a same-named project function', () => {
     expect(callTargets(fn('findRow', 'dom.ts').id)).not.toContain(
       fn('querySelector', 'dom.ts').id
     );
+  });
+
+  it('计算属性链保留调用事实但不猜同名目标，仍追踪索引表达式内的调用', () => {
+    const caller = fn('computed', 'computed.ts');
+    expect(callTargets(caller.id)).not.toContain(fn('get', 'computed.ts').id);
+    expect(callTargets(caller.id)).toContain(fn('key', 'computed.ts').id);
+    expect(cg.getUnresolvedReferencesFrom(caller.id).map((r) => r.referenceName)).toContain('holder[key()].values.get');
   });
 
   it('keeps a chain rooted at a project value — window.MyNs.m() and this.<field>.m()', () => {

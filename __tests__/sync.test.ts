@@ -179,7 +179,7 @@ describe('Sync Module', () => {
     let cg: CodeGraph;
 
     function git(...args: string[]) {
-      execFileSync('git', args, { cwd: testDir, stdio: 'pipe' });
+      execFileSync('git', args, { cwd: testDir, stdio: 'pipe', windowsHide: true });
     }
 
     beforeEach(async () => {
@@ -336,7 +336,7 @@ describe('Sync Module', () => {
     let cg: CodeGraph;
 
     function git(...args: string[]) {
-      execFileSync('git', args, { cwd: testDir, stdio: 'pipe' });
+      execFileSync('git', args, { cwd: testDir, stdio: 'pipe', windowsHide: true });
     }
 
     beforeEach(async () => {

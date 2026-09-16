@@ -45,6 +45,7 @@ function spawnServer(cwd: string, handshakeTimeoutMs: number): ChildProcessWitho
       DO_NOT_TRACK: '1',
       CODEGRAPH_STARTUP_HANDSHAKE_TIMEOUT_MS: String(handshakeTimeoutMs),
     },
+    windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
 }
 

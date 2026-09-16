@@ -1,3 +1,4 @@
+import { stopProcess } from './process-cleanup';
 /**
  * Shared MCP daemon — issue #411.
  *
@@ -57,6 +58,7 @@ function spawnServer(cwd: string, env: NodeJS.ProcessEnv = {}): SpawnedServer {
     // harness into it (CODEGRAPH_MCP_LOG_ATTACH=1) so the attach assertions
     // below can still observe a successful attach. A per-test env still wins.
     env: { CODEGRAPH_MCP_LOG_ATTACH: '1', ...process.env, ...env },
+    windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
   // Swallow spawn/EPIPE errors so killing a child mid-write can't surface as an
   // unhandled error that crashes the vitest worker.
@@ -185,7 +187,7 @@ describe('Shared MCP daemon (issue #411)', () => {
   });
 
   afterEach(async () => {
-    killTree(...servers.map((s) => s.child));
+    await Promise.all(servers.map((s) => stopProcess(s.child)));
     // The daemon is detached (not a tracked child) — reap it explicitly via the
     // pid it recorded, so a test can't leak a background daemon. Guard against
     // our own pid: the version-mismatch test plants `pid: process.pid` in the
@@ -193,10 +195,11 @@ describe('Shared MCP daemon (issue #411)', () => {
     const daemonPid = readLockPid(realRoot);
     if (daemonPid && daemonPid !== process.pid && isAlive(daemonPid)) {
       try { process.kill(daemonPid, 'SIGKILL'); } catch { /* race */ }
+      expect(await waitProcessExit(daemonPid, 5000), 'daemon 应在清理目录前退出').toBe(true);
     }
-    await new Promise((r) => setTimeout(r, 50));
     servers.length = 0;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    // daemon 的 watchdog 在管道 EOF 后退出，Windows 的 cwd 句柄可能晚于 PID 释放。
+    await fs.promises.rm(tempDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   });
 
   it('two invocations share ONE detached daemon; both attach as proxies', async () => {
@@ -368,7 +371,14 @@ describe('Shared MCP daemon (issue #411)', () => {
     expect(response.result.serverInfo.name).toBe('codegraph');
     await waitFor(() => countListeningLines(realRoot) >= 2, 10000);
 
-    const replacementPid = readLockPid(realRoot)!;
+    // 阶段一：不能在这里只读一次 pidfile。「Listening on」日志与 pidfile 的原子
+    // 替换之间有一个窗口，并发全量测试的负载会把读到的时机推到替换之前，于是
+    // 读到的是刚被 SIGKILL 的旧 pid（#1553 断言随机失败）。等 pidfile 真的换成
+    // 新 daemon 再断言，测的才是「复用 pid 的陈旧锁被接管」而不是调度运气。
+    const replacementPid = await waitFor(() => {
+      const pid = readLockPid(realRoot);
+      return pid && pid !== killedPid && pid !== process.pid ? pid : null;
+    }, 10000);
     expect(replacementPid).not.toBe(killedPid);
     expect(replacementPid).not.toBe(process.pid);
     expect(isAlive(replacementPid)).toBe(true);

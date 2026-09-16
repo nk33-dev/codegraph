@@ -70,6 +70,7 @@ function requireSdk(mainPkg: string, env: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, ['-e', code], {
     encoding: 'utf8',
     env: { ...process.env, ...env },
+    windowsHide: true,
   });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }

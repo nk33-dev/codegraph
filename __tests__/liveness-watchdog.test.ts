@@ -68,6 +68,7 @@ describe('liveness watchdog (spawned, real watchdog process)', () => {
     const child = spawn(process.execPath, ['-e', src], {
       env: { ...process.env, ...env },
       stdio: ['ignore', 'ignore', 'ignore'],
+      windowsHide: true,
     });
     return new Promise((resolve) => {
       const timer = setTimeout(() => {

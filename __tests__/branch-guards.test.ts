@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
 import { initGrammars } from '../src/extraction/grammars';
-import { callArgumentsInSource, guardsInSource, guardLabel, supportsBranchGuards, triggerInSource } from '../src/graph/branch-guards';
+import { guardsForFile, callArgumentsInSource, guardsInSource, guardLabel, supportsBranchGuards, triggerInSource } from '../src/graph/branch-guards';
 import { buildNode } from '../src/ui-server/api/node';
 import { buildFlow } from '../src/ui-server/api/flow';
 
@@ -505,5 +505,36 @@ function warn() {
     // A plain call in a component body is fired by nothing in particular.
     expect(await triggerAt(login, 'fetchThing()')).toBeNull();
     expect(await triggerAt(login, 'handleLogin(', 'swift')).toBeNull();
+  });
+});
+
+
+describe('分支标注的预算与缓存', () => {
+  it('取消大文件解析后仍可解析其他文件，缓存不会被调用者改写且随文件更新', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-guard-budget-'));
+    try {
+      const large = path.join(dir, 'large.ts');
+      fs.writeFileSync(large, Array.from({ length: 4000 }, (_, i) => `const value${i} = ${i};`).join('\n'));
+      let ticks = 0;
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => ++ticks < 3 ? 100 : 2000);
+      try {
+        expect((await guardsForFile(large, 'typescript', [{ line: 1 }], 1000)).size).toBe(0);
+        expect(ticks).toBeGreaterThanOrEqual(3);
+      } finally {
+        clock.mockRestore();
+      }
+      const small = path.join(dir, 'small.ts');
+      fs.writeFileSync(small, 'function run() { if (ready) { execute(); } }');
+      const sites = [{ line: 1, column: 28 }];
+      const first = await guardsForFile(small, 'typescript', sites);
+      const guards = [...first.values()][0]!;
+      expect(guardLabel(guards)).toBe('ready');
+      guards[0]!.text = 'changed by caller';
+      expect(guardLabel([...(await guardsForFile(small, 'typescript', sites)).values()][0]!)).toBe('ready');
+      fs.writeFileSync(small, 'function run() { if (allowed) { execute(); } }');
+      expect(guardLabel([...(await guardsForFile(small, 'typescript', [{ line: 1, column: 30 }])).values()][0]!)).toBe('allowed');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

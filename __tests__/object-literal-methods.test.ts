@@ -131,7 +131,10 @@ describe('object-literal method extraction', () => {
 
 describe('object-literal method resolution (end-to-end)', () => {
   let tmpDir: string | undefined;
+  let cg: CodeGraph | undefined;
   afterEach(() => {
+    cg?.close();
+    cg = undefined;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = undefined;
   });
@@ -160,7 +163,7 @@ describe('object-literal method resolution (end-to-end)', () => {
         `}\n`
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const fns = cg.getNodesByKind('function');
@@ -178,6 +181,42 @@ describe('object-literal method resolution (end-to-end)', () => {
     expect(resetCallers).toContain('hardReset');
     expect(resetCallers).toContain('fetchUser');
 
-    cg.close();
   });
+  it('按 store 来源区分同名 action，保留别名并拒绝参数遮蔽和普通工厂', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-store-bindings-'));
+    for (const name of ['first', 'second']) {
+      fs.writeFileSync(path.join(tmpDir, `${name}.ts`), `import { create } from 'zustand';
+export const useStore = create((set, get) => ({
+  reset: () => set({}),
+  run: () => get().reset(),
+  shadowGet: (get: any) => get().reset(),
+}));
+`);
+    }
+    fs.writeFileSync(path.join(tmpDir, 'caller.ts'), `import { useStore as useFirst } from './first';
+import { useStore as useSecond } from './second';
+const { reset: firstReset } = useFirst.getState();
+const selected = useSecond(s => s.reset);
+export function first() { firstReset(); }
+export function second() { selected(); }
+export function chain() { useSecond.getState().reset(); }
+export function shadow(firstReset: () => void) { firstReset(); }
+export function localShadow() { const selected = () => {}; selected(); }
+export function factory(make: any) { const { reset } = make(); reset(); }
+export function storeShadow(useFirst: any) { const { reset } = useFirst.getState(); reset(); }
+export function chainShadow(useFirst: any) { useFirst.getState().reset(); }
+`);
+    cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    const resets = cg.getNodesByKind('function').filter((node) => node.name === 'reset');
+    const callers = (file: string) => cg!.getCallers(resets.find((node) => node.filePath === file)!.id).map((entry) => entry.node.name);
+    expect(callers('first.ts')).toEqual(expect.arrayContaining(['first', 'run']));
+    expect(callers('second.ts')).toEqual(expect.arrayContaining(['second', 'chain', 'run']));
+    expect(callers('first.ts')).not.toEqual(expect.arrayContaining(['second']));
+    expect(callers('second.ts')).not.toEqual(expect.arrayContaining(['first']));
+    for (const file of ['first.ts', 'second.ts']) {
+      for (const name of ['shadow', 'localShadow', 'factory', 'storeShadow', 'chainShadow', 'shadowGet']) expect(callers(file)).not.toContain(name);
+    }
+  });
+
 });

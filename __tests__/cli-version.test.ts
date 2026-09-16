@@ -28,6 +28,7 @@ function run(args: string[]): string {
     // single fast process (no graph work happens for a version print anyway).
     env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   }).trim();
 }
 
@@ -67,6 +68,7 @@ describe('codegraph version affordances', () => {
         encoding: 'utf-8',
         env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       });
     } catch (err: unknown) {
       const e = err as { stdout?: string; stderr?: string };

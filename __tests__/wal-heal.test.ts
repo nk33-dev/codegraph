@@ -61,6 +61,7 @@ async function growWalThenSigkill(dbPath: string, targetBytes: number): Promise<
     stdio: ['ignore', 'pipe', 'inherit'],
     // Keep the child's cwd off the temp dir (Windows EPERM-on-cleanup quirk).
     cwd: os.tmpdir(),
+    windowsHide: true,
   });
   await new Promise<void>((resolve, reject) => {
     let out = '';

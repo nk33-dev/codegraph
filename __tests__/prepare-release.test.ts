@@ -15,7 +15,7 @@ import * as os from 'node:os';
 const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'prepare-release.mjs');
 
 function run(cwd: string, ...args: string[]) {
-  const out = execFileSync('node', [SCRIPT, ...args], { cwd, encoding: 'utf8' });
+  const out = execFileSync('node', [SCRIPT, ...args], { cwd, encoding: 'utf8', windowsHide: true });
   return out.trim();
 }
 
@@ -210,7 +210,7 @@ describe('prepare-release.mjs', () => {
       run(dir);
 
       const extractor = path.resolve(__dirname, '..', 'scripts', 'extract-release-notes.mjs');
-      const notes = execFileSync('node', [extractor, '1.2.3'], { cwd: dir, encoding: 'utf8' });
+      const notes = execFileSync('node', [extractor, '1.2.3'], { cwd: dir, encoding: 'utf8', windowsHide: true });
       expect(notes).toContain('### Added');
       expect(notes).toContain('Feature A');
       expect(notes).toContain('Feature B');

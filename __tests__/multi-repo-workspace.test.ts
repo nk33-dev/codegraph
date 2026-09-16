@@ -30,7 +30,7 @@ import { scanDirectory, buildScopeIgnore, discoverEmbeddedRepoRoots, findUnindex
 import { clearProjectConfigCache } from '../src/project-config';
 
 function git(cwd: string, ...args: string[]): void {
-  execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'ignore'] });
+  execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true });
 }
 
 /** git init + commit everything currently in `dir` as one repo. */

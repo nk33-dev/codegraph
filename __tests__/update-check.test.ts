@@ -41,6 +41,7 @@ describe('update check (#1243)', () => {
   });
 
   const deps = (over: Record<string, unknown> = {}) => ({
+    distribution: 'upstream' as const,
     dir,
     env: {} as NodeJS.ProcessEnv,
     now: () => T0,
@@ -50,6 +51,13 @@ describe('update check (#1243)', () => {
   });
 
   describe('notice', () => {
+    it('个人构建不查询或展示官方升级提示', async () => {
+      let requests = 0;
+      const personal = deps({ distribution: 'personal', resolveLatest: async () => { requests += 1; return 'v9.0.0'; } });
+      expect(await refreshUpdateCheck(personal)).toBeNull();
+      expect(getUpdateNotice(personal)).toBeNull();
+      expect(requests).toBe(0);
+    });
     it('reports an available update and how to install it', async () => {
       const notice = await refreshUpdateCheck(deps());
       expect(notice).toBe(formatUpdateNotice('v1.4.0', 'v1.5.0'));

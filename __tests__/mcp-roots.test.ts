@@ -1,3 +1,4 @@
+import { stopProcess } from './process-cleanup';
 /**
  * MCP project-resolution regression tests (issue #196).
  *
@@ -29,6 +30,7 @@ function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
   return spawn(process.execPath, [BIN, 'serve', '--mcp', '--no-watch'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
 }
 
@@ -84,11 +86,9 @@ describe('MCP project resolution via roots/list (issue #196)', () => {
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-proj-'));
   });
 
-  afterEach(() => {
-    if (child && !child.killed) {
-      child.kill('SIGKILL');
-      child = null;
-    }
+  afterEach(async () => {
+    await stopProcess(child);
+    child = null;
     fs.rmSync(cwdDir, { recursive: true, force: true });
     fs.rmSync(projectDir, { recursive: true, force: true });
   });

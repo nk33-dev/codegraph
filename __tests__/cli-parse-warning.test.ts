@@ -38,6 +38,7 @@ describe('CLI parse warnings (#1522)', () => {
         CODEGRAPH_TELEMETRY: '0',
         NO_COLOR: '1',
       },
+      windowsHide: true,
     });
     return { status: result.status, out: (result.stdout ?? '') + (result.stderr ?? '') };
   }

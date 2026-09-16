@@ -21,6 +21,7 @@ function affected(cwd: string, args: string[]): string[] {
     encoding: 'utf-8',
     env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
   return out.split('\n').map((s) => s.trim()).filter(Boolean);
 }

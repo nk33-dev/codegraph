@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { expectWithinBudget } from './perf-utils';
 import type { FrameworkResolver, UnresolvedRef } from '../src/resolution/types';
 import type { Node } from '../src/types';
 
@@ -1630,7 +1631,7 @@ func boot(routes: RoutesBuilder) throws {
     const { nodes } = vaporResolver.extract!('routes.swift', src);
     const elapsed = performance.now() - start;
     expect(nodes).toHaveLength(0);
-    expect(elapsed).toBeLessThan(250);
+    expectWithinBudget(elapsed, 250, 'Vapor 路由正则不随参数个数指数回溯（60 个参数）');
   });
 
   it('still parses every Vapor route shape after the arg-list rewrite', () => {

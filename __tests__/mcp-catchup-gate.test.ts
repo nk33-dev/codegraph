@@ -21,6 +21,7 @@ import * as path from 'path';
 import * as os from 'os';
 import CodeGraph from '../src/index';
 import { ToolHandler } from '../src/mcp/tools';
+import { expectWithinBudget } from './perf-utils';
 
 describe('MCP catch-up gate', () => {
   let testDir: string;
@@ -133,7 +134,7 @@ describe('MCP catch-up gate', () => {
       expect(res.content[0].text).toMatch(/survivor/);
       // Served on the timeout (~50ms), NOT after the 5s reconcile.
       expect(gateResolved).toBe(false);
-      expect(elapsed).toBeLessThan(2000);
+      expectWithinBudget(elapsed, 2000, 'catch-up 门超时后首个工具调用立即返回（issue #905）');
     } finally {
       if (timer) clearTimeout(timer);
       if (prev === undefined) delete process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS;

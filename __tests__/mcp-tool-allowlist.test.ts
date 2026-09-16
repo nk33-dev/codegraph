@@ -17,13 +17,14 @@ describe('CODEGRAPH_MCP_TOOLS allowlist', () => {
 
   const listed = () => new ToolHandler(null).getTools().map(t => t.name).sort();
 
-  it('exposes ONLY codegraph_explore by default when unset', () => {
+  it('exposes ONLY codegraph_explore and codegraph_edit by default when unset', () => {
     delete process.env[ENV];
-    // The default set (see DEFAULT_MCP_TOOLS) is pared to explore alone — the one
-    // tool that earns its place (verbatim source grouped by file).
+    // The default set (see DEFAULT_MCP_TOOLS) is pared to explore — the tool
+    // that earns its place (verbatim source grouped by file) — plus this fork's
+    // phase-4 edit tool, which previews by default.
     // node/search/callers/callees/impact/files/status stay defined and executable
     // but unlisted; CODEGRAPH_MCP_TOOLS re-enables them.
-    expect(listed()).toEqual(['codegraph_explore']);
+    expect(listed()).toEqual(['codegraph_edit', 'codegraph_explore']);
   });
 
   it('re-enables an unlisted tool via the allowlist (impact)', () => {
@@ -43,7 +44,7 @@ describe('CODEGRAPH_MCP_TOOLS allowlist', () => {
 
   it('treats an empty/whitespace value as unset (default surface)', () => {
     process.env[ENV] = '   ';
-    expect(listed()).toEqual(['codegraph_explore']);
+    expect(listed()).toEqual(['codegraph_edit', 'codegraph_explore']);
   });
 
   it('rejects a disabled tool on execute (defense in depth)', async () => {

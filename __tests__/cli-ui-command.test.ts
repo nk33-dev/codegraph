@@ -37,6 +37,7 @@ function runCli(args: string[], env: Record<string, string> = {}): { code: numbe
       encoding: 'utf-8',
       env: { ...BASE_ENV, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     return { code: 0, output };
   } catch (err) {
@@ -78,6 +79,7 @@ function startViewer(
     const child = spawn(process.execPath, [BIN, 'ui', ...args], {
       env: { ...BASE_ENV, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     let output = '';
     const timer = setTimeout(() => {

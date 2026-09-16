@@ -1,3 +1,4 @@
+import { stopProcess } from './process-cleanup';
 /**
  * MCP workspace sub-project adoption + no-default diagnostics (#1606, #1607).
  *
@@ -29,6 +30,7 @@ function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
+    windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
 }
 
@@ -113,11 +115,9 @@ describe('MCP workspace sub-project adoption (#1606) + no-default diagnostics (#
     ws = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-ws-'));
   });
 
-  afterEach(() => {
-    if (child && !child.killed) {
-      child.kill('SIGKILL');
-      child = null;
-    }
+  afterEach(async () => {
+    await stopProcess(child);
+    child = null;
     fs.rmSync(ws, { recursive: true, force: true });
   });
 

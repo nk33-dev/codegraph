@@ -25,6 +25,7 @@ function runNode(cwd: string, extraArgs: string[]): { stdout: string; stderr: st
       encoding: 'utf-8',
       env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     return { stdout, stderr: '', code: 0 };
   } catch (err: any) {

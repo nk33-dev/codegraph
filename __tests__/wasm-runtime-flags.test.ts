@@ -38,7 +38,7 @@ describe('WASM_RUNTIME_FLAGS', () => {
     const res = spawnSync(
       process.execPath,
       [...WASM_RUNTIME_FLAGS, '-e', 'process.exit(0)'],
-      { encoding: 'utf8' }
+      { encoding: 'utf8', windowsHide: true }
     );
     expect(res.status, `node rejected ${WASM_RUNTIME_FLAGS.join(' ')}:\n${res.stderr}`).toBe(0);
   });
@@ -53,7 +53,7 @@ describe('NODE_RUNTIME_FLAGS', () => {
     const res = spawnSync(
       process.execPath,
       [...NODE_RUNTIME_FLAGS, '-e', "require('node:sqlite'); process.exit(0)"],
-      { encoding: 'utf8' }
+      { encoding: 'utf8', windowsHide: true }
     );
     expect(res.status, res.stderr).toBe(0);
     expect(res.stderr).not.toMatch(/ExperimentalWarning/);
@@ -120,7 +120,7 @@ describe('buildRelaunchArgv', () => {
     try {
       const harness = path.join(dir, 'harness.cjs');
       fs.writeFileSync(harness, 'process.stdout.write(JSON.stringify(process.execArgv));');
-      const res = spawnSync(process.execPath, buildRelaunchArgv(harness, []), { encoding: 'utf8' });
+      const res = spawnSync(process.execPath, buildRelaunchArgv(harness, []), { encoding: 'utf8', windowsHide: true });
       expect(res.status, res.stderr).toBe(0);
       expect(JSON.parse(res.stdout)).toContain('--liftoff-only');
     } finally {

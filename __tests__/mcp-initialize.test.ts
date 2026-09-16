@@ -1,3 +1,4 @@
+import { stopProcess } from './process-cleanup';
 /**
  * MCP `initialize` handshake regression tests.
  *
@@ -31,6 +32,7 @@ function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
     // is covered by mcp-daemon.test.ts. Direct mode also avoids leaking a
     // detached daemon from this suite.
     env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
+    windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
 }
 
@@ -107,11 +109,9 @@ describe('MCP initialize handshake (issue #172)', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-init-'));
   });
 
-  afterEach(() => {
-    if (child && !child.killed) {
-      child.kill('SIGKILL');
-      child = null;
-    }
+  afterEach(async () => {
+    await stopProcess(child);
+    child = null;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 

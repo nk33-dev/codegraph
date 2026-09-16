@@ -15,7 +15,7 @@ import * as os from 'os';
 import { getGitChangedFiles } from '../src/extraction/index';
 
 function git(cwd: string, args: string[]): void {
-  execFileSync('git', args, { cwd, stdio: 'pipe' });
+  execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 }
 
 describe('getGitChangedFiles — untracked directories (#1213)', () => {

@@ -46,6 +46,7 @@ function run(args: string[], env: NodeJS.ProcessEnv, cwd: string): string {
     encoding: 'utf-8',
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 }
 

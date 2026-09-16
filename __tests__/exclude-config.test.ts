@@ -107,9 +107,9 @@ describe('exclude behavior — scanDirectory drops excluded paths (#999)', () =>
   });
 
   const gitInit = () => {
-    execFileSync('git', ['init', '-q'], { cwd: dir });
-    execFileSync('git', ['add', '-A'], { cwd: dir });
-    execFileSync('git', ['-c', 'user.email=a@b.c', '-c', 'user.name=t', 'commit', '-qm', 'x'], { cwd: dir });
+    execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
+    execFileSync('git', ['add', '-A'], { cwd: dir, windowsHide: true });
+    execFileSync('git', ['-c', 'user.email=a@b.c', '-c', 'user.name=t', 'commit', '-qm', 'x'], { cwd: dir, windowsHide: true });
   };
 
   it('keeps a TRACKED excluded dir out of the index (git path) — the core fix', () => {

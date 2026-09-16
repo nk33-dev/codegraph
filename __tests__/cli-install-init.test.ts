@@ -39,6 +39,7 @@ function runCodegraph(args: string[], cwd: string): RunResult {
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120_000,
+      windowsHide: true,
     });
     return { status: 0, stdout, stderr: '' };
   } catch (err) {

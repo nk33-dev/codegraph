@@ -49,6 +49,7 @@ function runCli(args: string[], cwd: string): { stdout: string; status: number }
         CODEGRAPH_TELEMETRY: '0',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     return { stdout, status: 0 };
   } catch (err: unknown) {

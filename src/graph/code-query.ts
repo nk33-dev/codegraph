@@ -608,4 +608,3 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
   }
   return result;
 }
-

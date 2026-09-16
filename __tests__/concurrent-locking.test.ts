@@ -16,6 +16,7 @@ import * as os from 'os';
 import CodeGraph from '../src';
 import { ToolHandler } from '../src/mcp/tools';
 import { DatabaseConnection } from '../src/db';
+import { expectWithinBudget } from './perf-utils';
 
 /** Normalize a PRAGMA read across return shapes (array | object | scalar). */
 function pragmaValue(raw: unknown, key: string): unknown {
@@ -80,7 +81,7 @@ describe('issue #238 — WAL lets a reader proceed during a writer', () => {
       const row = reader.getDb().prepare('SELECT COUNT(*) AS c FROM nodes').get() as { c: number };
       const waited = Date.now() - t0;
       expect(row.c).toBe(0);
-      expect(waited).toBeLessThan(1000); // proceeds immediately, no busy wait
+      expectWithinBudget(waited, 1000, 'WAL 下第二个连接在写锁持有期间立即可读（不忙等）'); // proceeds immediately, no busy wait
     } finally {
       try { writer.getDb().prepare('COMMIT').run(); } catch { /* ignore */ }
       reader.close();

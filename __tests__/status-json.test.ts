@@ -25,6 +25,7 @@ function runStatusJson(cwd: string): Record<string, unknown> {
     encoding: 'utf-8',
     env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
   // JSON mode prints exactly one line to stdout; be defensive about any stray
   // leading output by parsing the last non-empty line.

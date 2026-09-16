@@ -70,12 +70,15 @@ describe('FileWatcher', () => {
     fs.writeFileSync(path.join(srcDir, 'index.ts'), 'export const x = 1;');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __setFsWatchForTests(null); // reset the injected fs.watch seam
     vi.restoreAllMocks();
-    if (fs.existsSync(testDir)) {
-      fs.rmSync(testDir, { recursive: true, force: true });
-    }
+    await fs.promises.rm(testDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 50,
+    });
   });
 
   describe('start/stop lifecycle', () => {
@@ -612,7 +615,7 @@ describe('FileWatcher', () => {
       const { execFileSync } = await import('child_process');
       // Re-init the testDir as a real git repo so buildScopeIgnore can read
       // .git/info/exclude (createTempDir fixtures are usually plain dirs).
-      execFileSync('git', ['init', '-q'], { cwd: testDir, stdio: 'pipe' });
+      execFileSync('git', ['init', '-q'], { cwd: testDir, stdio: 'pipe', windowsHide: true });
       fs.mkdirSync(path.join(testDir, '.claude', 'worktrees', 'w1', 'src'), { recursive: true });
       fs.writeFileSync(
         path.join(testDir, '.claude', 'worktrees', 'w1', 'src', 'x.ts'),

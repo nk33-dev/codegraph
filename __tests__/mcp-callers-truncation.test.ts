@@ -35,7 +35,7 @@ beforeAll(async () => {
       Array.from({ length: CALLERS }, (_, i) => `export function caller${i}(): number { return warm(${i}); }`).join('\n') +
       '\n'
   );
-  // `hot` shares its name with its file, so the answer groups per definition.
+  // 两个独立模块各自定义 hot，验证真正的同名符号分组。
   fs.writeFileSync(path.join(tmpDir, 'src', 'hot.ts'), 'export function hot(n: number): number { return n; }\n');
   fs.writeFileSync(
     path.join(tmpDir, 'src', 'hot-callers.ts'),
@@ -43,6 +43,8 @@ beforeAll(async () => {
       Array.from({ length: CALLERS }, (_, i) => `export function hotCaller${i}(): number { return hot(${i}); }`).join('\n') +
       '\n'
   );
+  fs.writeFileSync(path.join(tmpDir, 'src', 'other.ts'), 'export function hot(n: number): number { return n + 1; }\n');
+  fs.writeFileSync(path.join(tmpDir, 'src', 'other-callers.ts'), "import { hot } from './other';\nexport function otherCaller() { return hot(1); }\n");
   fs.writeFileSync(
     path.join(tmpDir, 'src', 'fan.ts'),
     Array.from({ length: CALLERS }, (_, i) => `export function helper${i}(): number { return ${i}; }`).join('\n') +

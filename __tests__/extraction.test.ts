@@ -7772,12 +7772,12 @@ describe('Nested .gitignore node_modules exclusion (#1567)', () => {
 
   function initGitRepo(): void {
     const { execFileSync } = require('child_process') as typeof import('child_process');
-    execFileSync('git', ['init'], { cwd: tempDir, stdio: 'ignore' });
-    execFileSync('git', ['add', '-A'], { cwd: tempDir, stdio: 'ignore' });
+    execFileSync('git', ['init'], { cwd: tempDir, stdio: 'ignore', windowsHide: true });
+    execFileSync('git', ['add', '-A'], { cwd: tempDir, stdio: 'ignore', windowsHide: true });
     execFileSync(
       'git',
       ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'init'],
-      { cwd: tempDir, stdio: 'ignore' },
+      { cwd: tempDir, stdio: 'ignore', windowsHide: true },
     );
   }
 
@@ -7857,7 +7857,7 @@ describe('Git Submodules', () => {
   it('should index files inside git submodules (issue #147)', async () => {
     const { execFileSync } = await import('child_process');
     const git = (cwd: string, ...args: string[]) =>
-      execFileSync('git', args, { cwd, stdio: 'pipe' });
+      execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     // Build a separate "library" repo to use as a submodule source.
     const libDir = path.join(tempDir, '_lib');
@@ -7883,7 +7883,7 @@ describe('Git Submodules', () => {
     execFileSync(
       'git',
       ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', libDir, 'libs/lib'],
-      { cwd: mainDir, stdio: 'pipe' }
+      { cwd: mainDir, stdio: 'pipe', windowsHide: true }
     );
     git(mainDir, 'commit', '-q', '-m', 'add submodule');
 
@@ -7899,7 +7899,7 @@ describe('Nested gitlink repos (#1031, #1033)', () => {
   // Helper: make a self-contained git repo at `dir` with one committed TS file.
   const makeRepo = async (dir: string, base: string) => {
     const { execFileSync } = await import('child_process');
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe', windowsHide: true });
     fs.mkdirSync(dir, { recursive: true });
     git('init', '-q');
     git('config', 'user.email', 'test@test.com');
@@ -7924,7 +7924,7 @@ describe('Nested gitlink repos (#1031, #1033)', () => {
   // and only the super-repo's own files got indexed.
   it('indexes a bare gitlink (git add\'ed embedded repo, no .gitmodules), recursively', async () => {
     const { execFileSync } = await import('child_process');
-    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     const root = path.join(tempDir, 'root');
     await makeRepo(root, 'app');
@@ -7950,7 +7950,7 @@ describe('Nested gitlink repos (#1031, #1033)', () => {
   // (handled by the new pass), and the mixed 160000/100644 modes must parse right.
   it('indexes a gitlink alongside an active submodule', async () => {
     const { execFileSync } = await import('child_process');
-    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     const lib = path.join(tempDir, '_lib');
     await makeRepo(lib, 'lib');
@@ -7959,7 +7959,7 @@ describe('Nested gitlink repos (#1031, #1033)', () => {
     await makeRepo(root, 'app');
 
     // A proper, active submodule.
-    execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'libs/lib'], { cwd: root, stdio: 'pipe' });
+    execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'libs/lib'], { cwd: root, stdio: 'pipe', windowsHide: true });
     git(root, 'commit', '-q', '-m', 'add submodule');
 
     // A bare gitlink in the same repo (under a non-ignored dir name).
@@ -7980,7 +7980,7 @@ describe('Nested gitlink repos (#1031, #1033)', () => {
   // the same dirs (#407), so the two passes agree.
   it('does not index a gitlink under a default-ignored directory (e.g. vendor/)', async () => {
     const { execFileSync } = await import('child_process');
-    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     const root = path.join(tempDir, 'root');
     await makeRepo(root, 'app');
@@ -8005,13 +8005,13 @@ describe('Nested gitlink repos (#1031, #1033)', () => {
 
     const sup = path.join(tempDir, 'super');
     await makeRepo(sup, 'app');
-    execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'libs/lib'], { cwd: sup, stdio: 'pipe' });
-    execFileSync('git', ['commit', '-q', '-m', 'add submodule'], { cwd: sup, stdio: 'pipe' });
+    execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'libs/lib'], { cwd: sup, stdio: 'pipe', windowsHide: true });
+    execFileSync('git', ['commit', '-q', '-m', 'add submodule'], { cwd: sup, stdio: 'pipe', windowsHide: true });
 
     // Clone the super-repo WITHOUT --recurse-submodules → libs/lib is an empty
     // gitlink dir (mode 160000, no `.git` inside, no files).
     const clone = path.join(tempDir, 'clone');
-    execFileSync('git', ['clone', '-q', sup, clone], { stdio: 'pipe' });
+    execFileSync('git', ['clone', '-q', sup, clone], { stdio: 'pipe', windowsHide: true });
     expect(fs.readdirSync(path.join(clone, 'libs', 'lib'))).toHaveLength(0);
 
     const files = scanDirectory(clone);
@@ -8028,7 +8028,7 @@ describe('Nested gitlink repos (#1031, #1033)', () => {
   // re-include only via `codegraph.json` `includeIgnored`.
   it('does not index a gitlink under a gitignored directory by default (#1065)', async () => {
     const { execFileSync } = await import('child_process');
-    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     const root = path.join(tempDir, 'root');
     await makeRepo(root, 'app');
@@ -8052,7 +8052,7 @@ describe('Nested gitlink repos (#1031, #1033)', () => {
 
   it('re-includes a gitignored gitlink when codegraph.json includeIgnored opts in (#1065)', async () => {
     const { execFileSync } = await import('child_process');
-    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     const root = path.join(tempDir, 'root');
     await makeRepo(root, 'app');
@@ -8084,7 +8084,7 @@ describe('Nested non-submodule git repos', () => {
   it('should index files in embedded git repos run from a git super-repo (issue #193)', async () => {
     const { execFileSync } = await import('child_process');
     const git = (cwd: string, ...args: string[]) =>
-      execFileSync('git', args, { cwd, stdio: 'pipe' });
+      execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     // Top-level workspace is itself a git repo, holding no source directly —
     // the CMake "super-repo" layout from the issue.
@@ -8121,7 +8121,7 @@ describe('Nested non-submodule git repos', () => {
   it('should respect each embedded repo\'s own .gitignore', async () => {
     const { execFileSync } = await import('child_process');
     const git = (cwd: string, ...args: string[]) =>
-      execFileSync('git', args, { cwd, stdio: 'pipe' });
+      execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     const root = path.join(tempDir, 'root');
     fs.mkdirSync(root, { recursive: true });
@@ -8191,7 +8191,7 @@ describe('Nested non-submodule git repos', () => {
   it('buildDefaultIgnore honors .git/info/exclude (#1728)', async () => {
     const { execFileSync } = await import('child_process');
     const git = (cwd: string, ...args: string[]) =>
-      execFileSync('git', args, { cwd, stdio: 'pipe' });
+      execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     const root = path.join(tempDir, 'exclude-root');
     fs.mkdirSync(root, { recursive: true });
@@ -8223,7 +8223,7 @@ describe('Nested non-submodule git repos', () => {
   it('buildDefaultIgnore honors core.excludesFile (#1728)', async () => {
     const { execFileSync } = await import('child_process');
     const git = (cwd: string, ...args: string[]) =>
-      execFileSync('git', args, { cwd, stdio: 'pipe' });
+      execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     const root = path.join(tempDir, 'excludesfile-root');
     fs.mkdirSync(root, { recursive: true });
@@ -8244,7 +8244,7 @@ describe('Nested non-submodule git repos', () => {
   it('buildScopeIgnore prunes dirs ignored only by a nested .gitignore (#1728)', async () => {
     const { execFileSync } = await import('child_process');
     const git = (cwd: string, ...args: string[]) =>
-      execFileSync('git', args, { cwd, stdio: 'pipe' });
+      execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 
     const root = path.join(tempDir, 'nested-gi-root');
     fs.mkdirSync(path.join(root, 'pkg', 'build'), { recursive: true });
@@ -12739,7 +12739,7 @@ describe('Unsupported-language projects report what they skipped (#1502)', () =>
 
   it('counts files it could not index, by extension, on the git path', async () => {
     const runGit = (...args: string[]) =>
-      execFileSync('git', args, { cwd: tempDir, stdio: 'pipe' });
+      execFileSync('git', args, { cwd: tempDir, stdio: 'pipe', windowsHide: true });
     fs.mkdirSync(tempDir, { recursive: true });
     runGit('init', '-q');
     runGit('config', 'user.email', 'test@test.com');

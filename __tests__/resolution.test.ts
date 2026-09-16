@@ -21,6 +21,10 @@ import { DatabaseConnection } from '../src/db';
 describe('Resolution Module', () => {
   let tempDir: string;
   let cg: CodeGraph;
+  const connections: DatabaseConnection[] = [];
+  const closeConnections = () => {
+    for (const db of connections.splice(0)) db.close();
+  };
 
   beforeEach(() => {
     // Create temp directory
@@ -28,6 +32,7 @@ describe('Resolution Module', () => {
   });
 
   afterEach(() => {
+    closeConnections();
     // Clean up
     if (cg) {
       cg.destroy();
@@ -3813,6 +3818,7 @@ int run() {
         // `include/utils.h` file node — not a floating `import` node
         // living inside main.cpp.
         const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        connections.push(db);
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -3832,6 +3838,8 @@ int run() {
         );
         expect(stdlibFile).toBeUndefined();
       } finally {
+        closeConnections();
+        cg?.close();
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
@@ -3859,6 +3867,7 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
       );
       cg = await CodeGraph.init(tempDir, { index: true });
       const db = DatabaseConnection.open(path.join(tempDir, '.codegraph', 'codegraph.db'));
+        connections.push(db);
       const edges = db
         .getDb()
         .prepare(
@@ -3922,6 +3931,7 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
         // to the real src/lib.php file node — a file→file `imports` edge, so
         // callers(lib.php) now includes page.php.
         const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        connections.push(db);
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -3936,6 +3946,8 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
         );
         expect(resolved, 'page.php → src/lib.php imports edge missing').toBeDefined();
       } finally {
+        closeConnections();
+        cg?.close();
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
@@ -3956,6 +3968,7 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
         cg = await CodeGraph.init(tempProject, { index: true });
 
         const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        connections.push(db);
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -3970,6 +3983,8 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
           'index.php → inc/db.php imports edge missing'
         ).toBeDefined();
       } finally {
+        closeConnections();
+        cg?.close();
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
@@ -3995,6 +4010,7 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
         cg = await CodeGraph.init(tempProject, { index: true });
 
         const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        connections.push(db);
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -4009,6 +4025,8 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
           'app/page.php must NOT mis-connect to unrelated lib/inc/db.php'
         ).toBeUndefined();
       } finally {
+        closeConnections();
+        cg?.close();
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
@@ -5729,6 +5747,10 @@ in
     // name through `declare global` while exporting nothing of its own.
     let tmpDir: string;
     let cg: CodeGraph;
+  const connections: DatabaseConnection[] = [];
+  const closeConnections = () => {
+    for (const db of connections.splice(0)) db.close();
+  };
 
     afterEach(() => {
       cg?.close();

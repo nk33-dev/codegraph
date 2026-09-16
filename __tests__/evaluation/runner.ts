@@ -21,7 +21,7 @@ if (!fs.existsSync(path.join(resolvedPath, '.codegraph', 'codegraph.db'))) {
 
 let codegraphSha = 'unknown';
 try {
-  codegraphSha = execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim();
+  codegraphSha = execSync('git rev-parse --short HEAD', { encoding: 'utf-8', windowsHide: true }).trim();
 } catch {}
 
 console.log(`\nCodeGraph Eval — ${path.basename(resolvedPath)}`);

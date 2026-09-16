@@ -1,3 +1,6 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { stopProcess } from './process-cleanup';
 /**
  * Project writer lock (#1740) — unit coverage for acquire / re-entrant /
  * stale-dead-pid / live-holder refusal.
@@ -51,24 +54,28 @@ describe('writer lock (#1740)', () => {
     releaseWriterLock(root);
   });
 
-  it('reports taken when a live foreign pid holds the lock', () => {
+  it('reports taken when a live foreign pid holds the lock', async () => {
     const root = makeProject();
-    // Use our own pid first, then overwrite with a fake live-looking pid by
-    // writing a pid that is alive: process.pid of this test — simulate foreign
-    // by writing a different alive pid. On Linux, PID 1 is almost always alive.
-    fs.writeFileSync(
-      getWriterPidPath(root),
-      JSON.stringify({ pid: 1, mode: 'direct', startedAt: Date.now() }) + '\n',
-      { flag: 'wx' },
-    );
-    const r = tryAcquireWriterLock(root, 'direct');
-    expect(r.kind).toBe('taken');
-    if (r.kind === 'taken') {
-      expect(r.existing?.pid).toBe(1);
-      const msg = writerLockHeldMessage(r.existing, r.pidPath);
-      expect(msg).toMatch(/writer lock held/i);
-      expect(msg).toMatch(/CODEGRAPH_NO_DAEMON/);
-      expect(msg).toMatch(/daemon stop/);
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+    try {
+      await once(holder, 'spawn');
+      expect(holder.pid).toBeDefined();
+      fs.writeFileSync(
+        getWriterPidPath(root),
+        JSON.stringify({ pid: holder.pid, mode: 'direct', startedAt: Date.now() }) + '\n',
+        { flag: 'wx' },
+      );
+      const r = tryAcquireWriterLock(root, 'direct');
+      expect(r.kind).toBe('taken');
+      if (r.kind === 'taken') {
+        expect(r.existing?.pid).toBe(holder.pid);
+        const msg = writerLockHeldMessage(r.existing, r.pidPath);
+        expect(msg).toMatch(/writer lock held/i);
+        expect(msg).toMatch(/CODEGRAPH_NO_DAEMON/);
+        expect(msg).toMatch(/daemon stop/);
+      }
+    } finally {
+      await stopProcess(holder);
     }
   });
 

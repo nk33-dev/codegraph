@@ -526,6 +526,10 @@ function tGraph(nodes: Node[], edges: Edge[]): GraphTraverser {
       }
       return m;
     },
+    getOutgoingEdgesFrom: (sources: readonly string[], kinds?: string[]) =>
+      edges.filter((e) => sources.includes(e.source) && (!kinds || kinds.includes(e.kind))),
+    getIncomingEdgesTo: (targets: readonly string[], kinds?: string[]) =>
+      edges.filter((e) => targets.includes(e.target) && (!kinds || kinds.includes(e.kind))),
     getOutgoingEdges: (source: string, kinds?: string[]) =>
       edges.filter((e) => e.source === source && (!kinds || kinds.includes(e.kind))),
     getIncomingEdges: (target: string, kinds?: string[]) =>
@@ -612,4 +616,18 @@ describe('Traversal edge-completeness & limits (#1086–#1090)', () => {
     // The regression: this direct dependency edge used to vanish.
     expect(sub.edges.some((e) => e.source === 'Q' && e.target === 'P' && e.kind === 'calls')).toBe(true);
   });
+  it('影响范围按最短依赖深度展开，不因先遇到长路径而漏节点', () => {
+    const nodes = ['root', 'long', 'join', 'caller'].map((id) => tNode(id));
+    const edges: Edge[] = [
+      { source: 'long', target: 'root', kind: 'calls' },
+      { source: 'join', target: 'long', kind: 'calls' },
+      { source: 'join', target: 'root', kind: 'calls' },
+      { source: 'caller', target: 'join', kind: 'calls' },
+    ];
+    const graph = tGraph(nodes, edges);
+    expect([...graph.getImpactRadius('root', 2).nodes.keys()].sort()).toEqual(['caller', 'join', 'long', 'root']);
+    expect(graph.getImpactRadius('root', 1).nodes.has('caller')).toBe(false);
+    expect([...graph.getImpactRadius('root', 0).nodes.keys()]).toEqual(['root']);
+  });
+
 });

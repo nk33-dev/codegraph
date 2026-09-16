@@ -202,6 +202,10 @@ describe('Incremental sync converges to a full rebuild (CG-33)', () => {
    * The realistic case the issue was filed from: many edits driven through sync
    * one after another, the way a watcher or a `git pull` applies them. Drift
    * accumulated across syncs, so a single-edit test would not have caught it.
+   *
+   * 阶段一（资源治理）补充：这是整个文件里最重的一条，串行实测已接近默认的
+   * 5 秒超时（本机 4.9 秒），并发全量测试时会被机器负载直接判失败——那测的是
+   * 机器有多忙，不是同步有没有收敛。给它一个显式超时，让失败只反映真实回归。
    */
   it('stays converged across a sequence of adds, edits, renames and deletes', async () => {
     write('src/caller.ts', `export function run(): number {\n  return pct(1) + fmt(2) + collect(3);\n}\n`);
@@ -245,7 +249,7 @@ describe('Incremental sync converges to a full rebuild (CG-33)', () => {
     expect(synced.size).toBeGreaterThan(0);
     const rebuilt = await rebuildEdgeSet();
     expect(describeDiff(synced, rebuilt)).toBe('missing from synced: 0, stale in synced: 0');
-  });
+  }, 30_000);
 
   /**
    * The rebind pass DELETES an edge and re-inserts the reference behind it, so

@@ -32,6 +32,7 @@ import {
   exploreProjectKey,
   rangesCover,
   readExploreSessionView,
+  servedEvidenceKeys,
   viewForProject,
   type ExploreEmission,
 } from '../src/mcp/explore-session-state';
@@ -77,6 +78,33 @@ describe('ExploreSessionState — the container', () => {
     state.record(emission('/repo/a/./'));
     expect(state.callCount('/repo/a')).toBe(3);
     expect(state.snapshot()).toHaveLength(1);
+  });
+
+  it('记录并有界保存跨轮证据 ID', () => {
+    const state = new ExploreSessionState();
+    state.record(emission('/repo/a', {
+      evidenceKeys: [
+        'static:a:b',
+        'static:a:b',
+        ...Array.from({ length: EXPLORE_SESSION_LIMITS.MAX_EVIDENCE_KEYS_PER_CALL + 10 }, (_, i) => `e:${i}`),
+      ],
+    }));
+    const project = state.forProject('/repo/a')!;
+    expect(project.calls[0]!.evidenceKeys).toHaveLength(EXPLORE_SESSION_LIMITS.MAX_EVIDENCE_KEYS_PER_CALL);
+    expect(servedEvidenceKeys(project).has('static:a:b')).toBe(true);
+  });
+
+  it('按字节预算淘汰调用明细但保留累计计数', () => {
+    const state = new ExploreSessionState(1024);
+    for (let i = 0; i < 8; i++) {
+      state.record(emission('/repo/a', {
+        query: `q-${i}-${'x'.repeat(400)}`,
+        evidenceKeys: [`evidence-${i}-${'y'.repeat(200)}`],
+      }));
+    }
+    const project = state.forProject('/repo/a')!;
+    expect(project.callCount).toBe(8);
+    expect(project.calls.length).toBeLessThan(8);
   });
 
   it('never reports a project it was never told about', () => {

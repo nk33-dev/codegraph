@@ -26,7 +26,7 @@ import CodeGraph from '../src/index';
 import { ToolHandler } from '../src/mcp/tools';
 
 function git(cwd: string, ...args: string[]): void {
-  execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'ignore'] });
+  execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true });
 }
 
 /** realpath so macOS /var → /private/var symlinking doesn't break equality. */
@@ -302,7 +302,7 @@ describe('detectWorktreeIndexMismatch — nested repos covered by the parent ind
     execFileSync(
       'git',
       ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subSource, name],
-      { cwd: parent, stdio: ['ignore', 'ignore', 'ignore'] },
+      { cwd: parent, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true },
     );
     git(parent, 'commit', '-q', '-m', 'add submodule');
     return path.join(parent, name);

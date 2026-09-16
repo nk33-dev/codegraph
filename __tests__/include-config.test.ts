@@ -123,9 +123,9 @@ describe('include behavior — scanDirectory force-indexes gitignored source', (
   });
 
   const gitInit = () => {
-    execFileSync('git', ['init', '-q'], { cwd: dir });
-    execFileSync('git', ['add', '-A'], { cwd: dir });
-    execFileSync('git', ['-c', 'user.email=a@b.c', '-c', 'user.name=t', 'commit', '-qm', 'x'], { cwd: dir });
+    execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
+    execFileSync('git', ['add', '-A'], { cwd: dir, windowsHide: true });
+    execFileSync('git', ['-c', 'user.email=a@b.c', '-c', 'user.name=t', 'commit', '-qm', 'x'], { cwd: dir, windowsHide: true });
   };
 
   it('indexes a .gitignored source dir when include opts it in (git path) — the core fix', () => {
@@ -233,7 +233,7 @@ describe('include scope — buildScopeIgnore keeps included paths watchable', ()
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-include-scope-'));
     clearProjectConfigCache();
-    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
     fs.writeFileSync(path.join(dir, '.gitignore'), 'Tools/\nOther/\n');
     fs.writeFileSync(path.join(dir, 'codegraph.json'), JSON.stringify({ include: ['Tools/'] }));
   });

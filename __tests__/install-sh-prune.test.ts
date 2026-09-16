@@ -44,7 +44,7 @@ function shq(s: string): string {
 /** Run the real prune block with INSTALL_DIR/dest set, return code + stdout. */
 function runPrune(installDir: string, dest: string): { code: number; stdout: string } {
   const script = `set -eu\nINSTALL_DIR=${shq(installDir)}\ndest=${shq(dest)}\n${extractPruneBlock()}\n`;
-  const r = spawnSync('sh', ['-c', script], { encoding: 'utf8' });
+  const r = spawnSync('sh', ['-c', script], { encoding: 'utf8', windowsHide: true });
   return { code: r.status ?? -1, stdout: r.stdout ?? '' };
 }
 
