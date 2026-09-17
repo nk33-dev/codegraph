@@ -1,5 +1,23 @@
 # 个人版开发验证记录
 
+## 2026-09-17：personal.4 发布后 CI 修复
+
+CI `35213690657` 的 Ubuntu/macOS 均为 4 个文件、7 项失败；两平台构建通过，Windows 任务在复核时尚未结束。
+
+- UI 子包和 lockfile 的 workspace 版本遗漏在 personal.3，现与根包 personal.4 保持一致。
+- 精确符号检索不再另设 14K 字符预算，继续沿用仓库规模对应的预算；精确图邻域、调用现场和相关测试优先级保留。
+- 升级提示保留 `codegraph sync` 命令名称，但明确它不能升级旧提取数据，需使用 `codegraph index -f .`。
+- 个人运行入口的旧断言更新为 `codegraph upgrade` 和源码安装保护；固定版本避免访问 GitHub，安装向导使用 `--yes`，并验证重复安装仍提示重启且不破坏其他 MCP 配置。
+
+本地验证：Windows、Node 24.16.0。仅执行 TypeScript 编译与失败文件的定向回归，没有执行全量测试或完整 viewer 构建。
+
+```text
+node node_modules/typescript/bin/tsc
+npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.test.ts __tests__/explore-reservation-invariant.test.ts __tests__/ui-package.test.ts --maxWorkers=1
+```
+
+结果：TypeScript 编译通过，4 个测试文件、90 项全部通过。新提交的三平台 CI 结果需单独确认，personal.4 旧标签和已发布 `.tgz` 不包含这些后续修复。
+
 ## 2026-09-16：阶段一资源治理（档位、自动回收、基线与门禁）
 
 状态：代码已实现；`npm run build`、专项测试与串行性能门禁均通过；全量测试 1 项受本机环境负载影响的偶发失败，详见下文。未提交、推送或发布，未替换全局 CLI，未改版本号。

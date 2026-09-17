@@ -28,6 +28,8 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 
 2026-09-17 的复审与补修见[静态复核记录](release-readiness.md#本轮静态复核)，本批归入 [v1.6.0-personal.4](releases/v1.6.0-personal.4.md)。开发复审未运行测试或构建；发行阶段单独生成安装包，以上历史验证不覆盖本批差异。
 
+发行后 CI `35213690657` 暴露 UI 版本同步、精确检索预算和升级提示契约问题；修复已完成 Windows 本地 4 文件、90 项定向回归，详见[开发验证记录](test-repairs.md)。这些后续修复尚未纳入 personal.4 已发布资产，不改写原标签。
+
 个人扩展通过 `personal` 分支维护；首个 GitHub prerelease 为 `v1.6.0-personal.1`，本批发行版本为 `v1.6.0-personal.4`。向 npm registry 安装上游包不会获得个人改动；个人版按[安装说明](personal-usage.md)从 GitHub Release `.tgz` 或固定标签安装。
 
 ## 计划与维护

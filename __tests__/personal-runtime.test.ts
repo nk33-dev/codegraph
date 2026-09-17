@@ -7,7 +7,7 @@ import * as os from 'os';
 const root = path.resolve(__dirname, '..');
 const cli = path.join(root, 'dist/bin/codegraph.js');
 const run = (args: string[]) => execFileSync(process.execPath, [cli, ...args], {
-  encoding: 'utf8', windowsHide: true,
+  encoding: 'utf8', windowsHide: true, timeout: 15_000,
   env: { ...process.env, CODEGRAPH_TELEMETRY: '0', CODEGRAPH_WASM_RELAUNCHED: '1' },
 });
 
@@ -25,13 +25,16 @@ describe('个人运行入口', () => {
     expect(info).toMatchObject({ distribution: 'personal', packageRoot: root, entry: cli, viewerAvailable: true });
     expect(info.build.buildId).toMatch(/^[a-f0-9]{24}$/);
     expect(info.build).toEqual(JSON.parse(fs.readFileSync(path.join(root, 'dist/build-info.json'), 'utf8')));
-    expect(info.updateCommand).toContain('github:nk33-dev/codegraph#personal');
+    expect(info.updateCommand).toBe('codegraph upgrade');
   });
 
   it('个人版强制升级也不会调用官方安装流程', () => {
-    const output = run(['upgrade', '--force']);
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+    // 固定当前版本，验证源码 checkout 保护时不访问 GitHub 或触发真实安装。
+    const output = run(['upgrade', pkg.version, '--force']);
     expect(output).toContain('github:nk33-dev/codegraph#personal');
-    expect(output).toContain('does not install upstream releases');
+    expect(output).toContain('refusing to replace it with a global package');
+    expect(output).not.toContain('Installing https://');
     expect(output).not.toContain('@colbymchenry/codegraph@latest');
   });
 
@@ -41,15 +44,18 @@ describe('个人运行入口', () => {
     fs.mkdirSync(path.dirname(configPath));
     fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { other: { command: 'keep-me' } } }));
     try {
-      const install = () => execFileSync(process.execPath, [cli, 'install', '--target', 'cursor', '--location', 'local'], {
+      const install = () => execFileSync(process.execPath, [cli, 'install', '--target', 'cursor', '--location', 'local', '--yes'], {
         cwd: directory, encoding: 'utf8', windowsHide: true, timeout: 15_000,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, CODEGRAPH_TELEMETRY: '0', CODEGRAPH_WASM_RELAUNCHED: '1' },
       });
-      expect(install()).toContain('github:nk33-dev/codegraph#personal');
+      const firstOutput = install();
+      expect(firstOutput).toContain('codegraph upgrade');
+      expect(firstOutput).not.toContain('Install the codegraph CLI on your PATH?');
+      expect(firstOutput).toContain('Fully quit and reopen these clients');
       const first = fs.readFileSync(configPath, 'utf8');
       expect(JSON.parse(first).mcpServers).toMatchObject({ other: { command: 'keep-me' }, codegraph: { command: 'codegraph' } });
-      install();
+      expect(install()).toContain('Fully quit and reopen these clients');
       expect(fs.readFileSync(configPath, 'utf8')).toBe(first);
       expect(fs.existsSync(path.join(directory, '.codegraph'))).toBe(false);
     } finally {

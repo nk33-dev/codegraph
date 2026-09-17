@@ -14,6 +14,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- 修复 personal.4 的 UI 子包版本遗漏和精确查询预算回退，更新升级入口回归契约，并明确增量同步不能替代提取版本重建。
 - `v1.6.0-personal.4` 汇总本轮编辑安全、精确检索、关联测试和个人升级修复；发行说明与验证边界见 `docs/person/releases/v1.6.0-personal.4.md`。
 - 修复关联测试展开参数丢失、路径分类依赖遍历顺序，以及局部查询夹带整个工作区变更的问题。
 - 事务回滚保留外部编辑器的新内容，不删除尚未由事务创建的目标；按位置重命名同样检查已知引用覆盖。

@@ -3612,13 +3612,7 @@ export class ToolHandler {
           focusedNode = lookupSymbolNodes(cg, token).nodes[0]!;
           focusedSymbolQuery = true;
           if (args.maxFiles === undefined) maxFiles = Math.min(maxFiles, 4);
-          budget = {
-            ...budget,
-            maxOutputChars: Math.min(budget.maxOutputChars, 14_000),
-            defaultMaxFiles: Math.min(budget.defaultMaxFiles, 4),
-            maxCharsPerFile: Math.min(budget.maxCharsPerFile, 5_000),
-            maxEdgesPerRelationshipKind: Math.min(budget.maxEdgesPerRelationshipKind, 6),
-          };
+          // 通过相关性和文件数量降噪，保留仓库规模对应的源码预算，避免大函数被额外截断。
         }
       }
     }

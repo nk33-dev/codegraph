@@ -208,6 +208,8 @@ describe('version helpers', () => {
     const a = reindexAdvisory();
     expect(a).toContain('codegraph sync');
     expect(a).toContain('codegraph index -f');
+    expect(a).toContain('cannot upgrade extraction data');
+    expect(a).toContain('reindexRecommended');
   });
 
   it('buildWindowsUpgradeScript targets the right asset per arch and renames-not-deletes the exe', () => {
