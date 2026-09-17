@@ -21,6 +21,7 @@ import * as net from 'net';
 import { pathToFileURL } from 'url';
 import { decodeLockInfo, getDaemonPidPath, probeDaemonIdentity } from './daemon-paths';
 import { connectWithHello } from './proxy';
+import { restartSharedDaemon } from './daemon-spawn';
 
 /** The wait limit for one shared query; impact analysis on a large repository can be slow. */
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -53,6 +54,8 @@ export function sharedServiceTimeoutMs(): number {
 export interface SharedDaemonInfo {
   pid: number;
   socketPath: string;
+  /** 锁文件里记录的 daemon 包版本；旧格式锁文件为 'unknown'。 */
+  version: string | null;
 }
 
 /**
@@ -69,7 +72,7 @@ export async function findSharedDaemon(projectRoot: string): Promise<SharedDaemo
   const info = decodeLockInfo(raw);
   if (!info || !info.socketPath) return null;
   if (!(await probeDaemonIdentity(info, PROBE_TIMEOUT_MS))) return null;
-  return { pid: info.pid, socketPath: info.socketPath };
+  return { pid: info.pid, socketPath: info.socketPath, version: info.version };
 }
 
 type JsonRpc = Record<string, unknown>;
@@ -175,11 +178,20 @@ export interface SharedToolResult {
 export type SharedAtMostOnceResult =
   | { state: 'unavailable' }
   | { state: 'completed'; call: SharedToolResult }
-  | { state: 'uncertain'; daemonPid: number };
+  | { state: 'uncertain'; daemonPid: number }
+  /**
+   * 找到的 daemon 是别的版本。此状态可证明本次 tools/call 从未送达，因此调用方可以安全地
+   * 退回本进程执行；`switched` 表示旧进程已被请走并换成了当前版本。
+   */
+  | { state: 'version-mismatch'; daemonPid: number; daemonVersion: string | null; switched: boolean };
 
 /**
  * 写操作只尝试一次：发现活动 daemon 后若拿不到确认，调用方不得在本进程重放。
  * 连接失败时无法可靠判断 tools/call 是否已经送达，因此也按 uncertain 处理。
+ *
+ * 例外是版本不一致（{@link SharedAtMostOnceResult} 的 'version-mismatch'）：那是在 hello
+ * 阶段发现的，tools/call 从未发出，所以调用方可以在本进程安全执行；同时这里已经把旧
+ * 进程换成当前版本，避免每次升级后的第一条命令都重复同一次失败。
  */
 export async function callViaSharedDaemonAtMostOnce(
   projectRoot: string,
@@ -189,10 +201,22 @@ export async function callViaSharedDaemonAtMostOnce(
 ): Promise<SharedAtMostOnceResult> {
   const daemon = await findSharedDaemon(projectRoot);
   if (!daemon) return { state: 'unavailable' };
-  const result = await callOnce(projectRoot, daemon, toolName, args, timeoutMs);
-  return result
-    ? { state: 'completed', call: { result, daemonPid: daemon.pid } }
-    : { state: 'uncertain', daemonPid: daemon.pid };
+  const outcome = await callOnce(daemon, projectRoot, toolName, args, timeoutMs);
+  if (outcome.kind === 'ok') {
+    return { state: 'completed', call: { result: outcome.result, daemonPid: daemon.pid } };
+  }
+  if (outcome.kind === 'version-mismatch') {
+    const restarted = await restartSharedDaemon(projectRoot).catch(() => null);
+    // 写操作交回 CLI 本进程执行，不保留仅用于确认新版已启动的连接。
+    restarted?.socket?.destroy();
+    return {
+      state: 'version-mismatch',
+      daemonPid: daemon.pid,
+      daemonVersion: outcome.version,
+      switched: restarted?.outcome === 'switched',
+    };
+  }
+  return { state: 'uncertain', daemonPid: daemon.pid };
 }
 
 /**
@@ -204,6 +228,10 @@ export async function callViaSharedDaemonAtMostOnce(
  * taken as "no service", the caller would start an extra language server — exactly the waste this phase
  * set out to eliminate. With **no** daemon there is **no retry**: the pidfile does not even exist, so
  * waiting again would only add latency to every command.
+ *
+ * 版本不一致（典型的“装完新版、旧 daemon 还在跑”）不再直接退回进程内：先把旧进程请走并启动
+ * 本版，再对同一个只读调用重试一次。只读调用重放是安全的，所以这条路径可以直接完成切换，
+ * 让用户不必手工 `codegraph daemon` 停旧进程。
  */
 export async function callViaSharedDaemon(
   projectRoot: string,
@@ -215,28 +243,55 @@ export async function callViaSharedDaemon(
   if (!daemon) return null;
 
   for (let attempt = 0; ; attempt += 1) {
-    const call = await callOnce(projectRoot, daemon, toolName, args, timeoutMs);
-    if (call) return { result: call, daemonPid: daemon.pid };
+    const outcome = await callOnce(daemon, projectRoot, toolName, args, timeoutMs);
+    if (outcome.kind === 'ok') return { result: outcome.result, daemonPid: daemon.pid };
+    if (outcome.kind === 'version-mismatch' && attempt === 0) {
+      const restarted = await restartSharedDaemon(projectRoot).catch(() => null);
+      if (restarted?.outcome === 'switched' && restarted.socket) {
+        const result = await callOnSocket(restarted.socket, projectRoot, toolName, args, timeoutMs);
+        if (result) return { result, daemonPid: restarted.pid ?? daemon.pid };
+      }
+      return null;
+    }
     if (attempt >= ATTACH_RETRIES) return null;
     await new Promise((resolve) => setTimeout(resolve, ATTACH_RETRY_DELAY_MS));
   }
 }
 
-/** Connect once and make the call; any failure returns null (including protocol errors and timeouts). */
+/** 一次连接的三种结局；'version-mismatch' 是唯一可以证明 tools/call 从未送达的失败。 */
+type SharedCallOutcome =
+  | { kind: 'ok'; result: Record<string, unknown> }
+  | { kind: 'unavailable' }
+  | { kind: 'version-mismatch'; version: string | null };
+
+/** Connect once and make the call; any failure is reported as an outcome (never thrown). */
 async function callOnce(
-  projectRoot: string,
   daemon: SharedDaemonInfo,
+  projectRoot: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<SharedCallOutcome> {
+  const socket = await connectWithHello(daemon.socketPath).catch(() => null);
+  // 版本不一致是确定的结论（有 daemon，但协议对不上）；跨版本跑同一协议比退回本进程危险得多。
+  if (socket === 'version-mismatch') return { kind: 'version-mismatch', version: daemon.version };
+  if (!socket || socket.destroyed) {
+    if (socket) socket.destroy();
+    return { kind: 'unavailable' };
+  }
+
+  const result = await callOnSocket(socket, projectRoot, toolName, args, timeoutMs);
+  return result ? { kind: 'ok', result } : { kind: 'unavailable' };
+}
+
+/** 在一个已握手的连接上跑一次 initialize + tools/call；失败返回 null（协议错误与超时都算）。 */
+async function callOnSocket(
+  socket: net.Socket,
+  projectRoot: string,
   toolName: string,
   args: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<Record<string, unknown> | null> {
-  const socket = await connectWithHello(daemon.socketPath).catch(() => null);
-  // 'version-mismatch' also counts as "unavailable": running the same protocol across versions is far riskier than falling back to this process.
-  if (!socket || socket === 'version-mismatch' || socket.destroyed) {
-    if (socket && socket !== 'version-mismatch') socket.destroy();
-    return null;
-  }
-
   const client = new LineClient(socket);
   try {
     await client.request('initialize', {

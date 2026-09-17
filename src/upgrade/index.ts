@@ -361,7 +361,7 @@ export function reindexAdvisory(): string {
     c.dim('Your existing project indexes keep working, but were built by the previous version.'),
     c.dim('`codegraph sync` updates changed files but cannot upgrade extraction data already on disk.'),
     c.dim('When `codegraph status` reports reindexRecommended, rebuild that project once:'),
-    `  ${c.cyan('codegraph index -f .')}  ${c.dim('# full extraction rebuild')}`,
+    `  ${c.cyan('codegraph sync --upgrade-index')}  ${c.dim('# rebuild for this engine (prints a time/disk estimate, asks first; add --yes to skip)')}`,
     c.dim('(`codegraph status` flags any index that predates the engine you’re running.)'),
   ].join('\n');
 }

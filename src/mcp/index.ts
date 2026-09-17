@@ -36,7 +36,6 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn, StdioOptions } from 'child_process';
 import { resolveServerRoot, getCodeGraphDir } from '../directory';
 import { StdioTransport } from './transport';
 import { MCPEngine } from './engine';
@@ -47,9 +46,15 @@ import {
   isProcessAlive,
   tryAcquireDaemonLock,
 } from './daemon';
-import { connectWithHello, runLocalHandshakeProxy } from './proxy';
+import { runLocalHandshakeProxy } from './proxy';
+import {
+  DAEMON_INTERNAL_ENV,
+  restartSharedDaemon,
+  spawnDetachedDaemon,
+  waitForDaemonSocket,
+} from './daemon-spawn';
 import { releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
-import { getDaemonSocketCandidates, probeDaemonIdentity } from './daemon-paths';
+import { probeDaemonIdentity } from './daemon-paths';
 import { getTelemetry } from '../telemetry';
 import { checkForUpdateInBackground } from '../upgrade/update-check';
 import { EARLY_PPID } from './early-ppid';
@@ -60,14 +65,6 @@ import { treatStdinFailureAsShutdown } from './stdin-teardown';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
 
 /**
- * Env var that marks a process as the *detached daemon* itself (set by
- * {@link spawnDetachedDaemon} when it re-invokes the CLI). Without it a
- * `serve --mcp` invocation is a launcher that connects-or-spawns; with it, the
- * process IS the daemon and must never try to spawn another (infinite spawn).
- */
-const DAEMON_INTERNAL_ENV = 'CODEGRAPH_DAEMON_INTERNAL';
-
-/**
  * Retries for the detached daemon arbitrating the O_EXCL lock against a racing
  * sibling. Tiny — the lock resolves on the first round in practice; the retries
  * only cover clearing a genuinely stale (dead-pid) lockfile.
@@ -75,21 +72,10 @@ const DAEMON_INTERNAL_ENV = 'CODEGRAPH_DAEMON_INTERNAL';
 const TAKEOVER_MAX_RETRIES = 5;
 const TAKEOVER_RETRY_DELAY_MS = 100;
 
-/**
- * How long a launcher waits for a freshly-spawned daemon to bind its socket
- * before giving up and running in-process. The daemon binds the socket *before*
- * the (backgrounded) engine/grammar warm-up, so this only needs to cover node
- * process startup. 60 × 100ms = 6s of headroom for a cold/slow box; on the
- * common path the socket appears within a few rounds.
- */
-// Poll finely (25ms) so the proxy attaches the instant the freshly-spawned
-// daemon binds, instead of waiting up to a coarse 100ms after — shaves the
-// cold-start handshake (the window the headless agent races). Same ~6s total
-// give-up budget (240 × 25ms), just finer granularity; socket-connect probes
-// are cheap. Paired with deferring the CodeGraph load (engine.ts) off the bind
-// path, this narrows the "No such tool available" race window.
-const DAEMON_CONNECT_MAX_RETRIES = 240;
-const DAEMON_CONNECT_RETRY_DELAY_MS = 25;
+// The launcher's "wait for a freshly-spawned daemon to bind" budget now lives in
+// ./daemon-spawn.ts (`waitForDaemonSocket`), the single implementation shared by
+// this proxy, the version-switch path and the CLI — so the ~6s give-up window
+// and its 25ms poll cadence are defined once.
 
 /** Whether `CODEGRAPH_NO_DAEMON` was set to a truthy value. */
 function daemonOptOutSet(): boolean {
@@ -169,58 +155,6 @@ function resolveDaemonRoot(explicitPath: string | null): string | null {
   const root = resolveServerRoot(candidate).root;
   if (!root) return null;
   try { return fs.realpathSync(root); } catch { return root; }
-}
-
-/**
- * Spawn the shared daemon as a fully detached background process: its own
- * session/process group (so a SIGHUP/SIGINT to the launcher's terminal can't
- * reach it) with stdio decoupled from the launcher (logs to
- * `.codegraph/daemon.log`). Re-invokes the *same* CLI faithfully across dev and
- * bundled launches by reusing `process.argv[0]` (the right node), the current
- * `process.execArgv` (carries `--liftoff-only`, so the daemon never re-execs)
- * and `process.argv[1]` (this script). The spawned process self-arbitrates the
- * O_EXCL lock, so racing launchers may each spawn one — losers exit and every
- * launcher proxies through the single winner.
- */
-function spawnDetachedDaemon(root: string): void {
-  const scriptPath = process.argv[1];
-  if (!scriptPath) {
-    // No resolvable CLI entry point to re-invoke — let the caller fall back to
-    // direct mode rather than spawn something broken.
-    throw new Error('cannot resolve CLI script path to spawn the daemon');
-  }
-
-  let logFd: number | null = null;
-  let stdio: StdioOptions = 'ignore';
-  try {
-    logFd = fs.openSync(path.join(getCodeGraphDir(root), 'daemon.log'), 'a');
-    stdio = ['ignore', logFd, logFd];
-  } catch {
-    stdio = 'ignore'; // no log file — discard daemon output rather than fail
-  }
-  try {
-    // The daemon has no host: scrub the threaded host pid so it can't leak
-    // into the daemon's env (and from there into anything the daemon spawns),
-    // where a long-dead session's host pid would trigger spurious shutdowns.
-    const env: NodeJS.ProcessEnv = { ...process.env, [DAEMON_INTERNAL_ENV]: '1' };
-    delete env[HOST_PPID_ENV];
-    const child = spawn(
-      process.execPath,
-      [...process.execArgv, scriptPath, 'serve', '--mcp', '--path', root],
-      {
-        detached: true,
-        stdio,
-        windowsHide: true,
-        env,
-      },
-    );
-    child.unref();
-  } finally {
-    // The child holds its own dup of the log fd now; the launcher doesn't need it.
-    if (logFd !== null) {
-      try { fs.closeSync(logFd); } catch { /* ignore */ }
-    }
-  }
 }
 
 /**
@@ -484,36 +418,32 @@ export class MCPServer {
   private async runProxyWithLocalHandshake(root: string): Promise<void> {
     // The daemon may relocate its socket past an in-project filesystem that can't
     // host one (ExFAT/FAT volumes, WSL2 DrvFs; #997) to the deterministic tmpdir
-    // fallback. We don't read the bound path from the lockfile — both sides walk
+    // fallback. We never read the bound path from the lockfile — both sides walk
     // the SAME ordered candidate list, so we converge on whichever the daemon
-    // bound with zero coordination. The in-project candidate is tried first, so a
-    // normal repo pays nothing extra (it connects on the very first probe).
-    const candidates = getDaemonSocketCandidates(root);
-    const connectAnyCandidate = async (): Promise<Awaited<ReturnType<typeof connectWithHello>>> => {
-      for (const candidate of candidates) {
-        const s = await connectWithHello(candidate);
-        // A wrong-version daemon IS up — definitive; propagate so the caller
-        // serves in-process instead of spawning + polling for 6s. Don't keep
-        // probing fallbacks past it.
-        if (s === 'version-mismatch') return s;
-        if (s) return s;
-      }
-      return null;
-    };
+    // bound with zero coordination (waitForDaemonSocket owns that walk).
     const getDaemonSocket = async () => {
       // Fast path: a daemon may already be listening (on either candidate).
-      const probe = await connectAnyCandidate();
-      if (probe === 'version-mismatch') return null; // definitive — serve in-process, don't poll for 6s
-      if (probe) return probe;
+      const probe = await waitForDaemonSocket(root, { attempts: 1, delayMs: 0 });
+      // 注意 `typeof null === 'object'`：没有 daemon 时 probe 是 null，必须显式判断，
+      // 否则会直接 return null 而永远不拉起 daemon（代理整场会话退回进程内）。
+      if (probe !== null && probe !== 'version-mismatch') return probe;
+      if (probe === 'version-mismatch') {
+        // 装完新版后旧 daemon 仍会占着锁与 socket：先请它优雅退出，再启动本版并等它绑定。
+        // 否则这一场会话只能退回进程内，而且每次升级后的第一条命令都会重演同一失败。
+        const switched = await restartSharedDaemon(root);
+        if (switched.outcome === 'switched') return switched.socket;
+        process.stderr.write('[CodeGraph MCP] Shared daemon unavailable; serving this session in-process (degraded).\n');
+        return null;
+      }
       // None reachable — spawn one (detached) and poll for its bind.
       spawnDetachedDaemon(root);
-      for (let attempt = 0; attempt < DAEMON_CONNECT_MAX_RETRIES; attempt++) {
-        await sleep(DAEMON_CONNECT_RETRY_DELAY_MS);
-        const s = await connectAnyCandidate();
-        if (s === 'version-mismatch') return null;
-        if (s) return s;
+      const socket = await waitForDaemonSocket(root);
+      if (socket === 'version-mismatch' || socket === null) {
+        // 另一个版本抢先把 daemon 起来了：不共享它，本会话退回进程内服务。
+        process.stderr.write('[CodeGraph MCP] Shared daemon unavailable; serving this session in-process (degraded).\n');
+        return null;
       }
-      return null; // never bound — the proxy serves this session in-process
+      return socket;
     };
     await runLocalHandshakeProxy({ getDaemonSocket, makeEngine: () => new MCPEngine(), root });
   }

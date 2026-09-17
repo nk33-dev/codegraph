@@ -237,6 +237,50 @@ export async function stopDaemonAt(root: string): Promise<StopResult> {
   return { root, pid, outcome };
 }
 
+export interface RetireDaemonResult {
+  /**
+   * 'stopped'     —— 身份已证明，信号已发出，进程已退出；
+   * 'not-running' —— 记录在，但进程已经不在；
+   * 'no-daemon'   —— 没有锁文件；
+   * 'unverified'  —— 锁文件里的 pid 无法证明是本项目 daemon，拒绝动它。
+   */
+  outcome: 'stopped' | 'not-running' | 'no-daemon' | 'unverified';
+  pid: number | null;
+  version: string | null;
+}
+
+/**
+ * 请本项目当前记录的 daemon 退出（版本切换的第一步）。
+ *
+ * 与 {@link stopDaemonAt} 的区别只是把“为什么没停成”讲清楚，供升级路径决策：
+ * 旧格式锁文件（version 'unknown'、没有 socketPath）和身份证明失败都返回
+ * 'unverified' —— 那种情况下不能拉起新版（锁还占着），也不能瞎发信号。
+ */
+export async function retireStaleDaemon(root: string): Promise<RetireDaemonResult> {
+  let info: DaemonLockInfo | null = null;
+  try {
+    info = decodeLockInfo(fs.readFileSync(getDaemonPidPath(root), 'utf8'));
+  } catch {
+    return { outcome: 'no-daemon', pid: null, version: null };
+  }
+  if (!info) return { outcome: 'no-daemon', pid: null, version: null };
+  const identity = { pid: info.pid, version: info.version, socketPath: info.socketPath, startedAt: info.startedAt };
+  if (!info.socketPath || !isProcessAlive(info.pid) || !(await probeDaemonIdentity(identity))) {
+    // 进程已经不在时顺手清理残留（锁、socket、注册记录），让它不再挡住新版启动。
+    if (!isProcessAlive(info.pid)) {
+      cleanupDaemonArtifacts(root);
+      return { outcome: 'not-running', pid: info.pid, version: info.version };
+    }
+    return { outcome: 'unverified', pid: info.pid, version: info.version };
+  }
+  const stopped = await stopDaemonAt(root);
+  return {
+    outcome: stopped.outcome === 'term' || stopped.outcome === 'kill' ? 'stopped' : 'not-running',
+    pid: info.pid,
+    version: info.version,
+  };
+}
+
 /** Stop every registered, live daemon. */
 export async function stopAllDaemons(): Promise<StopResult[]> {
   const results: StopResult[] = [];

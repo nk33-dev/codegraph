@@ -75,6 +75,8 @@ import { readResourceMetricsSnapshot, resourceMetrics, writeResourceMetricsSnaps
 import { describeResourceProfile, resolveResourceProfile, resolveQueryPoolSizing } from '../resource-profile';
 import { countLiveLspLeases } from '../lsp/lease-registry';
 import type { Node, Edge } from '../types';
+// 只作类型使用：运行时仍通过 loadCodeGraph() 懒加载，保持 CLI 冷启动不变。
+import type CodeGraphInstance from '../index';
 
 // Decided once, before `--color`/`--no-color` are stripped from argv below
 // (#1281). Piped/redirected stdout, NO_COLOR, or --no-color -> plain output.
@@ -953,13 +955,120 @@ program
   });
 
 /**
+ * `codegraph sync --upgrade-index` —— 把索引升级到当前提取版本（个人版）。
+ *
+ * 为什么不是一个提示就够了：以前这里只提醒 “run codegraph index -f .”，大仓库上那是一次
+ * 没有预告、没有确认的完整重建。现在这条命令
+ *   1. 先算清楚范围、文件数、预计耗时与预计峰值磁盘（依据会一起说明）；
+ *   2. 提取规则兼容（受影响语言有登记）时只重新提取那些语言，再补分辨率并如实盖戳；
+ *   3. 范围未知时按完整重建处理，并要求用户确认（非交互运行必须显式 --yes）。
+ */
+async function runIndexUpgrade(
+  projectPath: string,
+  cg: CodeGraphInstance,
+  options: { yes?: boolean; quiet?: boolean },
+): Promise<void> {
+  const { planIndexUpgrade, formatUpgradeBytes, formatUpgradeDuration } = await import('../sync/upgrade-index');
+  const assessment = planIndexUpgrade(cg);
+
+  if (!assessment.needed || !assessment.plan) {
+    if (!options.quiet) info(`The index already uses extraction version ${assessment.current}; nothing to upgrade.`);
+    return;
+  }
+  const plan = assessment.plan;
+  const scopeLabel = plan.scope === 'all'
+    ? `all languages${plan.unrecordedHistory ? ' (the upgrade range is not recorded, so an incremental migration cannot be proven safe)' : ''}`
+    : `only ${plan.scope.join(', ')}`;
+  const lines = [
+    `This index was built with extraction version ${assessment.builtWith ?? 'unknown'} (current: ${assessment.current}).`,
+    `Scope: ${scopeLabel}.`,
+    `Files: ${plan.affectedFiles} of ${plan.totalFiles} indexed file(s)` +
+      (plan.scope === 'all' ? '' : ` (${plan.affectedLanguages.join(', ')})`) + '.',
+    `Estimated time: ~${formatUpgradeDuration(plan.estimatedDurationMs)} (` +
+      (plan.durationBasis === 'baseline'
+        ? 'from this project\'s full-index baseline'
+        : 'per-file heuristic; no full-index baseline recorded yet') + ').',
+    `Estimated peak disk: ~${formatUpgradeBytes(plan.estimatedPeakDiskBytes)} of index data ` +
+      `(+${formatUpgradeBytes(plan.estimatedGrowthBytes)} over the current ${formatUpgradeBytes(plan.currentDbBytes + plan.walBytes)}).`,
+    ...(plan.reasons.length > 0 ? ['Included versions:', ...plan.reasons.map((reason) => `  - ${reason}`)] : []),
+  ].join('\n');
+
+  if (!options.yes) {
+    if (!process.stdout.isTTY || !process.stdin.isTTY || options.quiet) {
+      // 非交互运行（agent / CI / git hook）不允许猜着重建：把计划打出来，要求显式确认。
+      error(lines);
+      error('Re-run with --yes to run this upgrade non-interactively.');
+      process.exit(1);
+    }
+    const clack = await importESM('@clack/prompts');
+    clack.intro('Upgrading the CodeGraph index');
+    clack.log.warn(lines);
+    const confirmed = await clack.confirm({
+      message: plan.scope === 'all'
+        ? `Rebuild all ${plan.affectedFiles} file(s) now?`
+        : `Re-extract ${plan.affectedFiles} file(s) now?`,
+      initialValue: false,
+    });
+    if (clack.isCancel(confirmed) || confirmed !== true) {
+      clack.outro('Cancelled — the index is unchanged.');
+      return;
+    }
+  } else if (!options.quiet) {
+    info(lines);
+  }
+
+  const started = Date.now();
+  if (plan.scope === 'all') {
+    const result = await cg.indexAll();
+    if (!options.quiet) {
+      info(`Rebuilt ${formatNumber(result.filesIndexed)} file(s) in ${formatDuration(result.durationMs)}.`);
+    }
+  } else {
+    const languages = new Set(plan.scope);
+    const paths = cg.getFiles().filter((file) => languages.has(file.language)).map((file) => file.path);
+    const result = await cg.indexFiles(paths);
+    if (!result.success || result.filesErrored > 0) {
+      // 有文件没提取成功时绝不能盖新戳：那会让 status 谎称索引已是当前版本。
+      error(
+        `Re-extraction failed for ${result.filesErrored} file(s); the extraction stamp was left unchanged. ` +
+        'Run "codegraph index -f ." for a full rebuild.',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    // 重新提取之后必须走一次同步：受影响语言之外的文件仍可能引用它们，解析与孤边清理在这里完成。
+    const synced = await cg.sync();
+    if (synced.lockUnavailable) {
+      error('Another CodeGraph process holds the index writer lock; the extraction stamp was left unchanged. Retry after it finishes.');
+      process.exitCode = 1;
+      return;
+    }
+    cg.stampExtractionVersion();
+    if (!options.quiet) {
+      info(`Re-extracted ${formatNumber(result.filesIndexed)} file(s) in ${formatDuration(Date.now() - started)}.`);
+    }
+  }
+
+  if (cg.isIndexStale()) {
+    // 走到这里说明迁移没有真正完成 —— 不能报成功（提取版本戳没跟上或仍有陈旧数据）。
+    error('The index still reports a stale extraction version; run "codegraph index -f ." for a full rebuild.');
+    process.exitCode = 1;
+  } else if (!options.quiet) {
+    info(`Index upgraded to extraction version ${assessment.current} in ${formatDuration(Date.now() - started)}.`);
+  }
+  persistResourceBaseline(projectPath);
+}
+
+/**
  * codegraph sync [path]
  */
 program
   .command('sync [path]')
   .description('Sync changes since last index')
   .option('-q, --quiet', 'Suppress output (for git hooks)')
-  .action(async (pathArg: string | undefined, options: { quiet?: boolean }) => {
+  .option('--upgrade-index', 'Upgrade the index to the current extraction version (prints a time/disk estimate and asks first)')
+  .option('-y, --yes', 'With --upgrade-index: run the upgrade without asking (required when not interactive)')
+  .action(async (pathArg: string | undefined, options: { quiet?: boolean; upgradeIndex?: boolean; yes?: boolean }) => {
     const projectPath = resolveProjectPath(pathArg);
 
     try {
@@ -972,6 +1081,12 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+
+      if (options.upgradeIndex) {
+        await runIndexUpgrade(projectPath, cg, options);
+        cg.destroy();
+        return;
+      }
 
       if (options.quiet) {
         const result = await cg.sync();
@@ -1014,7 +1129,10 @@ program
             `Source changes are synchronized, but this index was built with extraction version ` +
             `${result.builtWithExtractionVersion ?? 'unknown'} (current: ${result.currentExtractionVersion}).`,
           );
-          clack.log.info(`Run \`codegraph index -f .\` from ${projectPath} once to rebuild extracted symbols and relationships.`);
+          clack.log.info(
+            `Run \`codegraph sync --upgrade-index\` from ${projectPath} once to rebuild extracted symbols and relationships ` +
+            `(it prints a time/disk estimate and asks before rebuilding; add --yes for non-interactive runs).`,
+          );
         }
       }
 
@@ -1310,7 +1428,7 @@ program
       if (reindexRecommended) {
         const builtWith = buildInfo.version ? `v${buildInfo.version.replace(/^v/, '')}` : 'an earlier version';
         warn(`Index was built by ${builtWith}; re-index to pick up this engine's improvements.`);
-        info('Run "codegraph index" (full rebuild) or "codegraph sync"');
+        info('Run "codegraph sync --upgrade-index" (prints a time/disk estimate and asks before rebuilding; --yes to skip)');
         console.log();
       }
 
@@ -1557,6 +1675,19 @@ program
         if (shared.state === 'uncertain') {
           throw new Error(
             `the shared daemon (pid ${shared.daemonPid}) did not confirm the edit. Retry with the same --operation-id so the persisted transaction result is replayed instead of writing twice.`,
+          );
+        }
+        if (shared.state === 'version-mismatch') {
+          // 版本不一致是在 hello 握手阶段发现的：这次 tools/call 从未送达，因此在本进程执行
+          // 不会重复写入（at-most-once 语义仍然成立）。同时旧进程已经被请走，下次调用就能
+          // 直接连上新版 daemon —— 用户不必再手工 `codegraph daemon` 停旧进程。
+          warn(
+            `the running daemon (pid ${shared.daemonPid}, v${shared.daemonVersion ?? 'unknown'}) is a different CodeGraph ` +
+            `version than this CLI (v${packageJson.version}); ` +
+            (shared.switched
+              ? `it was stopped and v${packageJson.version} is starting. `
+              : 'it could not be replaced automatically (run "codegraph daemon --restart" to restart it). ') +
+            'This edit runs in this process instead.',
           );
         }
       }
@@ -2112,9 +2243,48 @@ program
   .command('daemon')
   .aliases(['daemons'])
   .description('Manage running CodeGraph background daemons — pick one and press enter to stop it')
-  .action(async () => {
+  .option('-p, --path <path>', 'Project path (defaults to the current project)')
+  .option('--restart', 'Stop the daemon serving this project and start the current version instead')
+  .option('-j, --json', 'With --restart: print the result as JSON')
+  .action(async (options: { path?: string; restart?: boolean; json?: boolean }) => {
     const { listVerifiedDaemons, stopDaemonAt, stopAllDaemons } = await import('../mcp/daemon-registry');
     const { runDaemonPicker } = await import('../mcp/daemon-manager');
+
+    // 一键重启：升级后旧 daemon 仍在跑时的手工出口。自动切换已经覆盖了“客户端发现版本不一致”
+    // 的场景，这条命令留给“我没有客户端在跑，但想把 daemon 换成当前版本”。
+    if (options.restart) {
+      const projectPath = resolveProjectPath(options.path);
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph isn't available here — no .codegraph/ index exists in ${projectPath}.`);
+        process.exit(1);
+      }
+      const { restartSharedDaemon } = await import('../mcp/daemon-spawn');
+      let realRoot = projectPath;
+      try { realRoot = fs.realpathSync(projectPath); } catch { /* keep the resolved path */ }
+      const result = await restartSharedDaemon(realRoot);
+      if (options.json) {
+        console.log(JSON.stringify({
+          outcome: result.outcome,
+          previousPid: result.previousPid,
+          previousVersion: result.previousVersion,
+          pid: result.pid,
+          version: packageJson.version,
+        }));
+      } else if (result.outcome === 'switched') {
+        info(`CodeGraph daemon for ${realRoot} is running v${packageJson.version} (pid ${result.pid ?? 'unknown'})` +
+          (result.previousVersion ? ` — replaced v${result.previousVersion} (pid ${result.previousPid})` : ''));
+      } else if (result.outcome === 'unverified') {
+        error(
+          `The daemon lock in ${realRoot} names pid ${result.previousPid}, but that process does not answer as this project's CodeGraph daemon; refusing to signal it.`,
+        );
+        process.exit(1);
+      } else {
+        error(`The daemon for ${realRoot} did not come up within the startup window; check .codegraph/daemon.log and retry.`);
+        process.exit(1);
+      }
+      result.socket?.destroy();
+      return;
+    }
 
     const daemons = await listVerifiedDaemons();
     if (daemons.length === 0) {

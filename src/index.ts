@@ -1342,6 +1342,20 @@ export class CodeGraph {
   }
 
   /**
+   * 把当前提取版本写进索引元数据。
+   *
+   * 只允许在“确认受影响的提取范围已全部重新提取”之后调用（`sync --upgrade-index` 的
+   * 增量迁移路径）：`isIndexStale()` 与 `codegraph status` 都读这个戳，提前盖上会让
+   * 状态说谎。完整重建由 indexAll 自己盖戳，不需要走这里。
+   */
+  stampExtractionVersion(): void {
+    try {
+      this.queries.setMetadata('indexed_with_version', CodeGraphPackageVersion);
+      this.queries.setMetadata('indexed_with_extraction_version', String(EXTRACTION_VERSION));
+    } catch { /* metadata is advisory — never fail an upgrade over it */ }
+  }
+
+  /**
    * True when the on-disk index was built by an engine whose extraction is
    * older than the one now running — i.e. a re-index would add data a migration
    * can't backfill. False when there's no index yet (nothing to refresh) or the

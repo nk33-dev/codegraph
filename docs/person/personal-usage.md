@@ -12,7 +12,35 @@ npm run codegraph -- explore target_value --mode definitions --backend auto
 
 `npm run codegraph` 固定执行当前仓库 `dist/bin/codegraph.js`。`doctor` 无需索引，显示 CLI 绝对路径、Node 路径、包版本、个人发行标记、构建指纹、构建时的 Git 提交和未提交状态，以及 PATH 上的其他安装入口。个人预发布使用带 `personal` 标识的版本号，构建指纹继续用于区分实际产物；MCP 连接共享 daemon 时也会校验指纹。同版本但不同构建不能混用服务。
 
-重建后应重新连接 MCP。旧 daemon 如仍占用项目写锁，应先通过 `codegraph daemon` 查看和停止对应服务，再启动个人构建；不要为了连接新版本直接删除活动锁文件。
+重建后应重新连接 MCP。发现 daemon 版本不一致时，新客户端会自己完成切换（见下节）；仍在运行的旧 MCP 会话持有旧的子进程，必须完整退出并重开客户端。不要为了连接新版本直接删除活动锁文件。
+
+## 升级后的 daemon 版本切换
+
+安装新版后，旧版 daemon 可能仍在跑，并继续占着项目的 `.codegraph/daemon.pid` 与 socket。以前的结果是：新客户端每次都要退回进程内服务，编辑命令甚至在写路径上只报“未能确认”，必须手工 `codegraph daemon` 停掉旧进程才恢复。
+
+现在的行为（`src/mcp/daemon-spawn.ts` 是唯一实现，MCP 代理与 CLI 共用）：
+
+1. 客户端在 hello 握手阶段发现版本不一致（`version-mismatch`）。这一步**没有**发送任何 `tools/call`，所以后续行为是安全的、可证明的；
+2. 先请旧进程优雅退出：只对“能通过 socket hello 证明是本项目 daemon”的 pid 发信号，无法证明时返回 `unverified` 并放弃切换，绝不误杀无关进程；
+3. 以分离进程启动当前版本的 daemon，轮询候选 socket 直到 hello 与本版一致（约 6 秒预算），然后照常共享它；
+4. 只读调用会在新 daemon 上重试一次并直接返回结果；写操作（`codegraph edit`）不在本进程重放同一请求，而是在本进程执行这次编辑——因为它可证明从未送达，不存在重复写入，同时 stderr 明确写出“旧 daemon 已被停止、当前版本正在启动”。
+
+人工出口是 `codegraph daemon --restart`（可加 `-p <path>`、`--json`）：停止该项目的 daemon 并启动当前版本，用于“没有客户端在跑，但想把 daemon 换成新版”。失败时以非零退出码说明原因（无法证明身份 / 启动窗口内没有起来）。
+
+## 索引升级：`codegraph sync --upgrade-index`
+
+提取版本落后时，`status`/`sync`/`upgrade` 会提示 `reindexRecommended`；以前唯一可行的手工动作是完整重建（`codegraph index -f .`），大仓库上这是一次没有预告、没有确认的重建。现在用：
+
+```powershell
+codegraph sync --upgrade-index          # 先打印范围/文件数/预计耗时/预计峰值磁盘，再询问
+codegraph sync --upgrade-index --yes    # 非交互运行（agent/CI/git hook）必须显式确认
+```
+
+- 规划逻辑在 `src/sync/upgrade-index.ts`（只读计算，不写文件）：耗时优先取自本项目的全量索引基线（`.codegraph/resource-metrics.json`），没有基线时退化为每文件经验值，并如实标注依据；磁盘按“现有 DB + WAL × 1.5”估计峰值占用。
+- 范围来自 `EXTRACTION_UPGRADES`（`src/extraction/extraction-version.ts`）：登记为部分语言时只重新提取这些语言的文件，随后补一次 `sync` 完成引用解析与孤边清理，并在确认覆盖后才盖新的提取版本戳（`CodeGraph.stampExtractionVersion()`）。
+- **当前历史递增没有登记范围**，因此从旧索引升级一律按完整重建处理，计划里会写明“升级区间没有登记，无法证明增量迁移安全”。这是有意保守：宁可不承诺兼容，也不谎称已经迁移。
+- 非交互运行（非 TTY、`--quiet`）且没有 `--yes` 时，命令只打印计划并以非零退出码结束，不会猜着重建。
+- 迁移结束后会再次校验 `isIndexStale()`；仍为陈旧时按失败处理，提示改用完整重建。
 
 ## 从 GitHub 安装
 

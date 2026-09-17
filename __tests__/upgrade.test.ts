@@ -207,7 +207,9 @@ describe('version helpers', () => {
   it('reindexAdvisory mentions the refresh commands', () => {
     const a = reindexAdvisory();
     expect(a).toContain('codegraph sync');
-    expect(a).toContain('codegraph index -f');
+    // 提醒必须点出可执行的升级入口，并说明它会先给估算、再确认。
+    expect(a).toContain('codegraph sync --upgrade-index');
+    expect(a).toContain('--yes');
     expect(a).toContain('cannot upgrade extraction data');
     expect(a).toContain('reindexRecommended');
   });

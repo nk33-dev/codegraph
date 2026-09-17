@@ -158,9 +158,11 @@ export async function connectWithHello(
   if (hello.codegraph !== expectedVersion || hello.buildId !== expectedBuildId) {
     // A daemon IS up but it's the wrong version — definitive, not a "not yet".
     // Don't poll; the caller serves in-process so we never run stale-vs-new.
+    // 只是“不共享”的结论；调用方随后可能会把旧 daemon 换成当前版本（见 daemon-spawn 的
+    // restartSharedDaemon），所以这里不再断言本会话会退回进程内。
     process.stderr.write(
       `[CodeGraph MCP] Found a daemon on ${socketPath} but version (${hello.codegraph}) ` +
-      `or build (${hello.buildId ?? 'upstream'}) differs from ours (${expectedVersion}, ${expectedBuildId ?? 'upstream'}); serving this session in-process.\n`
+      `or build (${hello.buildId ?? 'upstream'}) differs from ours (${expectedVersion}, ${expectedBuildId ?? 'upstream'}); this client will not share it.\n`
     );
     socket.destroy();
     return 'version-mismatch';
