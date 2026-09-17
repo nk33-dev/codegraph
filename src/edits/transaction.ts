@@ -148,7 +148,10 @@ function cleanupTerminalArtifacts(root: string, manifest: TransactionManifest): 
 }
 
 function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 function withTransactionLock<T>(root: string, action: () => T): T {
@@ -158,25 +161,38 @@ function withTransactionLock<T>(root: string, action: () => T): T {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAt: Date.now() }), { flag: 'wx' });
-      try { return action(); } finally {
-        try {
-          const owner = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as { pid?: number };
-          if (owner.pid === process.pid) fs.rmSync(lockPath, { force: true });
-        } catch { /* 锁已被清理。 */ }
-      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       try {
-        const owner = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as { pid?: number; createdAt?: number };
+        const raw = fs.readFileSync(lockPath, 'utf-8');
+        const owner = JSON.parse(raw) as { pid?: number; createdAt?: number };
         if (typeof owner.pid !== 'number' || !processAlive(owner.pid)) {
-          fs.rmSync(lockPath, { force: true });
+          if (fs.readFileSync(lockPath, 'utf-8') === raw) fs.rmSync(lockPath, { force: true });
           continue;
         }
-      } catch {
-        try { fs.rmSync(lockPath, { force: true }); } catch { /* 下一轮会给出冲突。 */ }
-        continue;
+      } catch (readError) {
+        // wx 创建和写入之间锁可能暂时为空；不能把刚创建的锁当成损坏文件抢走。
+        if ((readError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        try {
+          if (readError instanceof SyntaxError && Date.now() - fs.statSync(lockPath).mtimeMs > 60_000) {
+            const current = fs.readFileSync(lockPath, 'utf-8');
+            try { JSON.parse(current); } catch {
+              fs.rmSync(lockPath, { force: true });
+              continue;
+            }
+          }
+        } catch (retryError) {
+          if ((retryError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        }
       }
       throw new CodeEditRefusal('another structured edit is currently committing in this project', 'conflict');
+    }
+    // 事务本身的 EEXIST 是写入失败，不能被获取锁的重试逻辑吞掉后再次执行。
+    try { return action(); } finally {
+      try {
+        const owner = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as { pid?: number };
+        if (owner.pid === process.pid) fs.rmSync(lockPath, { force: true });
+      } catch { /* 锁已被清理。 */ }
     }
   }
   throw new CodeEditRefusal('the structured-edit transaction lock could not be acquired', 'conflict');
@@ -363,6 +379,16 @@ function prepareManifest(
 function commitFile(root: string, file: TransactionFile): void {
   const source = sourcePath(root, file);
   const destination = destinationPath(root, file);
+  if (file.operation === 'create') {
+    if (fs.existsSync(destination)) throw new CodeEditRefusal(`${file.filePath} appeared during staging`, 'conflict');
+  } else {
+    if (fs.lstatSync(source).isSymbolicLink() || contentHash(source) !== file.baseHash) {
+      throw new CodeEditRefusal(`${file.filePath} changed during staging; refusing to overwrite it`, 'conflict');
+    }
+    if (file.operation === 'rename' && fs.existsSync(destination)) {
+      throw new CodeEditRefusal(`${file.movedTo} appeared during staging`, 'conflict');
+    }
+  }
   if (file.operation === 'delete') {
     fs.rmSync(source);
   } else if (file.operation === 'rename') {
@@ -376,10 +402,13 @@ function commitFile(root: string, file: TransactionFile): void {
 }
 
 function restoreFile(root: string, file: TransactionFile): void {
-  const source = path.resolve(root, file.filePath);
-  const destination = path.resolve(root, file.movedTo ?? file.filePath);
+  const source = sourcePath(root, file);
+  const destination = destinationPath(root, file);
   const expectedResult = file.resultHash;
+  // rename 消耗暂存文件；即使进程尚未来得及记录 committed，也能辨别是否已落盘。
+  const stagedContentWritten = file.committed || (file.stageFile !== null && !fs.existsSync(file.stageFile));
   if (file.operation === 'create') {
+    if (!stagedContentWritten) { file.state = 'unchanged'; return; }
     if (!fs.existsSync(destination)) { file.state = 'unchanged'; return; }
     if (contentHash(destination) !== expectedResult) {
       throw new Error(`${file.movedTo ?? file.filePath} no longer matches the transaction result; remove it manually only after review`);
@@ -389,18 +418,29 @@ function restoreFile(root: string, file: TransactionFile): void {
     return;
   }
 
-  if (file.operation === 'rename' && fs.existsSync(destination)) {
+  const sourceHash = contentHash(source);
+  // 只撤销本事务写出的内容。外部修改、删除或不可读文件都保留，交给恢复清单处理。
+  if ((sourceHash !== file.baseHash && sourceHash !== expectedResult && sourceHash !== null)
+    || (file.operation === 'modify' && !stagedContentWritten && sourceHash !== file.baseHash)
+    || (sourceHash === null && (fs.existsSync(source) || file.operation === 'modify'))
+    || (fs.existsSync(source) && fs.lstatSync(source).isSymbolicLink())) {
+    throw new Error(`${file.filePath} changed outside this transaction; preserve it and review the retained backup`);
+  }
+  const removeDestination = file.operation === 'rename' && stagedContentWritten && fs.existsSync(destination);
+  if (removeDestination) {
     if (contentHash(destination) !== expectedResult) {
       throw new Error(`${file.movedTo} no longer matches the transaction result; preserve it and restore ${file.filePath} from backup`);
     }
-    fs.rmSync(destination);
   }
   if (!file.backupFile || !fs.existsSync(file.backupFile)) {
     throw new Error(`backup for ${file.filePath} is missing`);
   }
   const backup = fs.readFileSync(file.backupFile, 'utf-8');
+  if (sha256(backup) !== file.baseHash) throw new Error(`backup for ${file.filePath} does not match the original content`);
   const mode = fs.statSync(file.backupFile).mode;
-  if (contentHash(source) !== file.baseHash) writeFileAtomic(source, backup, mode);
+  if (sourceHash !== file.baseHash) writeFileAtomic(source, backup, mode);
+  // 原路径成功恢复后再删除移动目标；备份损坏或恢复失败时仍保留提交后的内容。
+  if (removeDestination) fs.rmSync(destination);
   file.state = 'restored';
 }
 

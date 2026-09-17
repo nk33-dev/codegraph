@@ -14,7 +14,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type CodeGraph from '../index';
-import { symbolNamePosition } from '../lsp/code-query-lsp';
+import { byteColumnToUtf16Column, symbolNamePosition } from '../lsp/code-query-lsp';
 import {
   LspUnavailableError,
   type LspManager,
@@ -25,6 +25,7 @@ import { LspError } from '../lsp/protocol';
 import { familyForLanguage, type LspFamily } from '../lsp/servers';
 import { uriToNormalizedPath } from '../lsp/uri';
 import { validatePathWithinRoot } from '../utils';
+import { indexedFileFreshness } from '../sync/file-freshness';
 import {
   CodeEditRefusal,
   sha256,
@@ -39,7 +40,7 @@ import {
   normalizeEol,
   type InternalTextEdit,
 } from './text-edits';
-import { nodeRangePositions, readFileText, type ResolvedEditTarget } from './target';
+import { nodeAtPosition, nodeRangePositions, readFileText, type ResolvedEditTarget } from './target';
 
 export interface RenamePlan {
   files: EditFilePreview[];
@@ -47,12 +48,130 @@ export interface RenamePlan {
   warnings: string[];
 }
 
+interface GraphRenameLocation {
+  filePath: string;
+  line: number;
+  column: number;
+  kind: 'definition' | 'reference';
+}
+
+const RENAME_REFERENCE_KINDS = new Set([
+  'calls', 'imports', 'exports', 'extends', 'implements', 'references',
+  'type_of', 'returns', 'instantiates', 'overrides', 'decorates',
+]);
+
 /** Project-relative path of an absolute path inside the root; null when it is outside (or not a file). */
 function toProjectRelative(root: string, absolutePath: string): string | null {
   const relative = path.relative(root, absolutePath);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
   if (validatePathWithinRoot(root, absolutePath) === null) return null;
   return relative.replace(/\\/g, '/');
+}
+
+/**
+ * 用 Graph 已知的静态引用核对 LSP WorkspaceEdit 的覆盖范围。
+ * Graph 只充当安全哨兵，不生成替代编辑；启发式边没有可靠文本位置，因此不参与拒绝判断。
+ */
+function graphRenameLocations(
+  cg: CodeGraph,
+  target: ResolvedEditTarget,
+  warnings: string[],
+): GraphRenameLocation[] {
+  if (!target.node) return [];
+  const root = cg.getProjectRoot();
+  const name = target.node.name;
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}_$])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_$])`, 'gu');
+  const linesByFile = new Map<string, string[]>([[target.filePath, target.text.split(/\r\n|\r|\n/)]]);
+  const locations = new Map<string, GraphRenameLocation>();
+  const add = (location: GraphRenameLocation): void => {
+    const key = `${location.filePath}:${location.line}:${location.column}`;
+    if (!locations.has(key)) locations.set(key, location);
+  };
+
+  const definition = symbolNamePosition(linesByFile.get(target.filePath)!, target.node);
+  if (!definition) throw new CodeEditRefusal('Cannot locate the indexed definition name for rename coverage.', 'stale');
+  add({ filePath: target.filePath, line: definition.line + 1, column: definition.character, kind: 'definition' });
+  let unverified = 0;
+  for (const edge of cg.getIncomingEdges(target.node.id)) {
+    if (!RENAME_REFERENCE_KINDS.has(edge.kind) || edge.provenance === 'heuristic' || edge.metadata?.synthesizedBy) continue;
+    const source = cg.getNode(edge.source);
+    if (!source) continue;
+    let lines = linesByFile.get(source.filePath);
+    if (!lines) {
+      const absolute = validatePathWithinRoot(root, source.filePath);
+      if (!absolute) throw new CodeEditRefusal('An indexed reference is outside the project root.');
+      const text = readFileText(absolute);
+      if (indexedFileFreshness(root, cg.getFile(source.filePath), text) !== 'current') {
+        throw new CodeEditRefusal(`${source.filePath}: reference locations are stale; run \`codegraph sync\` before renaming.`, 'stale');
+      }
+      lines = text.split(/\r\n|\r|\n/);
+      linesByFile.set(source.filePath, lines);
+    }
+    const lineText = edge.line ? lines[edge.line - 1] ?? '' : '';
+    const matches = [...lineText.matchAll(pattern)];
+    const column = edge.column === undefined ? null : byteColumnToUtf16Column(lineText, edge.column);
+    const match = column === null ? (matches.length === 1 ? matches[0] : undefined)
+      : matches.find((candidate) => candidate.index! >= column);
+    if (!match) {
+      // 别名和跨行关系不一定含原名；无可靠文本位置时只能报告未核实，不能猜测补改。
+      unverified += 1;
+      continue;
+    }
+    add({ filePath: source.filePath, line: edge.line!, column: match.index!, kind: 'reference' });
+  }
+  if (unverified > 0) {
+    warnings.push(`${unverified} graph relationship(s) have no verifiable original-name location (for example aliases); their rename coverage is unverified.`);
+  }
+  return [...locations.values()];
+}
+
+/** 行列请求可能指向调用者内部，必须先解析定义，不能把外层函数当成重命名目标。 */
+async function renameCoverageTarget(
+  cg: CodeGraph,
+  manager: LspManager,
+  target: ResolvedEditTarget,
+): Promise<ResolvedEditTarget | null> {
+  if (!target.position) return target;
+  const localName = target.node && target.node.kind !== 'import' && target.node.kind !== 'export'
+    ? symbolNamePosition(target.text.split(/\r\n|\r|\n/), target.node) : null;
+  if (localName && localName.line === target.position.line
+    && target.position.character >= localName.character
+    && target.position.character < localName.character + target.node!.name.length) return target;
+
+  const definitions = await manager.definition(target.absolutePath, target.position, target.language);
+  const candidates = new Map<string, ResolvedEditTarget>();
+  for (const location of definitions.items) {
+    const absolutePath = uriToNormalizedPath(location.uri);
+    const filePath = absolutePath ? toProjectRelative(cg.getProjectRoot(), absolutePath) : null;
+    if (!absolutePath || !filePath) continue;
+    const text = readFileText(absolutePath);
+    const freshness = indexedFileFreshness(cg.getProjectRoot(), cg.getFile(filePath), text);
+    if (freshness !== 'current') continue;
+    const node = nodeAtPosition(cg.getNodesInFile(filePath), text, location.range.start);
+    if (!node || node.kind === 'import' || node.kind === 'export') continue;
+    const namePosition = symbolNamePosition(text.split(/\r\n|\r|\n/), node);
+    if (!namePosition || namePosition.line < location.range.start.line || namePosition.line > location.range.end.line
+      || (namePosition.line === location.range.start.line && namePosition.character < location.range.start.character)
+      || (namePosition.line === location.range.end.line && namePosition.character >= location.range.end.character)) continue;
+    candidates.set(node.id, { node, filePath, absolutePath, text, freshness, language: node.language, position: null });
+  }
+  return candidates.size === 1 ? [...candidates.values()][0]! : null;
+}
+
+function missingGraphRenameLocations(
+  locations: GraphRenameLocation[],
+  files: EditFilePreview[],
+  oldName: string,
+): GraphRenameLocation[] {
+  const editsByFile = new Map(files.map((file) => [file.filePath, file.edits]));
+  return locations.filter((location) => {
+    const edits = editsByFile.get(location.filePath) ?? [];
+    return !edits.some((edit) =>
+      edit.oldText.includes(oldName) && edit.newText !== edit.oldText
+      && (edit.startLine < location.line || (edit.startLine === location.line && edit.startColumn <= location.column))
+      && (edit.endLine > location.line || (edit.endLine === location.line && edit.endColumn >= location.column + oldName.length))
+    );
+  });
 }
 
 /**
@@ -79,7 +198,7 @@ export async function planRename(
       'Rename is available for C, C++, JavaScript, TypeScript, Rust, Go, Java and Python; edit other files directly.',
     );
   }
-  if (target.node && target.node.name === request.newName) {
+  if (!target.position && target.node && target.node.name === request.newName) {
     throw new CodeEditRefusal(`"${request.newName}" is already the symbol's name; refusing a no-op rename`);
   }
 
@@ -280,6 +399,42 @@ export async function planRename(
   }
   if (files.length === 0) {
     throw new CodeEditRefusal('the language server returned a workspace edit with no file changes', 'rejected');
+  }
+
+  let coverageTarget: ResolvedEditTarget | null;
+  try {
+    coverageTarget = await renameCoverageTarget(cg, manager, target);
+  } catch (error) {
+    coverageTarget = null;
+    warnings.push(`Could not resolve the rename definition for coverage: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!coverageTarget) {
+    const message = 'The position could not be mapped to one current indexed definition; cross-file rename coverage is unverified.';
+    if (request.apply) throw new CodeEditRefusal(message, 'rejected', 'Retry with the exact symbol name and definition file after syncing the index.');
+    warnings.push(`${message} Apply will be refused; retry with the symbol name and definition file.`);
+  }
+  const graphLocations = coverageTarget ? graphRenameLocations(cg, coverageTarget, warnings) : [];
+  if (graphLocations.length > 0 && coverageTarget?.node) {
+    const missing = missingGraphRenameLocations(graphLocations, files, coverageTarget.node.name);
+    if (missing.length > 0) {
+      const references = graphLocations.filter((location) => location.kind === 'reference').length;
+      const covered = graphLocations.length - missing.length;
+      const samples = missing
+        .slice(0, 5)
+        .map((location) => `${location.filePath}:${location.line}:${location.column}`)
+        .join(', ');
+      const message =
+        `Graph knows ${references} reference location(s) plus the definition, but the language server ` +
+        `covered only ${covered}/${graphLocations.length}; possible omissions: ${samples}`;
+      if (request.apply) {
+        throw new CodeEditRefusal(
+          `${message}. Refusing to apply an incomplete cross-file rename.`,
+          'rejected',
+          'Review the preview and fix the language-server project configuration (for example, include excluded test files) before retrying.',
+        );
+      }
+      warnings.push(`${message}. Nothing is applied by this preview; apply will be refused until the coverage gap is resolved.`);
+    }
   }
   if (files.length > 1) {
     warnings.push(`The rename touches ${files.length} files; the preview lists every one and all files are verified before writing starts.`);

@@ -90,6 +90,12 @@ The MCP tool sets `isError` for every status other than `preview`/`applied`: a r
 
 The full phase-five contract is in [幂等与事务式结构化编辑](edit-transactions.md).
 
+## Rename completeness guard
+
+LSP 仍是唯一生成 rename 编辑的位置来源。计划器会把 WorkspaceEdit 与 Graph 已知的静态定义/引用位置核对；启发式边不参与拒绝判断，也不会被转换成文本替换。若 Graph 看到的位置没有进入 LSP 编辑，预览会列出缺口，`apply:true` 会拒绝写入。这样可以覆盖测试目录被 `tsconfig` 排除、语言服务器工作区不完整等“只改定义但返回成功”的情况。
+
+覆盖比较使用当前源码中的行列范围，同一行的多个引用不会因其中一个被编辑就全部算作覆盖；引用文件已变化时要求先同步。别名、无行号和无法定位原名的关系明确标为未核实，不把它们误判为必改文本。行列请求先确认定义；从调用位置发起时通过 LSP definition 映射到当前索引，无法唯一确认时预览警告、apply 拒绝。检查只能发现图已知的缺口，不保证未索引或运行时引用完整。
+
 ## Code ownership
 
 | Entry point | Responsibility |
