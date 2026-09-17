@@ -14,6 +14,13 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- `v1.6.0-personal.4` 汇总本轮编辑安全、精确检索、关联测试和个人升级修复；发行说明与验证边界见 `docs/person/releases/v1.6.0-personal.4.md`。
+- 修复关联测试展开参数丢失、路径分类依赖遍历顺序，以及局部查询夹带整个工作区变更的问题。
+- 事务回滚保留外部编辑器的新内容，不删除尚未由事务创建的目标；按位置重命名同样检查已知引用覆盖。
+- 结构化重命名现在会对比 Graph 已知定义/引用与 LSP WorkspaceEdit：预览明确报告可能漏改的位置，apply 在覆盖缺口消除前拒绝写入；不会用文本替换猜测补改。
+- 关联测试分为直接、高置信度和间接候选；默认隐藏经公共模块扩散的间接集合，可用 `includeIndirect` / `--include-indirect` 显式展开。
+- 单一精确符号的“定义/调用方/引用/测试”查询会收束检索深度和输出预算，避免普通意图词把无关模块带入结果。
+- `codegraph sync` 不再把旧提取版本报告为 “Already up to date”，会明确要求 `codegraph index -f .`；个人版 `upgrade` 可直接安装个人 GitHub Release，并在安装/升级后列出需要完全重启的客户端。
 - `v1.6.0-personal.3` 在三平台 CI 通过后重新交付个人安装包，修复 Windows worktree 路径身份、macOS 临时目录别名、事务回滚注入、Python LSP fixture 隔离和 Windows 并发测试资源清理。
 - Windows CI 改为单文件 worker，避免 Vitest 文件并发与每个索引自身的解析 worker、CLI 子进程叠加，造成超时、指标串扰和 SQLite `EBUSY` 连锁失败。
 - 开发验证新增 `typecheck`、`test:focused`、`test:changed` 与 `check:quick` 分层命令，日常改动不再重复执行完整构建和全量测试；普通 CI 忽略文档和 tag-only push。
