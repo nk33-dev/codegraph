@@ -36,11 +36,27 @@ function writeLock(pid: number, version: string, socketPath: string): void {
 
 /** 一个只会回答 hello 的假 daemon：用来构造“有 daemon，但版本不同”。 */
 async function startHelloServer(socketPath: string, hello: Record<string, unknown>): Promise<void> {
+  // Unix socket 落在项目目录；Windows 命名管道不需要这个目录，但也不能依赖后续写锁才创建。
+  fs.mkdirSync(path.join(root, '.codegraph'), { recursive: true });
+  const sockets = new Set<net.Socket>();
   const server = net.createServer((sock) => {
+    sockets.add(sock);
+    sock.once('close', () => sockets.delete(sock));
+    sock.on('error', () => sock.destroy());
+    sock.resume();
     sock.write(JSON.stringify(hello) + '\n');
   });
-  await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
-  cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  cleanups.push(async () => {
+    for (const socket of sockets) socket.destroy();
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socketPath, () => {
+      server.removeListener('error', reject);
+      resolve();
+    });
+  });
 }
 
 beforeEach(() => {
@@ -50,7 +66,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
-  try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); } catch { /* Windows handles */ }
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 describe('retireStaleDaemon', () => {

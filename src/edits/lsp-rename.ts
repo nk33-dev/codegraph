@@ -266,7 +266,9 @@ function addGraphEdit(
     const normalized = uriToNormalizedPath(uri);
     if (normalized && toProjectRelative(root, normalized) === location.filePath) { key = uri; break; }
   }
-  if (!key) key = pathToFileURL(absolute).href;
+  // validatePathWithinRoot 返回 realpath；URI 仍沿用索引根目录的写法，避免 macOS
+  // /var 与 /private/var（或目录链接）让后续相对路径检查误报项目外文件。
+  if (!key) key = pathToFileURL(path.resolve(root, location.filePath)).href;
   const edits = editsByUri.get(key) ?? [];
   edits.push({
     start: { line: location.line - 1, character: location.column },

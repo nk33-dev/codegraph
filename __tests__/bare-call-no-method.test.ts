@@ -10,14 +10,18 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import CodeGraph from '../src/index';
+import { IndexedProject } from './indexed-project';
 
 let tempDir: string;
 let cg: CodeGraph | null = null;
+let projectIndex: IndexedProject | undefined;
 
 async function callsFromMethod(source: string, methodName: string): Promise<string[]> {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-1714-'));
   fs.writeFileSync(path.join(tempDir, 'record.ts'), source);
-  cg = await CodeGraph.init(tempDir, { index: true });
+  projectIndex = new IndexedProject(tempDir);
+  cg = projectIndex.graph;
+  await projectIndex.index();
   cg.resolveReferences();
   const from = cg.getNodesByKind('method').find((n) => n.name === methodName)!;
   expect(from).toBeDefined();
@@ -29,8 +33,9 @@ async function callsFromMethod(source: string, methodName: string): Promise<stri
     .map((n) => `${n.kind}:${n.qualifiedName ?? n.name}`);
 }
 
-afterEach(() => {
-  cg?.close();
+afterEach(async () => {
+  await projectIndex?.close();
+  projectIndex = undefined;
   cg = null;
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
@@ -97,7 +102,9 @@ describe('a receiver-less JS/TS call never binds to a method (#1714)', () => {
         '',
       ].join('\n')
     );
-    cg = await CodeGraph.init(tempDir, { index: true });
+    projectIndex = new IndexedProject(tempDir);
+    cg = projectIndex.graph;
+    await projectIndex.index();
     cg.resolveReferences();
     const targets = cg.getNodesByKind('function').filter((n) => n.filePath === 'config.ts').map((n) => n.id);
     const callers = cg.getNodesByKind('function').filter((n) => n.filePath === 'client.ts');
@@ -122,7 +129,9 @@ describe('a receiver-less JS/TS call never binds to a method (#1714)', () => {
         '',
       ].join('\n')
     );
-    cg = await CodeGraph.init(tempDir, { index: true });
+    projectIndex = new IndexedProject(tempDir);
+    cg = projectIndex.graph;
+    await projectIndex.index();
     cg.resolveReferences();
     const prepare = cg.getNodesByKind('function').find((n) => n.name === 'prepare')!;
     const names = cg.getOutgoingEdges(prepare.id).filter((e) => e.kind === 'calls').map((e) => cg!.getNode(e.target)?.name);

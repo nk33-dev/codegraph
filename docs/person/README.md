@@ -26,6 +26,8 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 
 本轮发行版本为 [v1.6.0-personal.5](releases/v1.6.0-personal.5.md)，汇总 personal.4 后续修复及新增升级功能。四并发基线 CI `35217505615` 已三平台通过；随后功能的本地验证仍有一项 daemon 接管偶发失败，具体边界见发行说明。
 
+personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、macOS 重命名路径别名和 Windows 测试超时清理问题；后续补修与本地 31 项定向验证见[开发验证记录](test-repairs.md)。修复位于 personal 分支，不改写既有发行资产。
+
 本机构建与全量测试已通过；具体环境、结果和验证范围集中记录在[开发验证记录](test-repairs.md)。语言服务文档中的历史数字只对应当时的测试环境。资源档位的实测数字、重新建立的性能基线和保留的限制见[资源档位与自动回收](resource-governance.md)。
 
 2026-09-17 的复审与补修见[静态复核记录](release-readiness.md#本轮静态复核)，本批归入 [v1.6.0-personal.4](releases/v1.6.0-personal.4.md)。开发复审未运行测试或构建；发行阶段单独生成安装包，以上历史验证不覆盖本批差异。

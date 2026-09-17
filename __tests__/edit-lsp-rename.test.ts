@@ -374,6 +374,30 @@ describe('rename coverage completed from the index', () => {
     expect(read('__tests__/updater.test.ts')).not.toContain('runUpgrade()');
   }, 30_000);
 
+  it('通过目录别名打开项目时，Graph 补全沿用该根目录且仍能应用', async () => {
+    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-rename-alias-'));
+    const alias = path.join(aliasParent, 'project');
+    try {
+      // junction 在 Windows 无需符号链接权限；POSIX 复现 macOS /var → /private/var。
+      fs.symlinkSync(project.root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      vi.spyOn(cg, 'getProjectRoot').mockReturnValue(alias);
+      const result = await cg.editCode({
+        operation: 'rename', symbol: 'runUpgrade', file: 'src/upgrade/updater.ts', newName: 'runUpgradeV2', apply: true,
+      });
+      expect(result.status, result.warnings.join('\n')).toBe('applied');
+      expect(result.files.map(file => file.filePath).sort()).toEqual(['__tests__/updater.test.ts', 'src/upgrade/updater.ts']);
+      expect(read('__tests__/updater.test.ts')).toContain('runUpgradeV2()');
+    } finally {
+      await cg.getLspManager().close();
+      // 仅移除本用例创建的链接，不递归触碰它指向的项目。
+      if (fs.existsSync(alias)) {
+        if (process.platform === 'win32') fs.rmdirSync(alias);
+        else fs.unlinkSync(alias);
+      }
+      fs.rmdirSync(aliasParent);
+    }
+  }, 30_000);
+
   it('refuses a partial completion when the file has an occurrence the index cannot confirm', async () => {
     // 动态导入解构绑定目前没有边：调用位置可确认，绑定位置不可确认。
     writeFile('src/consumer.ts',
