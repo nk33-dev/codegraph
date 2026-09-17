@@ -324,6 +324,79 @@ describe('a server that cannot rename', () => {
   }, 30_000);
 });
 
+
+/**
+ * 跨文件重命名覆盖补全（个人版）。
+ *
+ * 语言服务器的工作区常常小于索引的工作区：测试目录被 tsconfig 排除、工作区只加载了一半时，
+ * 服务器会“只改定义却返回成功”。契约是：
+ *   1. 索引里 AST 确认过的位置，由 Graph 补成编辑（plannedBy: "graph"），与 LSP 编辑走同一条
+ *      校验/预览/哈希/事务路径；
+ *   2. 只有“可能位置”或含别名的关系仍然拒绝写盘；
+ *   3. 计划内文件里还有没被覆盖的同名出现（例如动态导入解构绑定）时，拒绝写盘而不是只改一部分。
+ */
+describe('rename coverage completed from the index', () => {
+  const UPDATER = 'export function runUpgrade(): string {\n  return "v1";\n}\n';
+  const TEST_FILE = "import { runUpgrade } from '../src/upgrade/updater';\n" +
+    'export function upgradesWithoutError(): boolean {\n' +
+    '  return runUpgrade().length > 0;\n' +
+    '}\n';
+
+  beforeEach(async () => {
+    await setup({
+      'src/upgrade/updater.ts': UPDATER,
+      '__tests__/updater.test.ts': TEST_FILE,
+    }, ['--rename']);
+  }, 30_000);
+
+  it('an AST-confirmed position the server omitted is planned with plannedBy "graph"', async () => {
+    const preview = await cg.editCode({ operation: 'rename', symbol: 'runUpgrade', file: 'src/upgrade/updater.ts', newName: 'runUpgradeV2' });
+
+    expect(preview.status).toBe('preview');
+    const paths = preview.files.map((file) => file.filePath);
+    expect(paths).toContain('__tests__/updater.test.ts');
+    const testFile = preview.files.find((file) => file.filePath === '__tests__/updater.test.ts')!;
+    expect(testFile.edits.length).toBeGreaterThan(0);
+    expect(testFile.edits.every((edit) => edit.plannedBy === 'graph')).toBe(true);
+    const serverFile = preview.files.find((file) => file.filePath === 'src/upgrade/updater.ts')!;
+    expect(serverFile.edits.every((edit) => edit.plannedBy === 'lsp')).toBe(true);
+    expect(preview.warnings.join(' ')).toMatch(/not in the language server's workspace edit/);
+  }, 30_000);
+
+  it('applies the completed rename to both files', async () => {
+    const result = await cg.editCode({
+      operation: 'rename', symbol: 'runUpgrade', file: 'src/upgrade/updater.ts', newName: 'runUpgradeV2', apply: true,
+    });
+
+    expect(result.status).toBe('applied');
+    expect(read('src/upgrade/updater.ts')).toContain('runUpgradeV2');
+    expect(read('__tests__/updater.test.ts')).toContain('runUpgradeV2');
+    expect(read('__tests__/updater.test.ts')).not.toContain('runUpgrade()');
+  }, 30_000);
+
+  it('refuses a partial completion when the file has an occurrence the index cannot confirm', async () => {
+    // 动态导入解构绑定目前没有边：调用位置可确认，绑定位置不可确认。
+    writeFile('src/consumer.ts',
+      'export async function useIt(): Promise<string> {\n' +
+      "  const { runUpgrade } = await import('./upgrade/updater');\n" +
+      '  return runUpgrade();\n' +
+      '}\n');
+    await cg.sync();
+
+    const preview = await cg.editCode({ operation: 'rename', symbol: 'runUpgrade', file: 'src/upgrade/updater.ts', newName: 'runUpgradeV2' });
+    expect(preview.status).toBe('preview');
+    expect(preview.warnings.join(' ')).toMatch(/coverage is incomplete/);
+
+    const applied = await cg.editCode({
+      operation: 'rename', symbol: 'runUpgrade', file: 'src/upgrade/updater.ts', newName: 'runUpgradeV2', apply: true,
+    });
+    expect(applied.status).toBe('rejected');
+    expect(applied.warnings.join(' ')).toMatch(/Refusing to apply a partial rename/);
+    expect(read('src/consumer.ts')).toContain('const { runUpgrade }');
+    expect(read('src/upgrade/updater.ts')).toBe(UPDATER);
+  }, 30_000);
+});
+
 /** Write a file into the fake project root (the project is created by the suite's helper). */
 function writeFile(relative: string, content: string): void {
   fs.writeFileSync(path.join(project.root, relative), content);

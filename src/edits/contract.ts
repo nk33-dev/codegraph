@@ -77,6 +77,8 @@ export interface CodeEditRequest {
 
 /** One text edit in the result: 1-based lines, 0-based columns in **UTF-16 code units**. */
 export interface EditTextEdit {
+  /** 该处编辑的来源：'lsp'（语言服务器）或 'graph'（索引中 AST 确认的位置）。 */
+  plannedBy?: 'lsp' | 'graph';
   startLine: number;
   startColumn: number;
   endLine: number;

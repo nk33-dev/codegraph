@@ -21,6 +21,12 @@ export interface InternalTextEdit {
   start: InternalPosition;
   end: InternalPosition;
   newText: string;
+  /**
+   * 这批编辑由谁规划：'lsp' 来自语言服务器的 WorkspaceEdit，'graph' 是索引里
+   * AST 确认过、语言服务器没有覆盖的位置（个人版跨文件重命名补全）。
+   * 不改变应用语义，只用于在结果里如实说明每处改动的来源。
+   */
+  plannedBy?: 'lsp' | 'graph';
 }
 
 export type Eol = '\n' | '\r\n';

@@ -39,6 +39,7 @@ import { editTools } from './edit-tool';
 import { isTestFile, normalizeNameToken } from '../search/query-utils';
 import { groupDefinitions, lastQualifierPart, lookupSymbolNodes, matchesSymbol } from '../graph/symbol-lookup';
 import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
+import { queryWantsTests, stripQueryIntentWords } from '../search/query-intent';
 import {
   existsSync,
   readFileSync,
@@ -3589,7 +3590,7 @@ export class ToolHandler {
     // 多符号流程、架构问题和显式路径仍走完整探索路径。
     let focusedSymbolQuery = false;
     let focusedNode: Node | null = null;
-    const requestedTests = /\btests?\b|\btesting\b|测试/i.test(query);
+    const requestedTests = queryWantsTests(query);
     const focusedFilePriority = new Map<string, number>();
     if (pinnedFiles.length === 0 && unresolvedPathSpans.length === 0 && !changeIntent) {
       const codeTokens = [...new Set(
@@ -3601,12 +3602,10 @@ export class ToolHandler {
       });
       if (exactTokens.length === 1) {
         const token = exactTokens[0]!;
-        const remainder = matchQuery
-          .split(token).join(' ')
-          .replace(/\b(?:the|a|an|of|and|or|for|to|from|in|its|please|show|find|where|how|what|is|are|definition|definitions|declaration|declarations|caller|callers|callee|callees|call|calls|usage|usages|reference|references|test|tests|testing|implementation|implementations|source|code)\b/gi, ' ')
-          .replace(/定义|声明|调用方|调用者|被谁调用|调用|引用|测试|实现|源码|位置|查找|查询|展示|以及|还有|和|的|请|看看/g, ' ')
-          .replace(/[^A-Za-z0-9_$\u3400-\u9fff]+/g, ' ')
-          .trim();
+        // 意图词（定义/调用方/测试/所有/相关/怎么…）只说明要什么，不参与模糊匹配：
+        // 它们是唯一来源自 ../search/query-intent 的共享词表，避免两处词表漂移。
+        // 剥离后若还剩下别的检索目标（第二个符号、主题名词、文件名），保持完整探索路径。
+        const remainder = stripQueryIntentWords(matchQuery.split(token).join(' '));
         if (!remainder) {
           matchQuery = token;
           focusedNode = lookupSymbolNodes(cg, token).nodes[0]!;

@@ -13,6 +13,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import type CodeGraph from '../index';
 import { byteColumnToUtf16Column, symbolNamePosition } from '../lsp/code-query-lsp';
 import {
@@ -53,6 +54,14 @@ interface GraphRenameLocation {
   line: number;
   column: number;
   kind: 'definition' | 'reference';
+  /**
+   * 位置逐字符核实过：提取器记录的行列正好落在改名的标识符上。
+   * 只有这种位置才允许由 Graph 生成编辑；靠“这一行只有一次出现”推断出来的位置
+   * 只能用于覆盖校验的提示，不能用来写盘。
+   */
+  confirmed: boolean;
+  /** 未确认的原因（写进警告，解释为什么拒绝而不是直接改）。 */
+  unconfirmedReason?: string;
 }
 
 const RENAME_REFERENCE_KINDS = new Set([
@@ -80,7 +89,7 @@ function graphRenameLocations(
   if (!target.node) return [];
   const root = cg.getProjectRoot();
   const name = target.node.name;
-  const pattern = new RegExp(`(?<![\\p{L}\\p{N}_$])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_$])`, 'gu');
+  const pattern = namePattern(name);
   const linesByFile = new Map<string, string[]>([[target.filePath, target.text.split(/\r\n|\r|\n/)]]);
   const locations = new Map<string, GraphRenameLocation>();
   const add = (location: GraphRenameLocation): void => {
@@ -90,7 +99,7 @@ function graphRenameLocations(
 
   const definition = symbolNamePosition(linesByFile.get(target.filePath)!, target.node);
   if (!definition) throw new CodeEditRefusal('Cannot locate the indexed definition name for rename coverage.', 'stale');
-  add({ filePath: target.filePath, line: definition.line + 1, column: definition.character, kind: 'definition' });
+  add({ filePath: target.filePath, line: definition.line + 1, column: definition.character, kind: 'definition', confirmed: true });
   let unverified = 0;
   for (const edge of cg.getIncomingEdges(target.node.id)) {
     if (!RENAME_REFERENCE_KINDS.has(edge.kind) || edge.provenance === 'heuristic' || edge.metadata?.synthesizedBy) continue;
@@ -117,12 +126,90 @@ function graphRenameLocations(
       unverified += 1;
       continue;
     }
-    add({ filePath: source.filePath, line: edge.line!, column: match.index!, kind: 'reference' });
+    // 位置确认的门槛：提取器记录的列必须正好落在标识符起点（AST 位置），
+    // 而不是“这一行只有一个同名标识符”的推断。
+    const confirmed = column !== null && match.index === column && identifierAt(lineText, match.index!, name);
+    add({
+      filePath: source.filePath,
+      line: edge.line!,
+      column: match.index!,
+      kind: 'reference',
+      confirmed,
+      ...(confirmed ? {} : { unconfirmedReason: 'the index records the line but not an exact identifier column' }),
+    });
   }
   if (unverified > 0) {
     warnings.push(`${unverified} graph relationship(s) have no verifiable original-name location (for example aliases); their rename coverage is unverified.`);
   }
   return [...locations.values()];
+}
+
+/** 整个标识符匹配（词边界 + unicode 字母数字），用于改名位置与出现次数的核对。 */
+function namePattern(name: string): RegExp {
+  return new RegExp(`(?<![\\p{L}\\p{N}_$])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_$])`, 'gu');
+}
+
+/** 行内某个 UTF-16 列上是否正好是 `name`（逐字符核实，不是整文件文本替换）。 */
+function identifierAt(lineText: string, column: number, name: string): boolean {
+  if (column < 0 || column + name.length > lineText.length) return false;
+  if (lineText.slice(column, column + name.length) !== name) return false;
+  const before = column > 0 ? lineText[column - 1]! : '';
+  const after = lineText[column + name.length] ?? '';
+  const isWord = (ch: string): boolean => ch !== '' && /[\p{L}\p{N}_$]/u.test(ch);
+  return !isWord(before) && !isWord(after);
+}
+
+/** 已规划的编辑是否覆盖这一处出现（1-based 行、UTF-16 列、名字长度）。 */
+function coversPosition(edits: InternalTextEdit[], line: number, column: number, nameLength: number): boolean {
+  const startLine = line - 1;
+  const endColumn = column + nameLength;
+  return edits.some((edit) => {
+    const startsBefore = edit.start.line < startLine
+      || (edit.start.line === startLine && edit.start.character <= column);
+    const endsAfter = edit.end.line > startLine
+      || (edit.end.line === startLine && edit.end.character >= endColumn);
+    return startsBefore && endsAfter;
+  });
+}
+
+/** Graph 位置是否已被规划覆盖（相对路径 + 行列）。 */
+function coversLocation(
+  editsByPath: Map<string, InternalTextEdit[]>,
+  location: GraphRenameLocation,
+  nameLength: number,
+): boolean {
+  const edits = editsByPath.get(location.filePath) ?? [];
+  return coversPosition(edits, location.line, location.column, nameLength);
+}
+
+/**
+ * 动态导入行上未被覆盖的出现：`const { runUpgrade } = await import('./updater')`
+ * 这类解构绑定目前没有边，索引和语言服务器都可能漏掉它；而只改掉同一文件里的调用位置，
+ * 会写出语法正确但语义损坏的代码——比不改更危险。
+ *
+ * 只检查**含导入调用**的行（`import(` / `require(`），所以不会把注释、字符串里的同名
+ * 文本或普通同名局部变量误判成必改内容（那正是全文件文本替换才会犯的错）。
+ * 这里只用出现位置做校验，绝不据此生成编辑。
+ */
+function findUncoveredImportBindings(
+  text: string,
+  filePath: string,
+  name: string,
+  edits: InternalTextEdit[],
+): GraphRenameLocation[] {
+  const uncovered: GraphRenameLocation[] = [];
+  const lines = text.split(/\r\n|\r|\n/);
+  const pattern = namePattern(name);
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineText = lines[index]!;
+    if (!/\b(?:import|require)\s*\(/.test(lineText)) continue;
+    for (const match of lineText.matchAll(pattern)) {
+      const column = match.index!;
+      if (coversPosition(edits, index + 1, column, name.length)) continue;
+      uncovered.push({ filePath, line: index + 1, column, kind: 'reference', confirmed: false });
+    }
+  }
+  return uncovered;
 }
 
 /** 行列请求可能指向调用者内部，必须先解析定义，不能把外层函数当成重命名目标。 */
@@ -158,20 +245,37 @@ async function renameCoverageTarget(
   return candidates.size === 1 ? [...candidates.values()][0]! : null;
 }
 
-function missingGraphRenameLocations(
-  locations: GraphRenameLocation[],
-  files: EditFilePreview[],
-  oldName: string,
-): GraphRenameLocation[] {
-  const editsByFile = new Map(files.map((file) => [file.filePath, file.edits]));
-  return locations.filter((location) => {
-    const edits = editsByFile.get(location.filePath) ?? [];
-    return !edits.some((edit) =>
-      edit.oldText.includes(oldName) && edit.newText !== edit.oldText
-      && (edit.startLine < location.line || (edit.startLine === location.line && edit.startColumn <= location.column))
-      && (edit.endLine > location.line || (edit.endLine === location.line && edit.endColumn >= location.column + oldName.length))
-    );
+/**
+ * 把 Graph 确认过的位置补成编辑，并入语言服务器那批编辑（同一 URI 复用同一个键）。
+ *
+ * 这条路径存在的理由：语言服务器的“工作区”不等于索引的工作区。测试目录被 tsconfig
+ * 排除、工作区只加载了一半时，服务器会只改定义却返回成功。位置来自提取器记录的 AST
+ * 行列（confirmed），因此这里**不是**文本替换：一个位置必须逐字符核实过才会生成编辑。
+ */
+function addGraphEdit(
+  editsByUri: Map<string, InternalTextEdit[]>,
+  root: string,
+  location: GraphRenameLocation,
+  nameLength: number,
+  newName: string,
+): boolean {
+  const absolute = validatePathWithinRoot(root, location.filePath);
+  if (!absolute) return false;
+  let key: string | null = null;
+  for (const uri of editsByUri.keys()) {
+    const normalized = uriToNormalizedPath(uri);
+    if (normalized && toProjectRelative(root, normalized) === location.filePath) { key = uri; break; }
+  }
+  if (!key) key = pathToFileURL(absolute).href;
+  const edits = editsByUri.get(key) ?? [];
+  edits.push({
+    start: { line: location.line - 1, character: location.column },
+    end: { line: location.line - 1, character: location.column + nameLength },
+    newText: newName,
+    plannedBy: 'graph',
   });
+  editsByUri.set(key, edits);
+  return true;
 }
 
 /**
@@ -251,6 +355,7 @@ export async function planRename(
           start: edit.range.start,
           end: edit.range.end,
           newText: edit.newText,
+          plannedBy: 'lsp',
         });
       }
       editsByUri.set(operation.uri, edits);
@@ -263,12 +368,77 @@ export async function planRename(
     }
   }
 
+  const renameTargets = new Set(renames.map((entry) => entry.to));
+  const renameSources = new Set(renames.map((entry) => entry.from));
+
+  // ---- 覆盖核对（在生成预览之前）----
+  // 语言服务器的工作区不等于索引的工作区：测试目录被 tsconfig 排除、工作区只加载了一半时，
+  // 服务器会“只改定义却返回成功”。这里用 Graph 已知的静态引用核对覆盖，并且：
+  //   - 位置经过 AST 行/列确认的缺口，由索引补编辑（plannedBy: 'graph'）；
+  //   - 只有一个“可能位置”或含别名的关系，仍然拒绝写盘，绝不猜着改。
+  // 补进来的编辑与语言服务器的编辑走完全相同的校验、预览、哈希与事务路径。
+  const plannedByPath = new Map<string, InternalTextEdit[]>();
+  for (const [uri, edits] of editsByUri) {
+    const absolutePath = uriToNormalizedPath(uri);
+    if (absolutePath === null) continue;
+    const relative = toProjectRelative(root, absolutePath);
+    if (relative === null) continue;
+    plannedByPath.set(relative, [...(plannedByPath.get(relative) ?? []), ...edits]);
+  }
+
+  let coverageTarget: ResolvedEditTarget | null;
+  try {
+    coverageTarget = await renameCoverageTarget(cg, manager, target);
+  } catch (error) {
+    coverageTarget = null;
+    warnings.push(`Could not resolve the rename definition for coverage: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!coverageTarget) {
+    const message = 'The position could not be mapped to one current indexed definition; cross-file rename coverage is unverified.';
+    if (request.apply) throw new CodeEditRefusal(message, 'rejected', 'Retry with the exact symbol name and definition file after syncing the index.');
+    warnings.push(`${message} Apply will be refused; retry with the symbol name and definition file.`);
+  }
+
+  const coverageName = coverageTarget?.node?.name ?? '';
+  const graphLocations = coverageTarget ? graphRenameLocations(cg, coverageTarget, warnings) : [];
+  const remainingGaps: GraphRenameLocation[] = [];
+  if (coverageTarget?.node && graphLocations.length > 0) {
+    const name = coverageTarget.node.name;
+    const missing = graphLocations.filter((location) => !coversLocation(plannedByPath, location, name.length));
+    const completable: GraphRenameLocation[] = [];
+    for (const location of missing) {
+      // 补不了（未确认，或位置已不在项目内）就仍然算缺口：宁可拒绝，也不假装改完。
+      if (!location.confirmed || !addGraphEdit(editsByUri, root, location, name.length, newName)) {
+        remainingGaps.push(location);
+        continue;
+      }
+      completable.push(location);
+      const edits = plannedByPath.get(location.filePath) ?? [];
+      edits.push({
+        start: { line: location.line - 1, character: location.column },
+        end: { line: location.line - 1, character: location.column + name.length },
+        newText: newName,
+        plannedBy: 'graph',
+      });
+      plannedByPath.set(location.filePath, edits);
+    }
+    if (completable.length > 0) {
+      const files = [...new Set(completable.map((location) => location.filePath))];
+      const listed = files.slice(0, 5).join(', ');
+      warnings.push(
+        `${completable.length} indexed reference location(s) were not in the language server's workspace edit; ` +
+        `they were completed from the index at AST-confirmed positions (plannedBy: "graph") in ${files.length} file(s): ${listed}` +
+        `${files.length > 5 ? ' …' : ''}.`,
+      );
+    }
+  }
+
+  // 候选文件集在 Graph 补编辑之后才算：补进来的文件必须和语言服务器的编辑一样走完
+  // 校验、预览、哈希与事务路径，否则就是“计划里有、写盘时没有”的静默缺口。
   const uris = new Set<string>([
     ...editsByUri.keys(), ...renames.map((entry) => entry.from), ...renames.map((entry) => entry.to),
     ...creates, ...deletes,
   ]);
-  const renameTargets = new Set(renames.map((entry) => entry.to));
-  const renameSources = new Set(renames.map((entry) => entry.from));
 
   const files: EditFilePreview[] = [];
   const outside = new Set<string>();
@@ -375,6 +545,7 @@ export async function planRename(
       resultHash: sha256(resultText),
       ...(movedTo ? { movedTo } : {}),
       edits: normalizedEdits.map((edit) => ({
+        ...(edit.plannedBy ? { plannedBy: edit.plannedBy } : {}),
         startLine: edit.start.line + 1,
         startColumn: edit.start.character,
         endLine: edit.end.line + 1,
@@ -401,40 +572,46 @@ export async function planRename(
     throw new CodeEditRefusal('the language server returned a workspace edit with no file changes', 'rejected');
   }
 
-  let coverageTarget: ResolvedEditTarget | null;
-  try {
-    coverageTarget = await renameCoverageTarget(cg, manager, target);
-  } catch (error) {
-    coverageTarget = null;
-    warnings.push(`Could not resolve the rename definition for coverage: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (!coverageTarget) {
-    const message = 'The position could not be mapped to one current indexed definition; cross-file rename coverage is unverified.';
-    if (request.apply) throw new CodeEditRefusal(message, 'rejected', 'Retry with the exact symbol name and definition file after syncing the index.');
-    warnings.push(`${message} Apply will be refused; retry with the symbol name and definition file.`);
-  }
-  const graphLocations = coverageTarget ? graphRenameLocations(cg, coverageTarget, warnings) : [];
-  if (graphLocations.length > 0 && coverageTarget?.node) {
-    const missing = missingGraphRenameLocations(graphLocations, files, coverageTarget.node.name);
-    if (missing.length > 0) {
-      const references = graphLocations.filter((location) => location.kind === 'reference').length;
-      const covered = graphLocations.length - missing.length;
-      const samples = missing
-        .slice(0, 5)
-        .map((location) => `${location.filePath}:${location.line}:${location.column}`)
-        .join(', ');
-      const message =
-        `Graph knows ${references} reference location(s) plus the definition, but the language server ` +
-        `covered only ${covered}/${graphLocations.length}; possible omissions: ${samples}`;
-      if (request.apply) {
-        throw new CodeEditRefusal(
-          `${message}. Refusing to apply an incomplete cross-file rename.`,
-          'rejected',
-          'Review the preview and fix the language-server project configuration (for example, include excluded test files) before retrying.',
-        );
-      }
-      warnings.push(`${message}. Nothing is applied by this preview; apply will be refused until the coverage gap is resolved.`);
+  // ---- 其余缺口：不能补的位置一律拒绝写盘 ----
+  // 两道检查都只用位置做**校验**，不生成编辑：
+  //   1. 索引知道位置、但无法逐字符确认（只有行没有列、别名、跨行关系）；
+  //   2. 动态导入行上仍有没被覆盖的出现（`const { runUpgrade } = await import('./x')`
+  //      目前没有边）——只补一部分会写出语法正确、语义损坏的代码，比不改更危险。
+  const uncovered: GraphRenameLocation[] = [];
+  if (coverageName) {
+    for (const file of files) {
+      if (file.operation !== 'modify' && file.operation !== 'rename') continue;
+      const absolute = validatePathWithinRoot(root, file.filePath);
+      if (!absolute) continue;
+      let text: string;
+      try { text = readFileText(absolute); } catch { continue; }
+      const edits = file.edits.map((edit) => ({
+        start: { line: edit.startLine - 1, character: edit.startColumn },
+        end: { line: edit.endLine - 1, character: edit.endColumn },
+        newText: edit.newText,
+      }));
+      uncovered.push(...findUncoveredImportBindings(text, file.filePath, coverageName, edits));
     }
+  }
+
+  const gaps = [...remainingGaps, ...uncovered];
+  if (gaps.length > 0) {
+    const references = graphLocations.filter((location) => location.kind === 'reference').length;
+    const samples = gaps
+      .slice(0, 5)
+      .map((location) => `${location.filePath}:${location.line}:${location.column}`)
+      .join(', ');
+    const message =
+      `cross-file rename coverage is incomplete: ${gaps.length} occurrence(s) of "${coverageName}" are not covered by ` +
+      `any confirmed edit (${references} indexed reference location(s) were checked); unresolved: ${samples}`;
+    if (request.apply) {
+      throw new CodeEditRefusal(
+        `${message}. Refusing to apply a partial rename.`,
+        'rejected',
+        'Fix the language-server project configuration (for example, include directories excluded by tsconfig) so the server reports every occurrence, then retry.',
+      );
+    }
+    warnings.push(`${message}. Nothing is applied by this preview; apply will be refused until the gap is resolved.`);
   }
   if (files.length > 1) {
     warnings.push(`The rename touches ${files.length} files; the preview lists every one and all files are verified before writing starts.`);

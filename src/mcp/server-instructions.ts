@@ -78,10 +78,15 @@ manifest when manual repair is needed. Refusals are explicit —
 an ambiguous name lists the candidates, a file that drifted from the index answers
 \`status:"stale"\` (run \`codegraph sync\` and retry), and a rename with no usable language server
 answers \`status:"unavailable"\` rather than a guessed text edit. Read the preview before applying.
-Rename previews report gaps between verifiable Graph references and LSP edits; apply refuses known gaps.
-Aliases and relationships without a reliable text location remain explicitly unverified. Position-based
-renames must resolve to one current indexed definition before apply. A coverage check is not a proof that
-unindexed or runtime references are complete.
+Rename previews check the language server's workspace edit against the Graph's known static references. A
+gap at a position the index recorded precisely (line and column, verified character by character) is
+**completed from the index** and marked \`plannedBy:"graph"\` on that edit (the server's own edits are
+\`"lsp"\`); the preview says how many were completed and in which files. Everything else is a hard refusal:
+positions with only a line, aliases and other relationships without a reliable text location, and an
+uncovered occurrence on a dynamic-import line (\`const { x } = await import('./m')\` has no edge yet) —
+apply then refuses rather than writing a half-renamed file. Position-based renames must resolve to one
+current indexed definition before apply. A coverage check is not a proof that unindexed or runtime
+references are complete: a namespace member call through \`await import()\` is still an unindexed boundary.
 
 ## Anti-patterns
 

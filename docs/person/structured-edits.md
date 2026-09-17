@@ -92,9 +92,13 @@ The full phase-five contract is in [幂等与事务式结构化编辑](edit-tran
 
 ## Rename completeness guard
 
-LSP 仍是唯一生成 rename 编辑的位置来源。计划器会把 WorkspaceEdit 与 Graph 已知的静态定义/引用位置核对；启发式边不参与拒绝判断，也不会被转换成文本替换。若 Graph 看到的位置没有进入 LSP 编辑，预览会列出缺口，`apply:true` 会拒绝写入。这样可以覆盖测试目录被 `tsconfig` 排除、语言服务器工作区不完整等“只改定义但返回成功”的情况。
+语言服务器的“工作区”不等于索引的工作区：测试目录被 `tsconfig` 排除、工作区只加载了一半时，服务器会“只改定义却返回成功”。个人版的契约分三层：
 
-覆盖比较使用当前源码中的行列范围，同一行的多个引用不会因其中一个被编辑就全部算作覆盖；引用文件已变化时要求先同步。别名、无行号和无法定位原名的关系明确标为未核实，不把它们误判为必改文本。行列请求先确认定义；从调用位置发起时通过 LSP definition 映射到当前索引，无法唯一确认时预览警告、apply 拒绝。检查只能发现图已知的缺口，不保证未索引或运行时引用完整。
+1. **LSP 仍是位置第一来源**。计划器把 WorkspaceEdit 与 Graph 已知的静态定义/引用位置核对；启发式边（`provenance: 'heuristic'` 或 `synthesizedBy`）不参与判断，也永远不会被转换成编辑。
+2. **索引补全 LSP 没覆盖的位置**。缺口里“行 + 列都被提取器记录、且逐字符核实到标识符”的位置由 Graph 生成编辑，与 LSP 的编辑走完全相同的校验、预览、哈希与事务路径，并在结果的 `files[].edits[].plannedBy` 上标为 `"graph"`（LSP 的标为 `"lsp"`），预览同时给出补全数量与文件列表。**这不是文本替换**：位置必须与 AST 记录的行列逐字符吻合，`confirmed` 为假的位置永远不会生成编辑。
+3. **补不了的就拒绝写盘**。两类情况仍然拒绝：（a）只有“可能位置”（没有列）或含别名的关系；（b）动态导入行上未被覆盖的出现——`const { runUpgrade } = await import('./updater')` 这种解构绑定目前没有边，只改同一文件里的调用位置会写出语法正确但语义损坏的代码。拒绝时预览列出具体位置并给出修复方向。
+
+覆盖比较使用当前源码中的行列范围，同一行的多个引用不会因其中一个被编辑就全部算作覆盖；引用文件已变化时要求先同步。行列请求先确认定义；从调用位置发起时通过 LSP definition 映射到当前索引，无法唯一确认时预览警告、`apply` 拒绝。检查只能发现图已知的缺口，不保证未索引或运行时引用完整——例如 `const mod = await import('./x')` 后的 `mod.runUpgrade()` 目前没有边，动态导入的覆盖扩展仍在后续计划中。
 
 ## Code ownership
 
@@ -104,7 +108,7 @@ LSP 仍是唯一生成 rename 编辑的位置来源。计划器会把 WorkspaceE
 | `src/edits/text-edits.ts` | the single text-edit engine: line/offset arithmetic in UTF-16 units, validation, back-to-front application, preview line construction |
 | `src/edits/target.ts` | target resolution through the index (name or position), freshness gate, node-range → UTF-16 position conversion |
 | `src/edits/graph-edit.ts` | `replace-body` / `insert-before` / `insert-after` planning, declaration-modifier scan, fragment-kind list |
-| `src/edits/lsp-rename.ts` | rename planning: name position, WorkspaceEdit → per-file plans, root/kind/range validation |
+| `src/edits/lsp-rename.ts` | rename planning: name position, WorkspaceEdit → per-file plans, root/kind/range validation, Graph-confirmed coverage completion (`plannedBy`) |
 | `src/edits/transaction.ts` | persistent staging, backup, commit, rollback, replay and startup recovery |
 | `src/edits/service.ts` | the one flow: validate → resolve → plan → preview → transaction → index/LSP sync |
 | `src/lsp/manager.ts` | rename request, WorkspaceEdit normalization, document close/change and workspace file notifications |
