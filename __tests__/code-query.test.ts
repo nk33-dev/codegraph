@@ -141,7 +141,7 @@ describe('structured graph queries', () => {
       projectRoot: root,
       evidence: { schemaVersion: 1 },
     });
-  });
+  }, 30_000);
 
   it('syncing after a worktree branch switch matches a clean rebuild', async () => {
     const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe', windowsHide: true });

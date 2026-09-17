@@ -34,6 +34,14 @@ function real(p: string): string {
   return fs.realpathSync(path.resolve(p));
 }
 
+/** 判断两个路径是否指向同一个目录，不依赖 Windows 8.3 路径拼写。 */
+function sameDirectory(left: string | null, right: string | null): boolean {
+  if (!left || !right) return false;
+  const leftStat = fs.statSync(left);
+  const rightStat = fs.statSync(right);
+  return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino;
+}
+
 describe('detectWorktreeIndexMismatch (issue #155)', () => {
   let mainRepo: string;   // main checkout — owns the .codegraph index
   let worktree: string;   // a linked worktree nested inside the main checkout
@@ -353,7 +361,7 @@ describe('detectWorktreeIndexMismatch — nested repos covered by the parent ind
     const wt = path.join(parent, 'wt');
     git(parent, 'worktree', 'add', '-q', '-b', 'feature', wt);
     try {
-      expect(gitCommonDir(wt)).toBe(gitCommonDir(parent)); // SAME repository
+      expect(sameDirectory(gitCommonDir(wt), gitCommonDir(parent))).toBe(true);
       expect(detectWorktreeIndexMismatch(wt, parent)).not.toBeNull();
     } finally {
       try { git(parent, 'worktree', 'remove', '--force', wt); } catch { /* best effort */ }

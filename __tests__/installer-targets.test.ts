@@ -2714,7 +2714,7 @@ describe('Installer targets — Claude CLAUDE_CONFIG_DIR override (#1627)', () =
     expect(settings.permissions.allow).toContain('mcp__codegraph__*');
     expect(fs.readFileSync(paths[2], 'utf-8')).toContain('codegraph explore');
     expect(canonicalPaths(claude.describePaths('global'))).toEqual(canonicalPaths(paths));
-    expect(claude.printConfig('global')).toContain(`# Add to ${paths[0]}`);
+    expect(claude.printConfig('global')).toContain(`# Add to ${result.files[0]!.path}`);
 
     const before = paths.map((p) => fs.readFileSync(p, 'utf-8'));
     expect(claude.install('global', { autoAllow: true }).files.every((f) => f.action === 'unchanged')).toBe(true);
@@ -2786,7 +2786,7 @@ describe('Installer targets — Claude CLAUDE_CONFIG_DIR override (#1627)', () =
     expect(canonicalPaths(result.files.map((f) => f.path))).toEqual(canonicalPaths(paths));
     expect(JSON.parse(fs.readFileSync(mcpPath, 'utf-8')).mcpServers.codegraph).toBeDefined();
     expect(claude.detect('local')).toEqual({
-      installed: true, alreadyConfigured: true, configPath: mcpPath,
+      installed: true, alreadyConfigured: true, configPath: result.files[0]!.path,
     });
     claude.uninstall('local');
     expect(claude.detect('local').alreadyConfigured).toBe(false);
