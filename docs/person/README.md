@@ -16,13 +16,15 @@
 | C/C++、JS/TS、Java、Rust、Go、Python 的按需语言服务 | [LSP](lsp-mvp.md) |
 | Graph/LSP 自动路由、结果合并、影响分析与多窗口共享 | [统一路由与影响分析](unified-routing.md) |
 | 符号重命名、正文替换、前后插入与默认预览 | [结构化编辑](structured-edits.md) |
-| 本地入口、doctor、GitHub 安装和版本切换 | [个人使用与安装](personal-usage.md) |
+| 本地入口、doctor、GitHub 安装、版本切换、daemon 版本切换与索引升级 | [个人使用与安装](personal-usage.md) |
 | 资源档位、查询池自动缩容与 LSP 预算 | [资源档位与自动回收](resource-governance.md) |
 | Steps、Windows 清理、WASM 测试运行与性能修复 | [开发验证记录](test-repairs.md) |
 
 CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_explore` 和 `codegraph_edit`。可视化沿用上游功能，只有显式启动 `codegraph ui` / `web` 才运行 HTTP 服务。
 
 ## 验证与发布
+
+本轮发行版本为 [v1.6.0-personal.5](releases/v1.6.0-personal.5.md)，汇总 personal.4 后续修复及新增升级功能。四并发基线 CI `35217505615` 已三平台通过；随后功能的本地验证仍有一项 daemon 接管偶发失败，具体边界见发行说明。
 
 本机构建与全量测试已通过；具体环境、结果和验证范围集中记录在[开发验证记录](test-repairs.md)。语言服务文档中的历史数字只对应当时的测试环境。资源档位的实测数字、重新建立的性能基线和保留的限制见[资源档位与自动回收](resource-governance.md)。
 
@@ -33,6 +35,15 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 随后三平台 CI `35214833215` 通过；进一步修复 Windows 索引超时后的连接泄漏、后台任务串扰和数据库线程提前返回，并恢复四并发。本机定向 10 文件、77 项通过；本批远端四并发结果待确认，详见[资源清理记录](test-repairs.md#2026-09-17windows-四并发与资源清理)。
 
 个人扩展通过 `personal` 分支维护；首个 GitHub prerelease 为 `v1.6.0-personal.1`，本批发行版本为 `v1.6.0-personal.4`。向 npm registry 安装上游包不会获得个人改动；个人版按[安装说明](personal-usage.md)从 GitHub Release `.tgz` 或固定标签安装。
+
+## 本批未发布改动（2026-09-17）
+
+四项用户报告问题的实现，**未提交、未发布，也不在 personal.4 安装包里**：
+
+- 跨文件重命名由“只报缺口”改为“LSP 优先、索引补全、补不了就拒绝”（AST 确认的位置才补编辑，结果标 `plannedBy`），契约见[结构化编辑](structured-edits.md#rename-completeness-guard)。
+- 唯一精确符号查询的意图词（定义/所有/调用方/相关测试）不再参与模糊匹配，契约见[结构化查询](structured-queries.md#意图词收束explore)。
+- 升级后旧 daemon 自动切换，并新增 `codegraph daemon --restart`；索引升级新增 `codegraph sync --upgrade-index`（先给估算再确认，范围有登记时才增量迁移），用法与边界见[个人使用与安装](personal-usage.md#升级后的-daemon-版本切换)。
+- 实现范围、验证结果与未验证边界见[开发验证记录](test-repairs.md#2026-09-17跨文件重命名补全意图词收束daemon-版本切换与索引升级)。
 
 ## 计划与维护
 

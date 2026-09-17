@@ -1,5 +1,51 @@
 # 个人版开发验证记录
 
+## 2026-09-17：跨文件重命名补全、意图词收束、daemon 版本切换与索引升级
+
+四个用户报告项的实现与验证。本批纳入 personal.5 发行，不改写 personal.4 标签和安装包。发行核对另补修写操作版本切换后的探测连接泄漏，5 项相关回归通过。
+
+### 实现
+
+- **跨文件重命名（`src/edits/lsp-rename.ts`）**：语言服务器的工作区小于索引工作区时不再只报缺口。缺口里“行 + 列都由提取器记录、并逐字符核实到标识符”的位置由索引补成编辑，与 LSP 编辑共用同一条校验/预览/哈希/事务路径，结果在 `files[].edits[].plannedBy` 标为 `"graph"`；只有行没有列、含别名、启发式边以及动态导入行上未被覆盖的出现仍然拒绝写盘。候选文件集在补全之后才计算，避免“计划里有、写盘时没有”。
+- **意图词收束（新增 `src/search/query-intent.ts`）**：意图词表与匹配逻辑分离，唯一精确符号之外的文本先剥离意图词（`定义`、`所有`、`相关`、`调用方`、`测试`、`all`、`related`…）再判断是否还有别的检索目标；词表刻意不含主题名词，因此多词查询不会被误收束。`requestedTests` 也改由同一份词表判断。
+- **daemon 版本切换（新增 `src/mcp/daemon-spawn.ts`）**：`retireStaleDaemon` 只对能通过 socket hello 证明身份的 pid 发信号；`restartSharedDaemon` 先停旧进程再启动本版并轮询到 hello 一致。MCP 代理在 mismatch 时自动切换；CLI 的写路径把 `version-mismatch` 与 `uncertain` 分开——前者可证明 `tools/call` 从未送达，因此在本进程执行是安全的，同时旧进程已被替换。新增 `codegraph daemon --restart [-p <path>] [--json]`。
+- **索引升级（新增 `src/sync/upgrade-index.ts`，`sync --upgrade-index [--yes]`）**：只读计算范围/文件数/预计耗时/预计峰值磁盘，耗时优先用本项目全量索引基线，无基线时用每文件经验值并标注依据；非交互且无 `--yes` 时只打印计划并以非零退出码结束。`EXTRACTION_UPGRADES` 登记受影响语言后才能按语言增量迁移（重新提取 → `sync` 补解析 → 才盖提取版本戳），历史递增没有登记，因此按完整重建处理并说明原因。`status`/`sync`/`upgrade` 的提示同步改为指向新入口。
+
+### 验证
+
+环境：Windows、Node 24.16.0、npm 11.13.0。
+
+```text
+node node_modules/typescript/bin/tsc --noEmit          # 通过
+node node_modules/vitest/vitest.mjs run --project engine <六个直接相关文件>   # 6 files / 129 tests 通过
+node node_modules/vitest/vitest.mjs run --project engine __tests__/mcp-daemon.test.ts \
+  __tests__/cli-shared-service.test.ts __tests__/query-pool-daemon.test.ts \
+  __tests__/mcp-writer-lock.test.ts __tests__/mcp-initialize.test.ts          # 5 files / 20 tests 通过
+node node_modules/vitest/vitest.mjs run --project engine \
+  __tests__/mcp-initialize.test.ts __tests__/startup-handshake.test.ts \
+  __tests__/edit-code-edit.test.ts                                            # 3 files / 28 tests 通过（MCP 说明文案更新后）
+node node_modules/vitest/vitest.mjs run --project engine --project ui          # 299 files：277 通过 / 21 跳过 / 1 失败
+git diff --check                                                              # 通过
+```
+
+daemon 相关用例走的是 `dist/bin/codegraph.js`，所以每次改动后先 `node node_modules/typescript/bin/tsc` 重新生成再跑；本批第一次全量运行时曾因一个真实缺陷（`typeof null === 'object'` 让代理放弃拉起 daemon）失败 8 个 daemon 用例，修复后单独复跑 5 个文件、20 项全部通过。
+
+全量运行的唯一失败是 `mcp-daemon.test.ts > takes over after SIGKILL even when the stale PID has been reused (#1553)`。该用例在单独运行时连续 4 次通过（1.7 秒/次），且它自己的注释就记录了“并发全量负载把断言推到替换之前”的窗口；本批没有改接管路径（`tryAcquireDaemonLock`/`clearStaleDaemonLock`），也没有为该失败放宽断言或重试。**因此这条失败如实记为全量负载下的未解决偶发项，不当作通过。**
+
+CLI 端到端（`dist/bin/codegraph.js`，本批 `tsc` 重新生成）：
+
+- `sync --upgrade-index`：non-TTY 且无 `--yes` 时打印范围/文件数/预计耗时/预计峰值磁盘并以退出码 1 结束；加 `--yes` 后重建、盖戳，`status --json` 返回 `reindexRecommended:false`、`builtWithExtractionVersion:26`。
+- `daemon --restart --json`：没有 daemon 时启动一个（`outcome:"switched"`）；已有 daemon 时停旧起新并返回 `previousPid`/`previousVersion`。测试后已停止该 daemon。
+- `codegraph daemon --restart` 与代理自动切换共用 `restartSharedDaemon`；本轮没有在真实 MCP 客户端（Codex 等）里做升级演练，这一条属于未验证范围。
+
+没有运行 `npm run build` 的 viewer/UI 部分、没有做隔离安装验证（`verify:personal-install`），也没有远端 CI 结果。
+
+### 边界
+
+- 语言服务器自身的项目边界没有自动修好：被 `tsconfig` 排除的测试目录仍可能不在它的工作区里，只是现在由索引把确认过的位置补齐。想在服务器侧修好需要 tsserver 插件（`getExternalFiles`），本轮未实现、也未验证。
+- 动态导入只做了“安全拦截”，没有做提取扩展：`const { runUpgrade } = await import('./x')` 的解构绑定和 `mod.runUpgrade()` 命名空间成员调用目前没有边；前者会拒绝写盘（不写出半改文件），后者仍是未索引边界。
+- `EXTRACTION_UPGRADES` 目前为空表：所有现存升级都走完整重建，增量迁移路径只有单元测试覆盖。
+
 ## 2026-09-17：Windows 四并发与资源清理
 
 - 历史失败 `35190011391`：Windows 的 6 文件、10 项失败集中在索引超时、SQLite `EBUSY`、未赋值实例清理，以及旧索引任务在后续用例重置指标后继续写入。缺少 CPU/内存与分阶段日志，首次超时的具体资源瓶颈不能从历史记录确定。
@@ -10,7 +56,7 @@
 
 本机 Windows、Node 24.16.0：`npm run typecheck` 通过；四并发定向验证 10 文件、77 项通过（11.31 秒），包括上述六文件、并发锁、数据库维护、WAL 恢复与线程生命周期。新增回归覆盖取消期间删除数据库及指标隔离、初始化失败释放连接、message 与 exit 分离、线程报错后退出。未执行本地全量测试或完整构建；远端四并发 CI 待本批推送后确认，不能把本机通过当作远端长期稳定证明。
 
-新增文件仅为正式测试辅助模块与数据库线程回归文件，没有临时修改脚本或 `.ps1`。本批尚未进入已发布的 personal.4 安装包。
+随后四并发 CI `35217505615`（`fa4fbab`）三平台全部通过，Windows 测试用时 7 分 20 秒，上一轮单并发为 14 分 43 秒；共享 runner 的两次耗时不作为严格性能基准。新增文件仅为正式测试辅助模块与数据库线程回归文件，没有临时修改脚本或 `.ps1`。本批纳入 personal.5，不改写 personal.4 安装包。
 
 ## 2026-09-17：personal.4 发布后 CI 修复
 
