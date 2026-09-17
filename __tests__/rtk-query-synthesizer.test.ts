@@ -23,8 +23,13 @@ import { CodeGraph } from '../src';
 
 describe('rtk-query synthesizer', () => {
   let dir: string;
+  let cg: CodeGraph | null = null;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtk-query-')); });
-  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => {
+    cg?.close();
+    cg = null;
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
 
   it('extracts endpoints + generated hooks and bridges hook→endpoint (arrow + method + lazy + factory forms)', async () => {
     // Arrow form (shapeshift-style): `endpoints: build => ({...})`, `queryFn: () => {}`.
@@ -100,7 +105,7 @@ export function LazyForm() {
 `
     );
 
-    const cg = await CodeGraph.init(dir, { silent: true });
+    cg = await CodeGraph.init(dir, { silent: true });
     await cg.indexAll();
     const db = (cg as any).db.db;
 
@@ -154,7 +159,6 @@ export function LazyForm() {
       .all();
     expect(compToHook.length).toBeGreaterThan(0);
 
-    cg.close?.();
   });
 
   it('does not bridge a hand-written use*Query hook (no createApi, no sentinel) — 0 synth edges', async () => {
@@ -178,7 +182,7 @@ export function Thing() {
 `
     );
 
-    const cg = await CodeGraph.init(dir, { silent: true });
+    cg = await CodeGraph.init(dir, { silent: true });
     await cg.indexAll();
     const db = (cg as any).db.db;
 
@@ -192,6 +196,5 @@ export function Thing() {
       .get();
     expect(sentinel.c).toBe(0);
 
-    cg.close?.();
   });
 });

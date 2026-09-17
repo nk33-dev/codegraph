@@ -18,8 +18,13 @@ import { CodeGraph } from '../src';
 
 describe('laravel-event synthesizer', () => {
   let dir: string;
+  let cg: CodeGraph | null = null;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'laravel-event-')); });
-  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => {
+    cg?.close();
+    cg = null;
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
 
   const write = (rel: string, body: string) => {
     const p = path.join(dir, rel);
@@ -118,7 +123,7 @@ class SongService {
 }
 `);
 
-    const cg = await CodeGraph.init(dir, { silent: true });
+    cg = await CodeGraph.init(dir, { silent: true });
     await cg.indexAll();
     const db = (cg as any).db.db;
 
@@ -147,7 +152,6 @@ class SongService {
     // PRECISION: a queued job (::dispatch / dispatch()) produces nothing.
     expect(edges.some((r: any) => r.source === 'process')).toBe(false);
 
-    cg.close?.();
   });
 
   it('produces no edges in a PHP project with no Laravel events (clean control)', async () => {
@@ -157,13 +161,12 @@ class Client {
     public function send(string $url): string { return $url; }
 }
 `);
-    const cg = await CodeGraph.init(dir, { silent: true });
+    cg = await CodeGraph.init(dir, { silent: true });
     await cg.indexAll();
     const db = (cg as any).db.db;
     const count = db
       .prepare(`SELECT count(*) c FROM edges WHERE json_extract(metadata,'$.synthesizedBy') = 'laravel-event'`)
       .get();
     expect(count.c).toBe(0);
-    cg.close?.();
   });
 });

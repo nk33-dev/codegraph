@@ -55,7 +55,8 @@ describe('fuzzy matching respects lexical reachability of nested functions', () 
         '',
       ].join('\n')
     );
-    cg = await CodeGraph.init(tempDir, { index: true });
+    cg = await CodeGraph.init(tempDir);
+    await cg.indexAll();
     cg.resolveReferences();
 
     const closure = cg

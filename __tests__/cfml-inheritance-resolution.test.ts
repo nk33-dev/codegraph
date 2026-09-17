@@ -35,17 +35,19 @@ describe('CFML component-path inheritance resolution (#1152)', () => {
 
   const load = async () => {
     const cg = await CodeGraph.init(dir, { silent: true });
-    await cg.indexAll();
-    const db = (cg as any).db.db;
-    const edges: { src: string; srcFile: string; tgt: string; tgtFile: string; kind: string }[] = db
-      .prepare(
-        `SELECT s.name src, s.file_path srcFile, t.name tgt, t.file_path tgtFile, e.kind kind
-         FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
-         WHERE e.kind IN ('extends', 'implements')`
-      )
-      .all();
-    cg.close?.();
-    return edges;
+    try {
+      await cg.indexAll();
+      const db = (cg as any).db.db;
+      return db
+        .prepare(
+          `SELECT s.name src, s.file_path srcFile, t.name tgt, t.file_path tgtFile, e.kind kind
+           FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+           WHERE e.kind IN ('extends', 'implements')`
+        )
+        .all() as { src: string; srcFile: string; tgt: string; tgtFile: string; kind: string }[];
+    } finally {
+      cg.close();
+    }
   };
   const has = (edges: any[], src: string, tgt: string, tgtFile: string, kind = 'extends') =>
     edges.some((e) => e.src === src && e.tgt === tgt && e.tgtFile === tgtFile && e.kind === kind);
