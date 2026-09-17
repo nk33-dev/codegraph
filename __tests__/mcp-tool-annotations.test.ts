@@ -25,6 +25,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { ToolHandler, allTools, getStaticTools, tools, type ToolDefinition } from '../src/mcp/tools';
 import { CodeGraph } from '../src';
+import { IndexedProject } from './indexed-project';
 
 const ENV = 'CODEGRAPH_MCP_TOOLS';
 const ALL_TOOLS = allTools.map((t) => t.name).join(',');
@@ -108,6 +109,7 @@ describe('Read-only annotations on the codegraph MCP tools (#1018)', () => {
 describe('Live tool surface keeps annotations with a project open (#1018)', () => {
   let tempDir: string;
   let cg: CodeGraph | null = null;
+  let projectIndex: IndexedProject | undefined;
   const original = process.env[ENV];
 
   beforeEach(async () => {
@@ -116,11 +118,14 @@ describe('Live tool surface keeps annotations with a project open (#1018)', () =
       path.join(tempDir, 'pay.ts'),
       'export function processPayment(amount: number): boolean { return amount > 0; }\n'
     );
-    cg = await CodeGraph.init(tempDir, { index: true });
+    projectIndex = new IndexedProject(tempDir);
+    cg = projectIndex.graph;
+    await projectIndex.index();
   });
 
-  afterEach(() => {
-    cg?.close();
+  afterEach(async () => {
+    await projectIndex?.close();
+    projectIndex = undefined;
     cg = null;
     fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     if (original === undefined) delete process.env[ENV];

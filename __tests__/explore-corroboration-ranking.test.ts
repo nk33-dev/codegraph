@@ -27,6 +27,7 @@ import * as path from 'path';
 import * as os from 'os';
 import CodeGraph from '../src/index';
 import { ToolHandler } from '../src/mcp/tools';
+import { IndexedProject } from './indexed-project';
 
 /** Paths that explore rendered as full-body ``**`<path>`** —`` source sections.
  *  Headers are bold labels, not ATX headings (issue #778). */
@@ -43,6 +44,7 @@ describe('codegraph_explore — multi-term corroboration tier', () => {
   let testDir: string;
   let cg: CodeGraph;
   let handler: ToolHandler;
+  let projectIndex: IndexedProject | undefined;
 
   beforeEach(async () => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-corrob-'));
@@ -89,13 +91,16 @@ describe('codegraph_explore — multi-term corroboration tier', () => {
       `  load(): string[] { return []; }\n` +
       `}\n`);
 
-    cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
-    await cg.indexAll();
+    projectIndex = new IndexedProject(testDir);
+    cg = projectIndex.graph;
+    await projectIndex.index();
     handler = new ToolHandler(cg);
   });
 
-  afterEach(() => {
-    if (cg) cg.destroy();
+  afterEach(async () => {
+    await projectIndex?.close();
+    projectIndex = undefined;
+    handler?.closeAll();
     if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });
   });
 

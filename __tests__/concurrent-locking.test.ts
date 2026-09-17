@@ -25,6 +25,26 @@ function pragmaValue(raw: unknown, key: string): unknown {
   return row;
 }
 
+it('初始化索引失败时释放尚未交给调用方的数据库连接', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-init-failure-'));
+  const failure = new Error('模拟索引失败');
+  const index = vi.spyOn(CodeGraph.prototype, 'indexAll').mockRejectedValueOnce(failure);
+  const close = vi.spyOn(CodeGraph.prototype, 'close');
+  try {
+    await expect(CodeGraph.init(dir, { index: true })).rejects.toBe(failure);
+    expect(close).toHaveBeenCalledOnce();
+    // Windows 不允许删除仍被 SQLite 持有的文件，这里不加重试来掩盖泄漏。
+    fs.rmSync(path.join(dir, '.codegraph'), { recursive: true });
+  } finally {
+    // 保证修复回归时，这个用例本身也不会留下连接。
+    const instance = index.mock.contexts[0];
+    instance?.close();
+    index.mockRestore();
+    close.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 describe('issue #238 — connection PRAGMAs (#1)', () => {
   let dir: string;
   let conn: DatabaseConnection;

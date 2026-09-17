@@ -15,6 +15,7 @@ import * as os from 'os';
 import { CodeGraph } from '../src';
 import { ToolHandler } from '../src/mcp/tools';
 import { resetResourceMetrics } from '../src/resource-metrics';
+import { IndexedProject } from './indexed-project';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
@@ -42,19 +43,23 @@ function runStatusText(cwd: string, extraEnv: Record<string, string> = {}): stri
 
 describe('CodeGraph.resourceStatus（库级）', () => {
   let tempDir: string;
+  let projectIndex: IndexedProject | undefined;
 
   beforeEach(() => {
     resetResourceMetrics();
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resource-status-'));
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await projectIndex?.close();
+    projectIndex = undefined;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('报告生效档位，且不启动语言服务器', async () => {
     fs.writeFileSync(path.join(tempDir, 'a.ts'), 'export const x = 1;\n');
-    const cg = CodeGraph.initSync(tempDir);
-    await cg.indexAll();
+    projectIndex = new IndexedProject(tempDir);
+    const cg = projectIndex.graph;
+    await projectIndex.index();
 
     const status = cg.resourceStatus();
     expect(status.profile.name).toBe('balanced');
@@ -63,32 +68,51 @@ describe('CodeGraph.resourceStatus（库级）', () => {
     // 关键契约：resourceStatus 只读文件与内存，不启动 LSP。
     expect(cg.getLspManager().hasLiveServer()).toBe(false);
     expect(status.reported).toBeNull(); // 没有 daemon 写过快照
-    cg.close();
   });
 
   it('索引基线随全量与增量运行更新', async () => {
     fs.writeFileSync(path.join(tempDir, 'a.ts'), 'export const x = 1;\n');
-    const cg = CodeGraph.initSync(tempDir);
-    await cg.indexAll();
+    projectIndex = new IndexedProject(tempDir);
+    const cg = projectIndex.graph;
+    await projectIndex.index();
     expect(cg.resourceStatus().process.index.fullRuns).toBe(1);
 
     fs.writeFileSync(path.join(tempDir, 'a.ts'), 'export const x = 2;\n');
-    await cg.sync();
+    await projectIndex.sync();
     const idx = cg.resourceStatus().process.index;
     expect(idx.incrementalRuns).toBe(1);
     expect(idx.incrementalLastFiles).toBe(1);
-    cg.close();
   });
 
   it('读回 daemon 写入的快照（reported 字段）', async () => {
     fs.writeFileSync(path.join(tempDir, 'a.ts'), 'export const x = 1;\n');
-    const cg = CodeGraph.initSync(tempDir);
-    await cg.indexAll();
+    projectIndex = new IndexedProject(tempDir);
+    const cg = projectIndex.graph;
+    await projectIndex.index();
 
     const { writeResourceMetricsSnapshot } = await import('../src/resource-metrics');
     expect(writeResourceMetricsSnapshot(tempDir, cg.resourceStatus().process)).toBe(true);
     expect(cg.resourceStatus().reported?.index.fullRuns).toBe(1);
-    cg.close();
+  });
+
+  it('清理正在索引的项目后可删除数据库，且不会污染下一个项目的指标', async () => {
+    fs.writeFileSync(path.join(tempDir, 'a.ts'), 'export const x = 1;\n');
+    projectIndex = new IndexedProject(tempDir);
+    let reachedParsing!: () => void;
+    const parsing = new Promise<void>(resolve => { reachedParsing = resolve; });
+    const indexing = projectIndex.index({
+      onProgress: progress => { if (progress.phase === 'parsing') reachedParsing(); },
+    });
+    const cancelled = expect(indexing).rejects.toThrow('索引已取消');
+    await parsing;
+    await projectIndex.close();
+    await cancelled;
+    fs.rmSync(path.join(tempDir, '.codegraph'), { recursive: true });
+
+    resetResourceMetrics();
+    projectIndex = new IndexedProject(tempDir);
+    await projectIndex.index();
+    expect(projectIndex.graph.resourceStatus().process.index.fullRuns).toBe(1);
   });
 });
 
@@ -96,18 +120,21 @@ describe('MCP codegraph_status 展示资源治理', () => {
   let tempDir: string;
   let cg: CodeGraph;
   let handler: ToolHandler;
+  let projectIndex: IndexedProject | undefined;
 
   beforeEach(async () => {
     resetResourceMetrics();
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-status-mcp-'));
     fs.writeFileSync(path.join(tempDir, 'a.ts'), 'export function alpha(): number { return 1; }\n');
-    cg = CodeGraph.initSync(tempDir);
-    await cg.indexAll();
+    projectIndex = new IndexedProject(tempDir);
+    cg = projectIndex.graph;
+    await projectIndex.index();
     handler = new ToolHandler(cg);
   });
-  afterEach(() => {
-    handler.closeAll();
-    cg.close();
+  afterEach(async () => {
+    await projectIndex?.close();
+    projectIndex = undefined;
+    handler?.closeAll();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -124,16 +151,19 @@ describe('MCP codegraph_status 展示资源治理', () => {
 
 describe('codegraph status 展示资源治理', () => {
   let tempDir: string;
+  let projectIndex: IndexedProject | undefined;
 
   beforeEach(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-status-res-'));
     // status 的内容段只在已初始化的项目上输出；先建一个小索引。
     fs.writeFileSync(path.join(tempDir, 'a.ts'), 'export const x = 1;\n');
-    const cg = await CodeGraph.init(tempDir);
-    await cg.indexAll();
-    cg.close();
+    projectIndex = new IndexedProject(tempDir);
+    await projectIndex.index();
+    await projectIndex.close();
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await projectIndex?.close();
+    projectIndex = undefined;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 

@@ -693,15 +693,16 @@ export class DatabaseConnection {
         };
         try {
           const worker = new Worker(workerSource, { eval: true, workerData: { dbPath: this.dbPath, mode } });
+          let checkpoint: Record<string, number> | null = null;
           worker.once('message', (m: { row?: Record<string, number> | null; err?: string | null }) => {
             if (m?.err && process.env.CODEGRAPH_WAL_VALVE_DEBUG) {
               console.error(`[wal-valve] checkpoint worker (${mode}): ${m.err}`);
             }
-            void worker.terminate();
-            finish(m?.row ?? null);
+            checkpoint = m?.row ?? null;
           });
-          worker.once('error', () => { void worker.terminate(); finish(null); });
-          worker.once('exit', () => finish(null));
+          worker.once('error', () => { checkpoint = null; });
+          // 消息只代表 SQL 已完成；exit 才代表线程及原生资源已释放。
+          worker.once('exit', code => finish(code === 0 ? checkpoint : null));
         } catch {
           finish(null);
         }
@@ -790,8 +791,8 @@ export class DatabaseConnection {
         };
         try {
           const worker = new Worker(workerSource, { eval: true, workerData: { dbPath: this.dbPath, pragmas } });
-          worker.once('message', () => { void worker.terminate(); finish(); });
-          worker.once('error', () => { void worker.terminate(); finish(); });
+          // worker 在发送 done 后自然退出；调用方必须等到 exit 才能删除数据库。
+          worker.once('error', () => { /* exit 会统一完成清理 */ });
           worker.once('exit', finish);
         } catch {
           finish();

@@ -362,9 +362,14 @@ export class CodeGraph {
 
     const instance = new CodeGraph(db, queries, resolvedRoot);
 
-    // Run initial indexing if requested
-    if (options.index) {
-      await instance.indexAll({ onProgress: options.onProgress });
+    // 实例返回前由 init 持有；初始化索引失败时，调用方还拿不到实例来关闭连接。
+    try {
+      if (options.index) {
+        await instance.indexAll({ onProgress: options.onProgress });
+      }
+    } catch (error) {
+      instance.close();
+      throw error;
     }
 
     return instance;

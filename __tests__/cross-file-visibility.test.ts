@@ -11,9 +11,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import CodeGraph from '../src/index';
+import { IndexedProject } from './indexed-project';
 
 let tempDir: string;
 let cg: CodeGraph | null = null;
+let projectIndex: IndexedProject | undefined;
 
 function project(files: Record<string, string>): void {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-visibility-'));
@@ -26,7 +28,9 @@ function project(files: Record<string, string>): void {
 
 /** `calls` targets of the function named `caller`, as `file:name` strings. */
 async function calleesOf(caller: string): Promise<string[]> {
-  cg = await CodeGraph.init(tempDir, { index: true });
+  projectIndex = new IndexedProject(tempDir);
+  cg = projectIndex.graph;
+  await projectIndex.index();
   cg.resolveReferences();
   const from = cg.getNodesByKind('function').concat(cg.getNodesByKind('method')).find((n) => n.name === caller)!;
   expect(from).toBeDefined();
@@ -38,8 +42,9 @@ async function calleesOf(caller: string): Promise<string[]> {
     .map((n) => `${n.filePath}:${n.name}`);
 }
 
-afterEach(() => {
-  cg?.close();
+afterEach(async () => {
+  await projectIndex?.close();
+  projectIndex = undefined;
   cg = null;
   fs.rmSync(tempDir, { recursive: true, force: true });
 });

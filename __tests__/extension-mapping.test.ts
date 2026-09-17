@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { CodeGraph } from '../src';
+import { IndexedProject } from './indexed-project';
 import { detectLanguage, isSourceFile } from '../src/extraction/grammars';
 import { loadExtensionOverrides, clearProjectConfigCache } from '../src/project-config';
 
@@ -105,11 +105,14 @@ describe('custom extension → language mapping (#906)', () => {
 
   describe('indexAll honors codegraph.json end-to-end', () => {
     let dir: string;
+    let projectIndex: IndexedProject | undefined;
     beforeEach(() => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-extmap-idx-'));
       clearProjectConfigCache();
     });
-    afterEach(() => {
+    afterEach(async () => {
+      await projectIndex?.close();
+      projectIndex = undefined;
       clearProjectConfigCache();
       fs.rmSync(dir, { recursive: true, force: true });
     });
@@ -119,8 +122,9 @@ describe('custom extension → language mapping (#906)', () => {
       fs.writeFileSync(p, body);
     };
     const indexAndQuery = async () => {
-      const cg = await CodeGraph.init(dir, { silent: true });
-      await cg.indexAll();
+      projectIndex = new IndexedProject(dir);
+      const cg = projectIndex.graph;
+      await projectIndex.index();
       const db = (cg as any).db.db;
       const nodes = db
         .prepare('SELECT name, kind, file_path, language FROM nodes WHERE file_path = ?')
@@ -128,7 +132,6 @@ describe('custom extension → language mapping (#906)', () => {
       const files = db
         .prepare('SELECT path, language FROM files WHERE path = ?')
         .all('widget.foo');
-      cg.close?.();
       return { nodes, files };
     };
 

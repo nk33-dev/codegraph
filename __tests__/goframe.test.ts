@@ -15,12 +15,17 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { CodeGraph } from '../src';
+import { IndexedProject } from './indexed-project';
 
 describe('GoFrame route synthesizer', () => {
   let dir: string;
+  let projectIndex: IndexedProject | undefined;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'goframe-')); });
-  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  afterEach(async () => {
+    await projectIndex?.close();
+    projectIndex = undefined;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 
   it('joins each g.Meta route to its controller method by the request-type signature', async () => {
     fs.writeFileSync(path.join(dir, 'go.mod'), 'module example.com/app\n\nrequire github.com/gogf/gf/v2 v2.7.0\n');
@@ -85,8 +90,9 @@ func helper(ctx context.Context) (res *system.DeptSearchRes, err error) {
 `
     );
 
-    const cg = await CodeGraph.init(dir, { silent: true });
-    await cg.indexAll();
+    projectIndex = new IndexedProject(dir);
+    const cg = projectIndex.graph;
+    await projectIndex.index();
     const db = (cg as any).db.db;
 
     const routes = db.prepare(`SELECT name FROM nodes WHERE kind='route' ORDER BY name`).all();
@@ -99,7 +105,6 @@ func helper(ctx context.Context) (res *system.DeptSearchRes, err error) {
          ORDER BY route`
       )
       .all();
-    cg.close?.();
 
     // Three routes from path-bearing g.Meta; the mime-only response g.Meta makes none.
     expect(routes.map((r: any) => r.name)).toEqual(['GET /dept/list', 'GET /orphan', 'POST /dept/add']);
@@ -159,8 +164,9 @@ func (c *c${mod}) List(ctx context.Context, req *${mod}.ListReq) (res *${mod}.Li
       );
     }
 
-    const cg = await CodeGraph.init(dir, { silent: true });
-    await cg.indexAll();
+    projectIndex = new IndexedProject(dir);
+    const cg = projectIndex.graph;
+    await projectIndex.index();
     const db = (cg as any).db.db;
     const rows = db
       .prepare(
@@ -170,7 +176,6 @@ func (c *c${mod}) List(ctx context.Context, req *${mod}.ListReq) (res *${mod}.Li
          ORDER BY route`
       )
       .all();
-    cg.close?.();
 
     expect(rows).toHaveLength(2);
     // Each route binds to ITS OWN module's handler, never the other's.
