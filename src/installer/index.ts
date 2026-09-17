@@ -103,8 +103,8 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     return;
   }
 
-  // 个人版只配置客户端，不让配置向导把刚装好的个人包替换成官方包。
-  // 官方版保留原来的 CLI 安装询问；--yes 仍假定 CLI 已安装。
+  // The personal build configures clients only, so setup cannot replace it with the upstream package.
+  // The upstream build keeps its CLI installation prompt; --yes still assumes the CLI is installed.
   if (PERSONAL_DISTRIBUTION) {
     clack.log.info('Personal CLI: use `codegraph upgrade`; run `codegraph doctor` to verify the active entry.');
   } else if (!useDefaults) {
@@ -185,18 +185,17 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     autoAllow = false;
   }
 
-  // Step 4½: anonymous usage telemetry — a visible default-on toggle, asked
+  // Step 4½: anonymous usage telemetry — a visible default-off toggle, asked
   // exactly once. Skipped when an env var (DO_NOT_TRACK / CODEGRAPH_TELEMETRY)
   // already decides, or when a previous run stored a choice — re-runs and
   // upgrades never re-ask.
   if (!useDefaults && getTelemetry().getStatus().decidedBy === 'default' && !getTelemetry().hasStoredChoice()) {
     const share = await clack.confirm({
       message: 'Share anonymous usage stats? (No code, paths, or names — see TELEMETRY.md)',
-      initialValue: true,
+      initialValue: false,
     });
     if (clack.isCancel(share)) {
-      // Don't kill the install over the telemetry question — leave it
-      // undecided (the documented default + first-run notice applies later).
+      // Don't kill the install over the telemetry question; the documented default remains off.
       clack.log.info('Skipped — manage anytime with `codegraph telemetry on|off`.');
     } else {
       getTelemetry().setEnabled(share, 'installer');
@@ -247,7 +246,7 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     }
     const result = target.install(location, { autoAllow, promptHook });
     installedIds.push(target.id);
-    // 配置字节未变也可能刚升级了包，已运行的客户端仍持有旧 MCP 进程。
+    // Unchanged config bytes can still follow a package upgrade while running clients retain the old MCP process.
     restartTargets.push(target.displayName);
     for (const file of result.files) {
       if (file.action === 'created') sawCreated = true;

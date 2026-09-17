@@ -173,13 +173,14 @@ npm run codegraph -- doctor
 
 ## 遥测
 
-项目保留上游的匿名使用统计机制，字段和开关见 [TELEMETRY.md](TELEMETRY.md)。可随时关闭：
+匿名使用统计默认关闭，字段和开关见 [TELEMETRY.md](TELEMETRY.md)。需要时可显式开启：
 
 ```sh
-codegraph telemetry off
+codegraph telemetry on
 ```
 
-也支持环境变量 `CODEGRAPH_TELEMETRY=0` 或 `DO_NOT_TRACK=1`。
+也可用 `CODEGRAPH_TELEMETRY=1` 仅为当前环境开启；`codegraph telemetry off`、
+`CODEGRAPH_TELEMETRY=0` 和 `DO_NOT_TRACK=1` 会关闭并阻止发送。
 
 ## 致谢与许可
 

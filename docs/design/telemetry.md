@@ -116,19 +116,19 @@ Resolution order (first match wins):
 1. `DO_NOT_TRACK=1` (community standard — always honored) → off
 2. `CODEGRAPH_TELEMETRY=0|1` → forced off/on for that process
 3. Global config `~/.codegraph/telemetry.json` → stored user choice
-4. Default: **on**, gated by the first-run notice below
+4. Default: **off** — no recording, files, or network until explicit opt-in
 
 Surfaces:
 
 - **Installer (interactive):** a visible clack toggle in the existing prompt flow —
   "Share anonymous usage data? (no code, paths, or names — see TELEMETRY.md)" — default
-  yes. Choice persisted with `consent_source: "installer"`. Re-runs/upgrades respect the
+  no. Choice persisted with `consent_source: "installer"`. Re-runs/upgrades respect the
   stored choice and don't re-ask.
-- **Headless paths** (`npx codegraph init`, MCP server — no TTY, never prompt): right
-  before the **first actual send** (recording only buffers locally and stays silent — so
-  the installer's explicit toggle always precedes any notice), print one line to
-  **stderr** and record `first_run_notice_shown`:
-  `codegraph collects anonymous usage stats (no code or paths) — "codegraph telemetry off" or CODEGRAPH_TELEMETRY=0 disables. Details: TELEMETRY.md`
+- **Headless paths** (`npx codegraph init`, MCP server — no TTY, never prompt): remain off
+  unless `CODEGRAPH_TELEMETRY=1` or a saved opt-in enables telemetry. An environment-only
+  opt-in may create a stable machine ID, but stores `enabled:false` without counting as a
+  saved consent choice. Removing the environment variable returns to default-off. Legacy
+  `default-notice` records likewise do not count as explicit consent.
 - **CLI:** `codegraph telemetry status|on|off` (status prints the machine ID, current
   state, and what decided it). Deleting `~/.codegraph/telemetry.json` resets everything,
   including the machine ID.
@@ -139,7 +139,7 @@ Surfaces:
 {
   "enabled": true,
   "machine_id": "uuid-v4",
-  "consent_source": "installer | default-notice | cli",
+  "consent_source": "installer | cli | env | default-notice (legacy)",
   "first_run_notice_shown": true,
   "updated_at": "2026-06-12T00:00:00Z"
 }
@@ -237,8 +237,8 @@ Full documentation is [`telemetry-dashboard/README.md`](../../telemetry-dashboar
 ## codegraph-pro rule (do not lose this in upstream merges)
 
 The private `codegraph-pro` fork ships inside customer containers whose guarantee is
-"nothing leaves the box" — including telemetry. In the fork, telemetry must be **default-off
-and not enableable by the installer** (compile-time constant or stripped module), and the
+"nothing leaves the box" — including telemetry. Although the public client is now default-off,
+the pro fork must additionally make telemetry **not enableable by the installer** (compile-time constant or stripped module), and the
 container sets `CODEGRAPH_TELEMETRY=0` as belt-and-braces. This rule lives in the fork's
 CLAUDE.md and must survive every upstream merge.
 
@@ -249,7 +249,7 @@ CLAUDE.md and must survive every upstream merge.
    Worker over the same D1: weekly active machines, installs by target, usage by
    tool × client, version adoption, languages indexed.
 3. Client module + config + `codegraph telemetry` subcommand + MCP `clientInfo` plumbing.
-4. Installer toggle + first-run notice. CHANGELOG entry under `[Unreleased]` announcing
+4. Default-off installer toggle and headless behavior. CHANGELOG entry under `[Unreleased]` announcing
    telemetry, the default, and every off-switch. Release.
 
 Tests (no DB mocking, per repo convention; fetch mocked at `globalThis.fetch`):

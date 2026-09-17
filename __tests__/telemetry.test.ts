@@ -35,7 +35,7 @@ describe('Telemetry', () => {
       dir,
       fetchImpl: mockFetch(calls),
       now: () => nowValue,
-      env: {},
+      env: { CODEGRAPH_TELEMETRY: '1' },
       stderr: (line) => stderrLines.push(line),
       installExitHook: false,
       ...overrides,
@@ -53,9 +53,9 @@ describe('Telemetry', () => {
   });
 
   describe('consent precedence', () => {
-    it('defaults to enabled when nothing decides otherwise', () => {
-      const t = make();
-      expect(t.getStatus()).toMatchObject({ enabled: true, decidedBy: 'default', machineId: null });
+    it('defaults to disabled when nothing decides otherwise', () => {
+      const t = make({ env: {} });
+      expect(t.getStatus()).toMatchObject({ enabled: false, decidedBy: 'default', machineId: null });
     });
 
     it('DO_NOT_TRACK beats everything, including a forced-on env and config', () => {
@@ -75,16 +75,34 @@ describe('Telemetry', () => {
     });
 
     it('stored config decides when no env is set', () => {
-      const t = make();
+      const t = make({ env: {} });
       t.setEnabled(false, 'installer');
       expect(t.getStatus()).toMatchObject({ enabled: false, decidedBy: 'config' });
+    });
+
+    it('treats legacy default-notice config as non-explicit after upgrade', () => {
+      fs.writeFileSync(path.join(dir, 'telemetry.json'), JSON.stringify({
+        enabled: true,
+        machine_id: 'legacy-machine-id',
+        consent_source: 'default-notice',
+        first_run_notice_shown: true,
+        updated_at: nowValue.toISOString(),
+      }));
+
+      const t = make({ env: {} });
+      expect(t.getStatus()).toMatchObject({
+        enabled: false,
+        decidedBy: 'default',
+        machineId: 'legacy-machine-id',
+      });
+      expect(t.hasStoredChoice()).toBe(false);
     });
   });
 
   describe('off is off', () => {
-    it('disabled: records nothing, sends nothing, creates no files', async () => {
+    it('default-off records nothing, sends nothing, and creates no files', async () => {
       const fetchSpy = mockFetch(calls);
-      const t = make({ env: { CODEGRAPH_TELEMETRY: '0' }, fetchImpl: fetchSpy });
+      const t = make({ env: {}, fetchImpl: fetchSpy });
       t.recordUsage('mcp_tool', 'codegraph_explore', true);
       t.recordLifecycle('install', { scope: 'local', kind: 'fresh' });
       t.persistSync();
@@ -105,7 +123,7 @@ describe('Telemetry', () => {
     });
   });
 
-  describe('first-run notice & machine id', () => {
+  describe('explicit opt-in & machine id', () => {
     it('recording only buffers — no notice, no config until something is sent', async () => {
       const t = make();
       t.recordUsage('mcp_tool', 'codegraph_explore', true);
@@ -118,19 +136,21 @@ describe('Telemetry', () => {
       expect(calls).toHaveLength(0);
     });
 
-    it('prints the notice exactly once, before the first actual send', async () => {
+    it('an environment opt-in creates an identity without persisting opt-in', async () => {
       const t = make();
       t.recordLifecycle('index', { languages: ['go'] });
       await t.flushNow();
       t.recordLifecycle('index', { languages: ['rust'] });
       await t.flushNow();
       expect(calls).toHaveLength(2);
-      expect(stderrLines).toHaveLength(1);
-      expect(stderrLines[0]).toContain('codegraph telemetry off');
-      expect(stderrLines[0]).toContain('CODEGRAPH_TELEMETRY=0');
+      expect(stderrLines).toEqual([]);
       const config = JSON.parse(fs.readFileSync(t.configPath, 'utf8'));
       expect(config.machine_id).toMatch(/^[0-9a-f-]{36}$/);
-      expect(config.consent_source).toBe('default-notice');
+      expect(config.enabled).toBe(false);
+      expect(config.consent_source).toBe('env');
+      const withoutEnv = make({ env: {} });
+      expect(withoutEnv.getStatus()).toMatchObject({ enabled: false, decidedBy: 'default' });
+      expect(withoutEnv.hasStoredChoice()).toBe(false);
     });
 
     it('keeps the machine id stable across instances and explicit toggles', async () => {
@@ -202,7 +222,7 @@ describe('Telemetry', () => {
       await t.flushNow();
       expect(calls[0]!.url).toBe(TELEMETRY_ENDPOINT);
 
-      const t2 = make({ env: { CODEGRAPH_TELEMETRY_ENDPOINT: 'http://localhost:9999/v1/events' } });
+      const t2 = make({ env: { CODEGRAPH_TELEMETRY: '1', CODEGRAPH_TELEMETRY_ENDPOINT: 'http://localhost:9999/v1/events' } });
       t2.recordLifecycle('uninstall', {});
       await t2.flushNow();
       expect(calls[1]!.url).toBe('http://localhost:9999/v1/events');
@@ -280,7 +300,7 @@ describe('Telemetry', () => {
   describe('protocol safety', () => {
     it('never writes to stdout', async () => {
       const stdoutSpy = vi.spyOn(process.stdout, 'write');
-      const t = make({ env: { CODEGRAPH_TELEMETRY_DEBUG: '1' } });
+      const t = make({ env: { CODEGRAPH_TELEMETRY: '1', CODEGRAPH_TELEMETRY_DEBUG: '1' } });
       t.recordUsage('mcp_tool', 'codegraph_explore', true);
       t.recordLifecycle('install', { scope: 'local', kind: 'fresh' });
       await t.flushNow();

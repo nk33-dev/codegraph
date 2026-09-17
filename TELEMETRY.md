@@ -1,13 +1,30 @@
 # Telemetry
 
-CodeGraph collects a small set of **anonymous usage statistics** — which commands and
-tools get used, which languages get indexed, which agents drive usage — so we can tell
+CodeGraph can collect a small set of **anonymous usage statistics** — which commands and
+tools get used, which languages get indexed, which agents drive usage — so maintainers can tell
 which of the 20+ languages and 8 agent integrations deserve the most work. This page is
 the complete list of what is collected. If a field isn't on this page, it isn't collected;
 the ingest endpoint enforces this list as an allowlist and is itself
 [public, auditable code](telemetry-worker/) in this repository.
 
-## Turning it off
+Telemetry is **disabled by default**. Until you explicitly enable it, CodeGraph records
+nothing, creates no telemetry files, opens no connection to the telemetry endpoint, and
+sends no "disabled" ping.
+
+## Turning it on
+
+Either of these explicitly opts in:
+
+```bash
+codegraph telemetry on         # stores your choice
+export CODEGRAPH_TELEMETRY=1   # enables only this process/environment
+```
+
+The interactive installer asks once with a visible default-off toggle. Re-runs and upgrades
+respect an explicit saved choice and do not ask again. Legacy `default-notice` records created
+by older default-on releases are not treated as explicit consent.
+
+## Turning it off again
 
 Any of these works, permanently:
 
@@ -21,12 +38,7 @@ export DO_NOT_TRACK=1          # the cross-tool standard — always honored
 ```
 
 `codegraph telemetry status` shows the current state, what decided it, and your machine ID.
-The interactive installer (`codegraph install`) asks up front with a visible default-on
-toggle and never re-asks. If you never saw the installer (e.g. `npx` straight into `init`),
-a one-line notice is printed to stderr before the first time anything is sent.
-
-Off means off: when disabled, CodeGraph records nothing, opens no connection to the
-telemetry endpoint, and sends no "opted out" ping.
+Off means off: disabling telemetry also deletes buffered, unsent data.
 
 Separately from telemetry, the MCP server checks GitHub for a newer release in the
 background (at most once a day) so it can tell you an update exists — it fetches a

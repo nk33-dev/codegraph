@@ -89,7 +89,7 @@ export interface ClientInfo {
 interface ConfigFile {
   enabled: boolean;
   machine_id: string;
-  consent_source: 'installer' | 'default-notice' | 'cli';
+  consent_source: 'installer' | 'default-notice' | 'cli' | 'env';
   first_run_notice_shown?: boolean;
   updated_at: string;
 }
@@ -120,6 +120,12 @@ interface EventLine {
   props: Record<string, unknown>;
 }
 type BufferLine = CountLine | EventLine;
+
+function hasExplicitConsent(config: ConfigFile | null): config is ConfigFile {
+  return config !== null
+    && config.consent_source !== 'env'
+    && config.consent_source !== 'default-notice';
+}
 
 export interface TelemetryOptions {
   /** Global state dir; defaults to ~/.codegraph. Tests inject a temp dir. */
@@ -182,7 +188,7 @@ export class Telemetry {
 
   /**
    * Resolution order (first match wins) — keep in sync with TELEMETRY.md:
-   * DO_NOT_TRACK=1 > CODEGRAPH_TELEMETRY=0|1 > stored config > default on.
+   * DO_NOT_TRACK=1 > CODEGRAPH_TELEMETRY=0|1 > explicit stored choice > default off.
    */
   getStatus(): TelemetryStatus {
     const config = this.readConfig();
@@ -196,10 +202,10 @@ export class Telemetry {
       const on = forced !== '0' && forced.toLowerCase() !== 'false';
       return { enabled: on, decidedBy: 'CODEGRAPH_TELEMETRY', machineId, configPath: this.configPath };
     }
-    if (config) {
+    if (hasExplicitConsent(config)) {
       return { enabled: config.enabled, decidedBy: 'config', machineId, configPath: this.configPath };
     }
-    return { enabled: true, decidedBy: 'default', machineId, configPath: this.configPath };
+    return { enabled: false, decidedBy: 'default', machineId, configPath: this.configPath };
   }
 
   isEnabled(): boolean {
@@ -225,9 +231,9 @@ export class Telemetry {
     }
   }
 
-  /** True once any consent decision (or the first-run notice) is on disk. */
+  /** True once an explicit installer or CLI consent decision is stored on disk. */
   hasStoredChoice(): boolean {
-    return this.readConfig() !== null;
+    return hasExplicitConsent(this.readConfig());
   }
 
   // -------------------------------------------------------------- recording
@@ -292,13 +298,9 @@ export class Telemetry {
       }
       let failed: BufferLine[] = [];
       if (sendable.length > 0) {
-        // Consent gate: the one-time notice precedes the FIRST bytes that
-        // ever leave the machine (and mints the machine id). Recording only
-        // buffers locally, so it stays silent — this lets the installer show
-        // its explicit consent toggle before any notice can fire, instead of
-        // the preAction usage count pre-empting it. An explicit installer/CLI
-        // choice sets first_run_notice_shown and suppresses this permanently.
-        this.firstRunNotice();
+        // An environment-only opt-in may have no saved config yet. Mint a
+        // stable machine ID without persisting telemetry as enabled.
+        this.ensureSendingIdentity();
         failed = await this.send(sendable, timeoutMs);
       }
       // Whatever didn't go out returns to the queue (append — writers may
@@ -356,28 +358,17 @@ export class Telemetry {
     }
   }
 
-  /**
-   * Default-on consent is gated by a one-time stderr notice (interactive
-   * installs record their choice explicitly and never reach this).
-   */
-  private firstRunNotice(): void {
+  /** Create a stable identity for an environment-only opt-in without persisting opt-in. */
+  private ensureSendingIdentity(): void {
     const config = this.readConfig();
-    if (config?.first_run_notice_shown) return;
-    if (!config) {
-      this.writeConfig({
-        enabled: true,
-        machine_id: randomUUID(),
-        consent_source: 'default-notice',
-        first_run_notice_shown: true,
-        updated_at: this.now().toISOString(),
-      });
-    } else {
-      this.writeConfig({ ...config, first_run_notice_shown: true, updated_at: this.now().toISOString() });
-    }
-    this.writeStderr(
-      `codegraph collects anonymous usage stats (no code, paths, or names) — ` +
-      `"codegraph telemetry off" or CODEGRAPH_TELEMETRY=0 disables. Details: ${TELEMETRY_DOCS}\n`,
-    );
+    if (config) return;
+    this.writeConfig({
+      enabled: false,
+      machine_id: randomUUID(),
+      consent_source: 'env',
+      first_run_notice_shown: true,
+      updated_at: this.now().toISOString(),
+    });
   }
 
   /**
