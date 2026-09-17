@@ -1428,7 +1428,11 @@ export function resolvePhpImportedStaticCall(
   // local type inference even when a class import has the same local name.
   const lines = context.getFileLines?.(ref.filePath) ?? context.readFile(ref.filePath)?.split('\n');
   const line = lines?.[ref.line - 1];
-  if (line?.slice(ref.column).startsWith('$')) return undefined;
+  const escapedReceiver = receiver!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (
+    line?.slice(ref.column).startsWith('$') ||
+    new RegExp(`\\$${escapedReceiver}\\s*->\\s*$`).test(line?.slice(0, ref.column) ?? '')
+  ) return undefined;
 
   const fqn = imp.source.replace(/^\\/, '');
   const separator = fqn.lastIndexOf('\\');

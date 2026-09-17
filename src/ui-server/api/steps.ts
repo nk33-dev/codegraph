@@ -638,16 +638,29 @@ export async function buildSteps(cg: CodeGraph, projectRoot: string, query: URLS
       sites = new Map();
       programs.set(fn.id, sites);
     }
-    const key = `${hop.line}:${hop.column}:${what.step ?? what.into ?? ''}`;
-    if (sites.has(key)) return;
-    sites.set(key, {
+    const candidate: ProgramSite = {
       ...what,
       at: { line: hop.line, column: hop.column, end: hop.end },
       ...(hop.within ? { within: hop.within } : {}),
       guards: [...guards],
       ...(loops.length > 0 ? { loops: [...loops] } : {}),
       ...(trigger ? { trigger } : {}),
-    });
+    };
+    const sameTarget = what.step ?? what.into ?? '';
+    const contains = (outer: ProgramSite['at'], inner: ProgramSite['at']): boolean => {
+      const startsBefore = outer.line < inner.line
+        || (outer.line === inner.line && outer.column <= inner.column);
+      const endsAfter = outer.end.line > inner.end.line
+        || (outer.end.line === inner.end.line && outer.end.column >= inner.end.column);
+      return startsBefore && endsAfter;
+    };
+    for (const [existingKey, existing] of sites) {
+      if ((existing.step ?? existing.into ?? '') !== sameTarget) continue;
+      if (!contains(candidate.at, existing.at) && !contains(existing.at, candidate.at)) continue;
+      if (contains(candidate.at, existing.at)) sites.set(existingKey, candidate);
+      return;
+    }
+    sites.set(`${hop.line}:${hop.column}:${sameTarget}`, candidate);
   };
   const truncated = { steps: 0, hubs: 0, chrome: 0 };
   let effectScans = 0;
@@ -880,7 +893,9 @@ export async function buildSteps(cg: CodeGraph, projectRoot: string, query: URLS
       firedSpans.set(fold.node.id, list);
     }
     const hop: HopSite = fold.first ?? local;
-    if (!target.first) target.first = hop;
+    // Chained calls can yield several edges for one effect. Keep the outer span when it
+    // encloses the first one so calls inside its arguments execute before the effect.
+    if (!target.first || hopInside(target.first, hop)) target.first = hop;
     if (!target.region) target.region = regionOf(from, fold.chain);
     const id = link(from, target, 'effect', fold.chain, [...fold.whens, when], wireSite, null, fired, hop.within);
     record(fold.node, local, guards, { step: target.id, link: id }, fired, await loopsAt(fold.node, at));
@@ -1439,7 +1454,13 @@ export async function buildSteps(cg: CodeGraph, projectRoot: string, query: URLS
   const byDepth = new Map<number, StepRecord[]>();
   for (const s of steps.values()) byDepth.set(s.depth, [...(byDepth.get(s.depth) ?? []), s]);
   for (const row of byDepth.values()) {
-    row.sort((a, b) => hopCompare(a.first, b.first) || a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
+    const runsWithin = (inner: StepRecord, outer: StepRecord): boolean =>
+      !!inner.first?.within && (sitesByStep.get(outer.id) ?? []).some((site) => site.text === inner.first!.within);
+    row.sort((a, b) =>
+      (runsWithin(a, b) ? -1 : runsWithin(b, a) ? 1 : 0)
+      || hopCompare(a.first, b.first)
+      || a.label.localeCompare(b.label)
+      || a.id.localeCompare(b.id));
     row.forEach((s, i) => {
       s.order = i;
     });

@@ -36,6 +36,7 @@ import {
   getAllFrameworkResolvers,
   getApplicableFrameworks,
 } from '../resolution/frameworks';
+import { dynamicNamespaceImportSignature } from '../graph/dynamic-import';
 
 // Re-export for backward compatibility
 export { generateNodeId } from './tree-sitter-helpers';
@@ -2763,6 +2764,8 @@ export class TreeSitterExtractor {
               isExported,
             });
 
+            if (varNode) this.emitDynamicNamespaceImport(child, varNode.id);
+
             // Extract type annotation references (e.g., const x: ITextModel = ...)
             if (varNode) {
               this.extractVariableTypeAnnotation(child, varNode.id);
@@ -3087,6 +3090,49 @@ export class TreeSitterExtractor {
         }
       }
     }
+  }
+
+  private dynamicNamespaceImportBinding(
+    declarator: SyntaxNode,
+  ): { localName: string; source: string; nameNode: SyntaxNode } | null {
+    if (declarator.type !== 'variable_declarator') return null;
+    const nameNode = getChildByField(declarator, 'name');
+    const valueNode = getChildByField(declarator, 'value');
+    if (!nameNode || nameNode.type !== 'identifier' || !valueNode) return null;
+    const imported = this.dynamicNamespaceImport(valueNode);
+    if (!imported) return null;
+    return { localName: getNodeText(nameNode, this.source), source: imported.source, nameNode };
+  }
+
+  private emitDynamicNamespaceImport(declarator: SyntaxNode, fromNodeId: string): void {
+    const binding = this.dynamicNamespaceImportBinding(declarator);
+    if (!binding) return;
+    this.createNode('import', binding.source, declarator, {
+      signature: dynamicNamespaceImportSignature(binding.localName, binding.source),
+    });
+    this.unresolvedReferences.push({
+      fromNodeId,
+      referenceName: binding.localName,
+      referenceKind: 'imports',
+      line: binding.nameNode.startPosition.row + 1,
+      column: binding.nameNode.startPosition.column,
+    });
+  }
+
+  /** Match the AST shape of `const ns = await import('./module')`; only static string modules are accepted. */
+  private dynamicNamespaceImport(valueNode: SyntaxNode): { source: string } | null {
+    if (valueNode.type !== 'await_expression') return null;
+    const expression = valueNode.namedChild(0);
+    if (!expression) return null;
+    if (expression.type !== 'call_expression') return null;
+    const callee = getChildByField(expression, 'function') ?? expression.namedChild(0);
+    if (!callee || getNodeText(callee, this.source) !== 'import') return null;
+    const args = getChildByField(expression, 'arguments');
+    const sourceNode = args?.namedChild(0);
+    if (!sourceNode || sourceNode.type !== 'string') return null;
+    const raw = getNodeText(sourceNode, this.source);
+    const match = raw.match(/^(['"])([\s\S]*)\1$/);
+    return match?.[2] ? { source: match[2] } : null;
   }
 
   /** Resolve a Lua assignment target into its callable name and optional table receiver. */
@@ -4434,6 +4480,7 @@ export class TreeSitterExtractor {
 
     // Get the function/method being called
     let calleeName = '';
+    let callSite = node;
 
     // Java/Kotlin method_invocation has 'object' + 'name' fields instead of 'function'
     // PHP member_call_expression has 'object' + 'name', scoped_call_expression has 'scope' + 'name'
@@ -4443,6 +4490,7 @@ export class TreeSitterExtractor {
     if (nameField && objectField && (node.type === 'method_invocation' || node.type === 'member_call_expression' || node.type === 'scoped_call_expression')) {
       // Method call with explicit receiver: receiver.method() / $receiver->method() / ClassName::method()
       const methodName = getNodeText(nameField, this.source);
+      callSite = nameField;
       // Java `this.userbo.toLogin2()` parses as method_invocation(object=field_access(this, userbo)).
       // Without unwrapping, receiverName is `this.userbo` and the name-matcher's
       // single-dot receiver regex fails. Pull out the immediate field after `this.`
@@ -4614,6 +4662,7 @@ export class TreeSitterExtractor {
       }
     } else {
       const func = getChildByField(node, 'function') || node.namedChild(0);
+      if (func) callSite = func;
 
       // C++ explicit operator call `a.operator+(b)` / `p->operator+(b)` (#1247):
       // tree-sitter-cpp can't parse an operator_name in field position, so the
@@ -4681,6 +4730,7 @@ export class TreeSitterExtractor {
           }
           if (property) {
             const methodName = getNodeText(property, this.source);
+            callSite = property;
             // Include receiver name for qualified resolution (e.g., console.print → "console.print")
             // This helps the resolver distinguish method calls from bare function calls
             // (e.g., Python's console.print() vs builtin print())
@@ -4870,8 +4920,8 @@ export class TreeSitterExtractor {
               TS_JS_CHAIN_RECEIVER_TYPES.has(receiver.type) &&
               isUnresolvedTsJsChain(receiver, this.source)
             ) {
-              // 保留完整调用供 Steps 分类外部效果；解析器禁止按末尾方法名猜边。
-              // 与 Rust 内核保持一致，参数里的调用仍独立遍历。
+              // Keep the full call for Steps external-effect classification; never infer edges from the trailing method name.
+              // Match the Rust kernel behavior by traversing calls inside arguments independently.
               calleeName = getNodeText(func, this.source).replace(/\s+/g, '').replace(/\?\./g, '.');
             } else {
               calleeName = methodName;
@@ -4889,6 +4939,7 @@ export class TreeSitterExtractor {
           const recv = getChildByField(func, 'expression');
           const nameNode = getChildByField(func, 'name');
           const methodName = nameNode ? getNodeText(nameNode, this.source) : '';
+          if (nameNode) callSite = nameNode;
           if (recv && recv.type === 'invocation_expression' && methodName) {
             const innerFunc = getChildByField(recv, 'function');
             const innerCallee = innerFunc ? getNodeText(innerFunc, this.source).replace(/\s+/g, '') : '';
@@ -4955,8 +5006,8 @@ export class TreeSitterExtractor {
         fromNodeId: callerId,
         referenceName: calleeName,
         referenceKind: 'calls',
-        line: node.startPosition.row + 1,
-        column: node.startPosition.column,
+        line: callSite.startPosition.row + 1,
+        column: callSite.startPosition.column,
       });
     }
   }
@@ -5014,12 +5065,13 @@ export class TreeSitterExtractor {
       const brIdx = goType.indexOf('['); // strip Go generic args: `Box[T]{}` -> `Box`
       if (brIdx > 0) goType = goType.slice(0, brIdx).trim();
       if (goType) {
+        const site = this.referencePositionInNode(ctor, goType);
         this.unresolvedReferences.push({
           fromNodeId: fromId,
           referenceName: goType,
           referenceKind: 'instantiates',
-          line: node.startPosition.row + 1,
-          column: node.startPosition.column,
+          line: site.line,
+          column: site.column,
         });
       }
       return;
@@ -5031,12 +5083,13 @@ export class TreeSitterExtractor {
     if (node.type === 'instance_expression') {
       const name = scalaBaseTypeName(ctor, this.source);
       if (name) {
+        const site = this.referencePositionInNode(ctor, name);
         this.unresolvedReferences.push({
           fromNodeId: fromId,
           referenceName: name,
           referenceKind: 'instantiates',
-          line: node.startPosition.row + 1,
-          column: node.startPosition.column,
+          line: site.line,
+          column: site.column,
         });
       }
       return;
@@ -5067,14 +5120,31 @@ export class TreeSitterExtractor {
     className = className.trim();
 
     if (className) {
+      const site = this.referencePositionInNode(ctor, className);
       this.unresolvedReferences.push({
         fromNodeId: fromId,
         referenceName: className,
         referenceKind: 'instantiates',
-        line: node.startPosition.row + 1,
-        column: node.startPosition.column,
+        line: site.line,
+        column: site.column,
       });
     }
+  }
+
+  /** Locate the final written identifier in an AST node while preserving Tree-sitter UTF-8 byte columns. */
+  private referencePositionInNode(node: SyntaxNode, name: string): { line: number; column: number } {
+    const text = getNodeText(node, this.source);
+    const offset = text.indexOf(name);
+    if (offset < 0) {
+      return { line: node.startPosition.row + 1, column: node.startPosition.column };
+    }
+    const prefix = text.slice(0, offset);
+    const parts = prefix.split(/\r\n|\r|\n/);
+    const tail = parts[parts.length - 1] ?? '';
+    return {
+      line: node.startPosition.row + parts.length,
+      column: (parts.length === 1 ? node.startPosition.column : 0) + Buffer.byteLength(tail, 'utf8'),
+    };
   }
 
   /**
@@ -5692,7 +5762,10 @@ export class TreeSitterExtractor {
         this.TYPE_ANNOTATION_LANGUAGES.has(this.language)
       ) {
         const ownerId = this.nodeStack[this.nodeStack.length - 1];
-        if (ownerId) this.extractVariableTypeAnnotation(node, ownerId);
+        if (ownerId) {
+          this.extractVariableTypeAnnotation(node, ownerId);
+          this.emitDynamicNamespaceImport(node, ownerId);
+        }
       }
 
       // Nested NAMED functions inside a body — function declarations and named

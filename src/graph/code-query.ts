@@ -55,7 +55,7 @@ export interface CodeQueryRequest {
   depth?: number;
   /** tests only: the changed-file list; when files is given, query is not parsed for a file list. */
   files?: string[];
-  /** 仅 tests：是否包含经公共模块或宽依赖链命中的低置信度候选。 */
+  /** tests only: include lower-confidence candidates reached through shared or broad dependency chains. */
   includeIndirect?: boolean;
 }
 
@@ -170,7 +170,7 @@ export interface AffectedTestItem {
   distance: number;
   reason: 'changed' | 'dependent';
   confidence: 'direct' | 'high' | 'indirect';
-  /** 所选置信度下最短路径的前驱文件，去重排序。 */
+  /** Deduplicated, sorted predecessor files on the shortest path at the selected confidence. */
   via: string[];
 }
 
@@ -430,7 +430,6 @@ export function buildIndexBlock(
 export function indexWarnings(index: IndexBlock): string[] {
   const warnings: string[] = [];
   if (index.degraded) warnings.push('Auto-sync is disabled; indexed results may be stale.');
-  if (!index.watching) warnings.push('This index connection has no live watcher.');
   if (index.pendingReferences) warnings.push('Reference resolution is incomplete; results may omit edges.');
   return warnings;
 }

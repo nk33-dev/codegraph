@@ -93,7 +93,9 @@ describe('structured graph queries', () => {
 
   it('status separates unscanned from on-disk changes and incremental sync updates only changed files', async () => {
     const untouched = cg.getFile('view.js')!.indexedAt;
-    expect(cg.queryCode({ mode: 'status', query: 'status' }).index).toMatchObject({ watching: false, changes: null });
+    const status = cg.queryCode({ mode: 'status', query: 'status' });
+    expect(status.index).toMatchObject({ watching: false, changes: null });
+    expect(status.warnings).not.toContain('This index connection has no live watcher.');
     write('added.ts', 'export function added() {}\n');
     write('b/service.ts', 'export function changedName() {}\n');
     fs.unlinkSync(path.join(root, 'a/service.ts'));

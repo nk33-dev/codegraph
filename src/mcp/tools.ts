@@ -33,13 +33,13 @@ import {
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
 import { indexedFileFreshness } from '../sync/file-freshness';
-import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
+import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';import type { Node, Edge, EdgeKind, SearchResult, Subgraph, NodeKind } from '../types';
 import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
 import { editTools } from './edit-tool';
 import { isTestFile, normalizeNameToken } from '../search/query-utils';
 import { groupDefinitions, lastQualifierPart, lookupSymbolNodes, matchesSymbol } from '../graph/symbol-lookup';
 import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
-import { queryWantsTests, stripQueryIntentWords } from '../search/query-intent';
+import { parseQueryIntent, removeQueryIntentWords } from '../search/query-intent';
 import {
   existsSync,
   readFileSync,
@@ -1029,7 +1029,7 @@ function pointerLineFor(filePath: string, nodes: readonly Node[]): string {
  * traded away, but the agent must still be told that an uncovered area exists
  * and that another explore — not a Read — is how to reach it.
  */
-const EPILOGUE_LOST_NOTE = '> (Trailing pointer list omitted for size. The source above is complete and verbatim — treat it as already Read. For anything this call did not cover, run another codegraph_explore with the specific names rather than reading those files.)';
+const EPILOGUE_LOST_NOTE = '> Pointer list omitted for size. Shown source is verbatim; explore uncovered names.';
 
 /**
  * Per-file staleness banner emitted at the top of a tool response when the
@@ -1150,7 +1150,7 @@ interface PropertySchema {
  * Tool execution result
  */
 export interface ToolResult {
-  /** Structured queries、编辑和默认 explore 都提供稳定的机器可读结果。 */
+  /** Structured queries, edits, and default explore all expose stable machine-readable results. */
   structuredContent?: CodeQueryResult | CodeEditResult | ExploreStructuredContent;
   content: Array<{
     type: 'text';
@@ -1186,7 +1186,7 @@ export interface ExploreStructuredContent {
  */
 const projectPathProperty: PropertySchema = {
   type: 'string',
-  description: 'Absolute path to the project to query (or any directory inside it) — codegraph uses the nearest .codegraph/ index at or above that path. Omit to use this session\'s default project. Pass it to query a second codebase, or when the server root has no index of its own (e.g. a monorepo where only sub-projects are indexed, so there is no default project).',
+  description: 'Absolute project path (or a child path). Omit for the session default; required when no default index is loaded.',
 };
 
 /**
@@ -1362,82 +1362,82 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_explore',
-    description: 'PRIMARY TOOL — call FIRST for almost any question OR before an edit: how does X work, architecture, a bug, where/what is X, surveying an area, or the symbols you are about to change. Returns the verbatim source of the relevant symbols grouped by file in ONE capped call (Read-equivalent — treat the shown source as already Read; do NOT re-open those files), plus the call path among them. Query can be a natural-language question OR a bag of symbol/file names. Usually the ONLY call you need — more accurate context, in far fewer tokens and round-trips than a search/Read/Grep loop.',
+    description: 'Primary read tool for indexed code. Ask a question or name symbols/files to get current line-numbered source, flow evidence, and blast radius. Treat shown lines as read; query named omissions again. Non-default modes return structured JSON.',
     inputSchema: {
       type: 'object',
       properties: {
         mode: {
           type: 'string',
-          description: 'explore keeps the original source + call-path output; definitions finds definitions by name; references finds references; symbols lists a file\'s symbols; diagnostics reads language-server diagnostics; impact reports what a symbol change reaches; tests lists the test files a change reaches; status reports index and language-server state. Structured modes return versioned JSON.',
+          description: 'explore=source/flow; definitions, references, symbols, diagnostics, impact, tests, and status return structured JSON.',
           enum: ['explore', ...CODE_QUERY_MODES],
           default: 'explore',
         },
         backend: {
           type: 'string',
-          description: 'Structured-mode data source. graph (default) reads the existing index and returns best-effort relationships; lsp runs the project\'s real language server (command from .codegraph/lsp.json or CODEGRAPH_LSP_* env vars) for precise locations; auto picks one source per query and falls back to the graph when no server is available; both runs both and merges, labelling each item with origin and marking locations both sources corroborate. diagnostics is lsp-only, tests is graph-only. lsp/auto need an already-installed server: when none is configured you get status="unavailable", never an error.',
+          description: 'Structured modes only: graph (default), lsp, auto (LSP with graph fallback), or both (merged). diagnostics requires LSP; tests requires graph. LSP must already be configured.',
           enum: [...CODE_QUERY_BACKENDS],
           default: 'graph',
         },
         file: {
           type: 'string',
-          description: 'Structured modes: exact project-relative file path, narrowing definition/reference targets or selecting the file to outline.',
+          description: 'Structured modes: exact project-relative file used to narrow a target or select a file.',
         },
         files: {
           type: 'array',
-          items: { type: 'string', description: 'Project-relative path of a changed file.' },
-          description: 'mode=tests only: the changed files (project-relative). Alternatively put them in query, space- or comma-separated.',
+          items: { type: 'string', description: 'Project-relative changed file.' },
+          description: 'tests only: changed files; query may contain the same paths.',
         },
         depth: {
           type: 'number',
-          description: 'mode=impact/tests only: propagation depth, 1–10 (impact defaults to 2, tests to 5).',
+          description: 'impact/tests only: propagation depth 1–10 (defaults: impact 2, tests 5).',
         },
         includeIndirect: {
           type: 'boolean',
-          description: 'mode=tests only: include low-confidence candidates reached through broad/shared dependency chains. Default false.',
+          description: 'tests only: include lower-confidence indirect candidates.',
           default: false,
         },
         line: {
           type: 'number',
-          description: 'backend=lsp definitions/references only: 1-based line for a position query. Omit to query by symbol name (resolved through the graph index).',
+          description: 'LSP definitions/references only: 1-based position line.',
         },
         column: {
           type: 'number',
-          description: 'backend=lsp definitions/references only: 0-based column in UTF-16 code units (default 0). Pass back the column from an earlier LSP result as-is.',
+          description: 'LSP definitions/references only: 0-based UTF-16 column.',
         },
         severity: {
           type: 'number',
-          description: 'mode=diagnostics only: minimum severity — 1=error, 2=warning, 3=information, 4=hint (default: everything).',
+          description: 'diagnostics only: minimum severity, 1=error through 4=hint.',
           default: 4,
         },
         includeDeclaration: {
           type: 'boolean',
-          description: 'backend=lsp references only: count the declaration itself as a reference (default true).',
+          description: 'LSP references only: include the declaration.',
           default: true,
         },
         offset: { type: 'number', description: 'Structured modes: 0-based result offset.', default: 0 },
-        limit: { type: 'number', description: 'Structured modes: page size, 1–200.', default: 50 },
-        checkFiles: { type: 'boolean', description: 'status + backend=graph only: scan for unsynced added/modified/removed files without changing the index. Off by default.', default: false },
+        limit: { type: 'number', description: 'Structured modes: page size 1–200.', default: 50 },
+        checkFiles: { type: 'boolean', description: 'Graph status only: scan disk changes without syncing.', default: false },
         query: {
           type: 'string',
-          description: 'Symbol names, file names, or short code terms to explore (e.g., "AuthService loginUser session-manager", "GraphTraverser BFS impact traversal.ts"). For a flow question, name the symbols spanning the flow (e.g. "mutateElement renderScene"). A natural-language question works too — no prior codegraph_search needed.',
+          description: 'Question, symbol names, or file names. For a flow, name its endpoints.',
         },
         maxFiles: {
           type: 'number',
-          description: 'Maximum number of files to include source code from (default: 12)',
+          description: 'explore only: maximum source files.',
           default: 12,
         },
         includeChanges: {
           type: 'boolean',
-          description: 'Explicitly attach Git changed symbols, semantic edge deltas, affected entries, and related tests. Review/change/impact queries enable this automatically.',
+          description: 'explore only: attach Git changes, affected entries, and related tests.',
           default: false,
         },
         baseRef: {
           type: 'string',
-          description: 'Git commit/ref to compare against (default: HEAD). Passing it explicitly enables change context.',
+          description: 'explore only: Git comparison base; enables change context.',
         },
         deepChanges: {
           type: 'boolean',
-          description: 'Explicitly build an isolated temporary index at baseRef to compare resolved semantic edges. Expensive; ordinary change analysis keeps using the current index and local diff only.',
+          description: 'explore only: build a temporary baseRef index for deeper edge comparison.',
           default: false,
         },
         projectPath: projectPathProperty,
@@ -1565,6 +1565,30 @@ export function getStaticTools(): ToolDefinition[] {
  * capability that is never advertised cannot be used at all; the tool still previews by default.
  */
 const DEFAULT_MCP_TOOLS = new Set(['explore', 'edit']);
+
+type BlastRadiusDependentKind = 'calls' | 'imports' | 'references';
+
+const BLAST_RADIUS_KIND_ORDER: readonly BlastRadiusDependentKind[] = ['calls', 'imports', 'references'];
+const BLAST_RADIUS_KIND_LABELS: Record<BlastRadiusDependentKind, [string, string]> = {
+  calls: ['caller', 'callers'],
+  imports: ['importer', 'importers'],
+  references: ['reference', 'references'],
+};
+
+function blastRadiusKindOf(kind: EdgeKind | undefined): BlastRadiusDependentKind {
+  if (kind === 'calls' || kind === 'instantiates' || kind === 'navigates') return 'calls';
+  if (kind === 'imports') return 'imports';
+  return 'references';
+}
+
+function strongerBlastRadiusKind(
+  current: BlastRadiusDependentKind,
+  candidate: BlastRadiusDependentKind,
+): BlastRadiusDependentKind {
+  return BLAST_RADIUS_KIND_ORDER.indexOf(candidate) < BLAST_RADIUS_KIND_ORDER.indexOf(current)
+    ? candidate
+    : current;
+}
 
 /**
  * Tool handler that executes tools against a CodeGraph instance
@@ -1732,12 +1756,7 @@ export class ToolHandler {
     return !allow || allow.has(name.replace(/^codegraph_/, ''));
   }
 
-  /**
-   * Get tool definitions with dynamic descriptions based on project size.
-   * The codegraph_explore tool description includes a budget recommendation
-   * scaled to the number of indexed files. Honors the CODEGRAPH_MCP_TOOLS
-   * allowlist so a trimmed surface is reflected in ListTools.
-   */
+  /** Return stable tool definitions after applying the optional allowlist and tiny-repo gate. */
   getTools(): ToolDefinition[] {
     const allow = this.toolAllowlist();
     // No explicit allowlist → the default surface (see DEFAULT_MCP_TOOLS for the evidence).
@@ -1759,8 +1778,6 @@ export class ToolHandler {
 
     try {
       const stats = this.cg.getStats();
-      const budget = getExploreBudget(stats.fileCount);
-
       // Tiny-repo tool gating: on projects under TINY_REPO_FILE_THRESHOLD
       // files, only expose the core trio (search, node, explore) — one
       // below even the 4-tool default: at this scale callers, too, reduces
@@ -1797,15 +1814,7 @@ export class ToolHandler {
         visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name));
       }
 
-      return visible.map(tool => {
-        if (tool.name === 'codegraph_explore') {
-          return {
-            ...tool,
-            description: `${tool.description} Exploration guidance — advisory only, NOT a quota: ~${budget} focused calls usually cover this project (${stats.fileCount.toLocaleString()} files indexed), and extra calls are never rejected or rate-limited.`,
-          };
-        }
-        return tool;
-      });
+      return visible;
     } catch {
       return visible;
     }
@@ -2393,11 +2402,10 @@ export class ToolHandler {
   }
 
   /**
-   * 主线程内联执行 + 资源指标（阶段一）。
+   * Execute inline on the main thread and record resource metrics.
    *
-   * 查询池不可用（直连模式、平台不支持、崩溃熔断、首个 worker 还没预热）时走
-   * 这里；耗时按「等待 0 + 执行」计入同一份指标，status 才不会把内联路径的查询
-   * 当成没有发生。走 worker 池时由 {@link QueryPool} 记录，两条路径不重复计数。
+   * This path handles direct mode, unsupported platforms, pool circuit breaks, and cold workers.
+   * It records zero wait plus execution time; {@link QueryPool} records the worker path instead.
    */
   private async runInProcessWithMetrics(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
     const metrics = resourceMetrics();
@@ -3180,7 +3188,7 @@ export class ToolHandler {
     ].join('\n');
   }
 
-  /** 把共享证据报告压成适合模型阅读的短段落，详细字段留在 structured content。 */
+  /** Render the shared evidence report as a short model-facing section; structured content keeps the details. */
   private buildEvidenceSection(report: FlowEvidenceReport): string {
     const lines: string[] = [];
     if (report.evidence.length > 0) {
@@ -3330,15 +3338,12 @@ export class ToolHandler {
 
   /**
    * Compact "blast radius" for the entry symbols of an explore result: who
-   * depends on each (callers) and which test files cover it — LOCATIONS ONLY,
-   * no source, so the agent knows what to update / re-verify before editing
-   * without reaching for a separate impact call. Always-on, but skips symbols
-   * that have no dependents (nothing to warn about), and returns '' when none
-   * qualify so a leaf-only exploration stays clean.
+   * depends on each and which test files cover it. Dependents are grouped by
+   * incoming edge semantics so an importer is never presented as a caller.
    */
   private buildBlastRadiusSection(cg: CodeGraph, subgraph: Subgraph): string {
     const ROOT_CAP = 5; // only the symbols the query actually targeted
-    const FILE_CAP = 4; // caller files listed per symbol before "+N more"
+    const FILE_CAP = 4; // dependent files listed per kind before "+N more"
     const MEANINGFUL = new Set<string>([
       'function', 'method', 'class', 'interface', 'struct', 'union', 'trait', 'protocol',
       'enum', 'type_alias', 'component', 'constant', 'variable', 'property', 'field',
@@ -3353,29 +3358,47 @@ export class ToolHandler {
 
     const entries: string[] = [];
     for (const root of roots) {
-      let callers: Array<{ node: Node }> = [];
-      try { callers = cg.getCallers(root.id) as Array<{ node: Node }>; } catch { /* skip this root */ }
+      let incoming: Array<{ node: Node; edge: Edge }> = [];
+      try { incoming = cg.getCallers(root.id) as Array<{ node: Node; edge: Edge }>; } catch { /* skip this root */ }
 
-      const seen = new Set<string>();
-      const uniq: Node[] = [];
-      for (const c of callers) {
-        if (c?.node && !seen.has(c.node.id)) { seen.add(c.node.id); uniq.push(c.node); }
+      // A dependent can have several incoming-edge kinds; keep its strongest semantic role.
+      const classified = new Map<string, { node: Node; kind: BlastRadiusDependentKind }>();
+      for (const item of incoming) {
+        if (!item?.node) continue;
+        const candidate = blastRadiusKindOf(item.edge?.kind);
+        const existing = classified.get(item.node.id);
+        classified.set(item.node.id, {
+          node: item.node,
+          kind: existing ? strongerBlastRadiusKind(existing.kind, candidate) : candidate,
+        });
       }
+      const uniq = [...classified.values()].map((item) => item.node);
       if (uniq.length === 0) continue; // no blast radius → nothing to flag
 
-      const callerFiles = [...new Set(uniq.map((n) => rel(n.filePath)))];
-      const testFiles = callerFiles.filter((f) => isTestFile(f));
-      const nonTest = callerFiles.filter((f) => !isTestFile(f));
+      const byKind: Record<BlastRadiusDependentKind, Node[]> = { calls: [], imports: [], references: [] };
+      for (const item of classified.values()) byKind[item.kind].push(item.node);
+      const segments: string[] = [];
+      const dependentTestFiles = new Set<string>();
+      for (const kind of BLAST_RADIUS_KIND_ORDER) {
+        const nodes = byKind[kind];
+        if (nodes.length === 0) continue;
+        const files = [...new Set(nodes.map((node) => rel(node.filePath)))];
+        for (const file of files) if (isTestFile(file)) dependentTestFiles.add(file);
+        const nonTest = files.filter((file) => !isTestFile(file));
+        const shown = nonTest.slice(0, FILE_CAP).map((file) => `\`${file}\``).join(', ');
+        const more = nonTest.length > FILE_CAP ? ` +${nonTest.length - FILE_CAP} more` : '';
+        const where = shown ? ` in ${shown}${more}` : '';
+        const [one, many] = BLAST_RADIUS_KIND_LABELS[kind];
+        segments.push(`${nodes.length} ${nodes.length === 1 ? one : many}${where}`);
+      }
 
-      const shown = nonTest.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ');
-      const more = nonTest.length > FILE_CAP ? ` +${nonTest.length - FILE_CAP} more` : '';
-      const where = nonTest.length > 0 ? ` in ${shown}${more}` : '';
+      const testFiles = [...dependentTestFiles];
       const tests = testFiles.length > 0
-        ? `; tests: ${testFiles.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ')}${testFiles.length > FILE_CAP ? ` +${testFiles.length - FILE_CAP}` : ''}`
+        ? `; tests: ${testFiles.slice(0, FILE_CAP).map((file) => `\`${file}\``).join(', ')}${testFiles.length > FILE_CAP ? ` +${testFiles.length - FILE_CAP}` : ''}`
         : this.indirectTestNote(cg, uniq, rel);
 
       entries.push(
-        `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${uniq.length} caller${uniq.length === 1 ? '' : 's'}${where}${tests}`,
+        `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${uniq.length} dependent${uniq.length === 1 ? '' : 's'}: ${segments.join('; ')}${tests}`,
       );
     }
     if (entries.length === 0) return '';
@@ -3585,12 +3608,13 @@ export class ToolHandler {
       } catch { /* path pinning must never fail an explore call */ }
     }
 
-    // 单符号意图查询不应被“定义、调用方、测试”等普通词扩散成一次架构级搜索。
-    // 只有索引能精确确认一个代码形状标识符，且其余文本全是检索意图时才收束；
-    // 多符号流程、架构问题和显式路径仍走完整探索路径。
+    // Intent words such as definitions, callers, and tests must not widen a single-symbol query.
+    // Focus only when the index uniquely confirms one code-shaped identifier and all remaining text is intent;
+    // multi-symbol flows, architecture questions, and explicit paths keep the full exploration path.
     let focusedSymbolQuery = false;
     let focusedNode: Node | null = null;
-    const requestedTests = queryWantsTests(query);
+    const queryIntent = parseQueryIntent(query);
+    const requestedTests = queryIntent.tests;
     const focusedFilePriority = new Map<string, number>();
     if (pinnedFiles.length === 0 && unresolvedPathSpans.length === 0 && !changeIntent) {
       const codeTokens = [...new Set(
@@ -3602,18 +3626,34 @@ export class ToolHandler {
       });
       if (exactTokens.length === 1) {
         const token = exactTokens[0]!;
-        // 意图词（定义/调用方/测试/所有/相关/怎么…）只说明要什么，不参与模糊匹配：
-        // 它们是唯一来源自 ../search/query-intent 的共享词表，避免两处词表漂移。
-        // 剥离后若还剩下别的检索目标（第二个符号、主题名词、文件名），保持完整探索路径。
-        const remainder = stripQueryIntentWords(matchQuery.split(token).join(' '));
+        // Intent words describe the requested view rather than additional fuzzy-search targets.
+        // The shared vocabulary in ../search/query-intent is the only source of these words.
+        // If stripping them leaves another symbol, topic, or file, keep the full exploration path.
+        const remainder = parseQueryIntent(matchQuery.split(token).join(' ')).remainder;
         if (!remainder) {
           matchQuery = token;
           focusedNode = lookupSymbolNodes(cg, token).nodes[0]!;
           focusedSymbolQuery = true;
           if (args.maxFiles === undefined) maxFiles = Math.min(maxFiles, 4);
-          // 通过相关性和文件数量降噪，保留仓库规模对应的源码预算，避免大函数被额外截断。
+          // Reduce noise through relevance and file count without shrinking the repository-sized source budget.
         }
       }
+    }
+
+    // Intent words select the requested view and must never seed fuzzy matches. Preserve a word
+    // only when it is also the exact name of a real non-file symbol (for example `search`).
+    if (!focusedSymbolQuery && !changeIntent) {
+      const isIndexedName = (word: string): boolean => {
+        const lower = word.toLowerCase();
+        try {
+          return cg.getNodesByName(word).some((node) =>
+            node.kind !== 'file' && node.name.toLowerCase() === lower,
+          );
+        } catch {
+          return false;
+        }
+      };
+      matchQuery = removeQueryIntentWords(matchQuery, isIndexedName);
     }
     const pinnedSet = new Set(pinnedFiles);
     const pinnedOrder = new Map(pinnedFiles.map((p, i) => [p, i]));
@@ -3676,7 +3716,7 @@ export class ToolHandler {
     // that prevents context bloat, so more nodes just means better coverage
     // across entry points (especially for large files like Svelte components).
     // Matching runs on the path-stripped query; `query` stays for display.
-    // 精确单符号复用图遍历，避免 FTS 把 Upgrade 一类名称片段匹配到无关模块。
+    // Exact single-symbol queries use graph traversal so FTS fragments such as Upgrade cannot pull in unrelated modules.
     const subgraph = focusedNode ? cg.traverse(focusedNode.id, {
       maxDepth: 1,
       direction: 'both',
@@ -3698,8 +3738,8 @@ export class ToolHandler {
       }
     }
 
-    // “review current changes” 一类查询可能不含任何符号名；用改动文件中的定义补种子，
-    // 让同一次 explore 仍能返回源码，而不是落入空搜索。
+    // A review-current-changes query may name no symbol; seed it with definitions from changed files
+    // so the same explore call still returns source instead of an empty search.
     if (changeContext) {
       const changedFiles = new Set(
         changeContext.files.filter((file) => file.change !== 'deleted').map((file) => file.path),
@@ -3714,8 +3754,8 @@ export class ToolHandler {
         }
       }
     } else if (subgraph.nodes.size > 0) {
-      // 普通查询只对相关性搜索已命中的文件做路径限定 Git 探测；只有其中确有改动，
-      // 才读取完整工作区状态和 diff。
+      // Ordinary queries probe Git only for relevance-matched paths, then read the full worktree status
+      // and diff only when one of those paths actually changed.
       changeContext = await analyzeChangeContext(cg, {
         candidateFiles: [...new Set([...subgraph.nodes.values()].map((node) => node.filePath))],
       });
@@ -4456,7 +4496,7 @@ export class ToolHandler {
       (fileTermHits.get(fp) ?? 0) >= 2 &&
       (entryFiles.has(fp) || centralFiles.has(fp));
 
-    // 明确要求的定义、调用者和测试不应在分数门槛处被通用文件排名淘汰。
+    // Explicitly requested definitions, callers, and tests must survive the general file-score threshold.
     for (const [filePath] of focusedFilePriority) {
       if (!requestedTests && isTestFile(filePath)) continue;
       const group = fileGroups.get(filePath);
@@ -4538,7 +4578,7 @@ export class ToolHandler {
     ];
     const summaryLineIdx = 2;
 
-    // 改动解释有独立预算，不挤占原有源码预算；structured content 保留更完整的有界字段。
+    // Change explanations have a separate budget; structured content retains the fuller bounded fields.
     const changeContextText = changeContext ? formatChangeContext(changeContext) : '';
     if (changeContextText) lines.push(changeContextText, '');
 
@@ -4705,7 +4745,7 @@ export class ToolHandler {
     // Recorded so the drift pass below (#1474) can append a per-file exception
     // to this guarantee after the render loop knows which files drifted.
     const verbatimHeaderIdx = lines.length;
-    lines.push('> The numbered lines below are **verbatim, current on-disk source excerpts**. A `gap` or truncation marker means source was omitted; these excerpts are not necessarily complete files or symbol bodies. Reuse the lines shown here. If a needed implementation is missing, query that symbol or read the missing range.');
+    lines.push('> Numbered lines are current source excerpts. Gaps mark omitted code; query missing names or ranges before editing.');
     lines.push('');
 
     // The response's absolute cap. It MUST stay under the host's inline
@@ -5460,8 +5500,9 @@ export class ToolHandler {
       }
       const ranges: Array<{ start: number; end: number; name: string; kind: string; importance: number; spine: boolean; spineCallLine?: number }> = [...rangeNodes.values()]
         // Drop whole-file envelope nodes (containers covering >50% of the file).
-        .filter(n => !(ENVELOPE_KINDS.has(n.kind) && (n.endLine - n.startLine + 1) > fileLines.length * 0.5))
-        // 大型调用者只展示本次符号的调用现场，避免从 main 等入口的顶部开始截断。
+        .filter(n => n.id === focusedNode?.id
+          || !(ENVELOPE_KINDS.has(n.kind) && (n.endLine - n.startLine + 1) > fileLines.length * 0.5))
+        // For large callers, show this symbol's call sites instead of truncating from the top of an entry such as main.
         .filter(n => !(focusedNode && n.id !== focusedNode.id && (focusedFilePriority.get(filePath) ?? 3) > 0
           && (focusedFilePriority.get(filePath) ?? 3) < 3 && n.endLine - n.startLine > 80))
         .map(n => {
@@ -6286,12 +6327,12 @@ export class ToolHandler {
       pointerOmitted = Math.max(0, remainingFiles.length - pointerEntries.length);
     }
 
-    // 标明已返回的源码范围，不能把裁剪后的片段称为完整文件。
-    // 小项目省略常规提示，但确实发生裁剪时仍提示如何补齐。
+    // State which source ranges were returned; a trimmed excerpt is not a complete file.
+    // Small projects omit the routine note, but actual trimming still explains how to fetch the rest.
     const completenessBlock: string[] = budget.includeCompletenessSignal
-      ? ['', '---', `> **Source excerpts from ${filesIncluded} files are shown above.** Reuse the displayed lines; omitted ranges and entries under "Not shown above" have not been read. Query the missing symbols with codegraph_explore, or read their specific ranges when needed.`]
+      ? ['', '---', `> Shown source spans ${filesIncluded} files. Gaps and "Not shown above" were omitted; explore those names before editing.`]
       : anyFileTrimmed
-        ? ['', `> Some file sections were trimmed for size. Elided symbols are named inside gap markers as \`name (file:line)\` and preferred in the file header — run another \`codegraph_explore\` (or \`codegraph_node\`) with those exact names for their source.`]
+        ? ['', '> Some source was trimmed. Gap markers name omitted symbols; explore those names for full bodies.']
         : [];
 
     // Advisory exploration-guidance note based on project size. Deliberately
@@ -6304,7 +6345,7 @@ export class ToolHandler {
       try {
         const stats = cg.getStats();
         const callBudget = getExploreBudget(stats.fileCount);
-        budgetBlock = ['', `> **Exploration guidance — advisory only, NOT a quota: this project (~${stats.fileCount.toLocaleString()} files indexed) is usually covered in ≈${callBudget} focused explore calls, and extra calls are never rejected or rate-limited.** If the response above does not fully cover your question, run another codegraph_explore on the uncovered symbols — it is cheaper and more complete than Read. Only stop exploring when the response actually covers the flow you asked about.`];
+        budgetBlock = ['', `> Suggested coverage: ~${callBudget} focused explore calls for this ${stats.fileCount.toLocaleString()}-file project; calls are not capped.`];
       } catch {
         // Stats unavailable — skip budget note
       }
@@ -6384,7 +6425,7 @@ export class ToolHandler {
     const epilogueOnlyCut = epilogueStart < lines.length
       ? flow.text + lines.slice(0, epilogueStart).join('\n')
       : null;
-    const EPILOGUE_CUT_NOTE = '\n\n> (Trailing notes omitted for size. The source above is complete and verbatim — treat it as already Read. For anything this call did not cover, run another codegraph_explore with the specific names rather than reading those files.)';
+    const EPILOGUE_CUT_NOTE = '\n\n> Trailing notes omitted for size. Shown source is verbatim; explore uncovered names.';
 
     if (output.length > hardCeiling
         && epilogueOnlyCut !== null
@@ -6401,7 +6442,7 @@ export class ToolHandler {
       const lastSection = cut.lastIndexOf('\n' + FILE_SECTION_PREFIX);
       const boundary = lastSection > hardCeiling * 0.5 ? lastSection : cut.lastIndexOf('\n');
       const safe = boundary > 0 ? cut.slice(0, boundary) : cut;
-      finalText = safe + '\n\n... (output truncated to budget; the source above is complete and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)';
+      finalText = safe + '\n\n... (truncated at a file boundary; shown source is verbatim. Explore uncovered names.)';
     } else {
       finalText = output;
     }
@@ -7005,8 +7046,8 @@ export class ToolHandler {
       );
     }
 
-    // 资源治理（阶段一）：生效档位 + 查询池实际状态。这里只读配置和内存计数，
-    // 不启动任何语言服务器，所以 status 在任何时刻都是安全调用。
+    // Resource governance: effective profile plus live query-pool state. This reads only configuration
+    // and in-memory counters, and never starts a language server.
     lines.push(`**Resources:** ${describeResourceProfile(resolveResourceProfile())}`);
     const poolState = this.queryPool?.poolState();
     if (poolState) {

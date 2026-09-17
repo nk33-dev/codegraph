@@ -9010,6 +9010,7 @@ function bootstrap() { return new Foo(); }
       (r) => r.referenceKind === 'instantiates' && r.referenceName === 'Foo'
     );
     expect(ref).toBeDefined();
+    expect(ref).toMatchObject({ line: 3, column: code.split('\n')[2]!.indexOf('Foo') });
   });
 
   it('strips type-argument suffix from generic constructors', () => {
@@ -9039,6 +9040,48 @@ function go() { return new ns.Foo(); }
     // We can't always resolve which Foo, but the name should be the
     // simple identifier so name-matching has a chance.
     expect(ref?.referenceName).toBe('Foo');
+    expect(ref?.column).toBe(code.split('\n')[2]!.indexOf('Foo'));
+  });
+
+  it('constructor coordinates point at the type, not a same-named generic argument', () => {
+    const code = `
+class Foo<T> {}
+function go() { return new Foo<Foo<string>>(); }
+`;
+    const result = extractFromSource('app.ts', code);
+    const ref = result.unresolvedReferences.find((item) => item.referenceKind === 'instantiates');
+    expect(ref).toMatchObject({
+      referenceName: 'Foo', line: 3, column: code.split('\n')[2]!.indexOf('Foo'),
+    });
+  });
+
+  it('records AST-backed dynamic namespace imports and member-call positions', () => {
+    const code = `
+export async function run() {
+  const up = await import('./upgrade');
+  return up.runUpgrade();
+}
+`;
+    const result = extractFromSource('consumer.ts', code);
+    const importNode = result.nodes.find((node) => node.kind === 'import' && node.name === './upgrade');
+    expect(importNode?.signature).toContain('codegraph:dynamic-namespace-import:');
+    expect(result.unresolvedReferences).toContainEqual(expect.objectContaining({
+      referenceName: 'up', referenceKind: 'imports', line: 3, column: 8,
+    }));
+    expect(result.unresolvedReferences).toContainEqual(expect.objectContaining({
+      referenceName: 'up.runUpgrade', referenceKind: 'calls', line: 4, column: 12,
+    }));
+  });
+
+  it('does not treat an un-awaited dynamic import Promise as a namespace binding', () => {
+    const result = extractFromSource('consumer.ts', `
+export function run() {
+  const up = import('./upgrade');
+  return up.runUpgrade();
+}
+`);
+    expect(result.nodes.some((node) => node.kind === 'import' && node.signature?.includes('dynamic-namespace'))).toBe(false);
+    expect(result.unresolvedReferences.some((ref) => ref.referenceKind === 'imports' && ref.referenceName === 'up')).toBe(false);
   });
 
   it('emits a decorates ref for `@Foo class X {}`', () => {

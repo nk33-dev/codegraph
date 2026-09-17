@@ -1,12 +1,12 @@
 /**
- * codegraph_explore — 自然语言意图词不参与模糊匹配（个人版精确检索契约）。
+ * codegraph_explore: natural-language intent words stay out of fuzzy matching.
  *
- * 真实报告：查询 `runUpgrade` 很准确；查询 “runUpgrade 的定义、所有调用方和相关测试”
- * 时混入其他文件里名为 `run` 的函数——意图词（定义/所有/调用方/相关测试）没有被
- * 整体识别，收束没有触发，查询文本继续走 FTS，camelCase 片段 “run” 命中了无关文件。
+ * Regression: querying `runUpgrade` was precise, but adding Chinese phrases for definitions,
+ * all callers, and related tests pulled in unrelated `run` functions. The intent phrases were
+ * not recognized as a unit, so the camelCase fragment `run` continued through FTS.
  *
- * 契约：一旦索引能唯一确认一个精确符号，其余文本只当作意图——
- * 只展开目标符号、直接关系和直接测试；仍命名了第二个符号的查询保持完整探索路径。
+ * Once the index uniquely identifies an exact symbol, remaining intent text selects the view:
+ * return the target, direct relationships, and direct tests. Queries naming another symbol stay broad.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
@@ -33,7 +33,7 @@ describe('codegraph_explore — 意图词收束', () => {
   beforeEach(async () => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-intent-'));
 
-    // 目标符号：updater.ts 的 runUpgrade 是索引里唯一的精确命中。
+    // Target symbol: updater.ts contains the only exact runUpgrade definition.
     fs.mkdirSync(path.join(testDir, 'src', 'upgrade'), { recursive: true });
     fs.writeFileSync(path.join(testDir, 'src', 'upgrade', 'updater.ts'),
       `export function normalizeVersion(v: string): string {\n` +
@@ -47,7 +47,7 @@ describe('codegraph_explore — 意图词收束', () => {
       `  return latest;\n` +
       `}\n`);
 
-    // 噪声：其他文件里的 run()。camelCase 片段 “run” 会命中它们。
+    // Noise: unrelated run() functions that match the camelCase fragment.
     fs.mkdirSync(path.join(testDir, 'src', 'tasks'), { recursive: true });
     fs.writeFileSync(path.join(testDir, 'src', 'tasks', 'runner.ts'),
       `import { settle } from './settle';\n` +
@@ -67,7 +67,12 @@ describe('codegraph_explore — 意图词收束', () => {
       `  return run({ retries: 2 });\n` +
       `}\n`);
 
-    // 直接测试：调用 runUpgrade。
+    fs.writeFileSync(path.join(testDir, 'src', 'large.ts'),
+      `export class LargeCoordinator {\n` +
+      Array.from({ length: 30 }, (_, i) => `  step${i}(): number { return ${i}; }\n`).join('') +
+      `}\n`);
+
+    // Direct test that calls runUpgrade.
     fs.mkdirSync(path.join(testDir, '__tests__'), { recursive: true });
     fs.writeFileSync(path.join(testDir, '__tests__', 'updater.test.ts'),
       `import { runUpgrade } from '../src/upgrade/updater';\n` +
@@ -101,6 +106,18 @@ describe('codegraph_explore — 意图词收束', () => {
     const files = sourcedFiles(await explore('runUpgrade definition, all callers and related tests'));
     expect(files[0]).toMatch(/updater\.ts$/);
     expect(files.filter((f) => /runner\.ts$|batch\.ts$/.test(f))).toEqual([]);
+  });
+
+  it('直接调用方被解析为结构化范围，不作为第二个检索主题', async () => {
+    const files = sourcedFiles(await explore('runUpgrade 的定义、所有直接调用方和相关测试'));
+    expect(files[0]).toMatch(/updater\.ts$/);
+    expect(files.filter((f) => /runner\.ts$|batch\.ts$/.test(f))).toEqual([]);
+  });
+
+  it('大型精确类查询至少保留类自身的定义源码', async () => {
+    const text = await explore('LargeCoordinator');
+    expect(sourcedFiles(text)[0]).toMatch(/large\.ts$/);
+    expect(text).toContain('export class LargeCoordinator');
   });
 
   it('请求测试时返回直接测试文件', async () => {

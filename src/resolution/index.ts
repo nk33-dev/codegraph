@@ -35,6 +35,7 @@ import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { JS_BUILT_INS } from './js-builtins';
 import { resolveStoreBinding } from './store-binding';
+import { dynamicNamespaceImportMapping } from '../graph/dynamic-import';
 
 /** Node kinds that can declare supertypes (extends/implements). */
 const SUPERTYPE_BEARING_KINDS = new Set<Node['kind']>([
@@ -655,6 +656,15 @@ export class ReferenceResolver {
         }
 
         const mappings = extractImportMappings(filePath, content, language);
+        for (const node of this.queries.getNodesByFile(filePath)) {
+          if (node.kind !== 'import') continue;
+          const mapping = dynamicNamespaceImportMapping(node.signature);
+          if (!mapping) continue;
+          if (!mappings.some((candidate) => candidate.localName === mapping.localName
+            && candidate.source === mapping.source && candidate.isNamespace)) {
+            mappings.push(mapping);
+          }
+        }
         this.importMappingCache.set(cacheKey, mappings);
         return mappings;
       },
@@ -900,7 +910,7 @@ export class ReferenceResolver {
     if (storeBinding !== undefined) return storeBinding;
 
     if (isUnresolvedJsMemberChain(ref)) {
-      // RN 桥接有明确模块身份；其余未知链不进入 import、框架或模糊猜测。
+      // React Native bridges have explicit module identity; other unknown chains skip import, framework, and fuzzy guesses.
       if (!/^NativeModules\.[A-Z][\w$]*\.[\w$]+$/.test(ref.referenceName)) return null;
       const bridge = this.frameworks.find((framework) => framework.name === 'react-native-bridge');
       const resolved = bridge?.resolve(ref, this.context);

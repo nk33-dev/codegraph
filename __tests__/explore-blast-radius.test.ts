@@ -62,6 +62,17 @@ describe('codegraph_explore — blast radius', () => {
       `export function untestedHelper() { return 3; }\n` +
       `export function untestedCaller() { return untestedHelper(); }\n`,
     );
+    fs.writeFileSync(path.join(src, 'shared.ts'), 'export function widgetRender() { return 1; }\n');
+    fs.writeFileSync(
+      path.join(src, 'callers.ts'),
+      `import { widgetRender } from './shared';\n` +
+      `export function firstCaller() { return widgetRender(); }\n` +
+      `export function secondCaller() { return widgetRender(); }\n`,
+    );
+    fs.writeFileSync(
+      path.join(src, 'importer-only.ts'),
+      `import { widgetRender } from './shared';\nexport const keep = 1;\n`,
+    );
 
     cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
     await cg.indexAll();
@@ -104,6 +115,18 @@ describe('codegraph_explore — blast radius', () => {
     // Bounded claim, no warning glyph — the tool verified nothing beyond 3 hops.
     expect(text).toMatch(/`untestedHelper`[^\n]*no tests found within 3 caller hops/);
     expect(text).not.toContain('⚠️ no covering tests found');
+  });
+
+  it('separates real callers from pure importers', async () => {
+    const res = await handler.execute('codegraph_explore', { query: 'widgetRender' });
+    const line = res.content[0].text.split('\n').find((value) => value.startsWith('- `widgetRender`'));
+
+    expect(line).toBeDefined();
+    expect(line).toMatch(/2 callers in `src\/callers\.ts`/);
+    expect(line).toMatch(/2 importers in/);
+    expect(line).toContain('`src/importer-only.ts`');
+    expect(line).not.toMatch(/\b[3-9]\d* callers\b/);
+    expect(line).toMatch(/\b4 dependents:/);
   });
 
   it('omits symbols that have no dependents from the blast radius', async () => {

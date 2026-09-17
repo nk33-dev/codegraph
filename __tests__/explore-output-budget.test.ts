@@ -191,7 +191,7 @@ describe('codegraph_explore output respects the adaptive budget', () => {
     // Allow a small overshoot for the trailing markers — the cap is enforced
     // per-file rather than as an absolute output ceiling.
     expect(text.length).toBeLessThan(smallBudget.maxOutputChars + 500);
-    expect(text).toContain('current on-disk source excerpts');
+    expect(text).toContain('current source excerpts');
     expect(text).not.toMatch(/Complete source for \d+ files/);
   });
 
@@ -203,7 +203,7 @@ describe('codegraph_explore output respects the adaptive budget', () => {
     expect(text).not.toContain('advisory only, NOT a quota');
   });
 
-  it('emits advisory-only exploration guidance on medium projects — never quota wording', async () => {
+  it('emits concise non-capping exploration guidance on medium projects', async () => {
     // Medium tier (500–4,999 files) turns the guidance note on. The synthetic
     // project is tiny, so fake the stats to land in that tier — the note's
     // WORDING is what this test pins. Regression guard: quota phrasing
@@ -213,8 +213,8 @@ describe('codegraph_explore output respects the adaptive budget', () => {
     try {
       const result = await handler.execute('codegraph_explore', { query: 'Session method helper' });
       const text = result.content?.[0]?.text ?? '';
-      expect(text).toContain('advisory only, NOT a quota');
-      expect(text).toContain('extra calls are never rejected or rate-limited');
+      expect(text).toContain('Suggested coverage:');
+      expect(text).toContain('calls are not capped');
       expect(text).not.toContain('remaining calls');
       expect(text).not.toContain('Synthesize once');
     } finally {

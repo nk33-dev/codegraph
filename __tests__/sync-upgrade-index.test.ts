@@ -1,9 +1,9 @@
 /**
- * `codegraph sync --upgrade-index`（个人版）。
+ * `codegraph sync --upgrade-index` for the personal fork.
  *
- * 契约：升级前必须能算清范围、文件数、预计耗时与预计峰值磁盘，并在非交互运行时要求
- * 显式 --yes；提取规则兼容时走按语言的增量迁移，否则按完整重建处理，且两种情况都不能
- * 在没有真正完成时把索引标成“当前版本”。
+ * Before upgrading, report scope, file count, estimated duration, and estimated peak disk usage.
+ * Non-interactive runs require explicit --yes. Compatible extraction changes migrate by language;
+ * incompatible changes rebuild fully. Neither path may mark the index current before completion.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs';
@@ -17,7 +17,7 @@ import { writeResourceMetricsSnapshot, type ResourceMetricsSnapshot } from '../s
 let dir: string;
 let cg: CodeGraph | null = null;
 
-/** 模拟一个由旧引擎建立的索引（与 upgrade.test.ts 相同的做法）。 */
+/** Simulate an index created by an older engine, matching upgrade.test.ts. */
 function stampOlderExtractionVersion(instance: CodeGraph, version: number): void {
   (instance as unknown as { queries: { setMetadata(k: string, v: string): void } }).queries
     .setMetadata('indexed_with_extraction_version', String(version));
@@ -39,8 +39,15 @@ describe('extractionUpgradeScope', () => {
   });
 
   it('treats an upgrade across unrecorded versions as a full rebuild instead of guessing', () => {
-    expect(extractionUpgradeScope(EXTRACTION_VERSION - 1)).toMatchObject({
+    expect(extractionUpgradeScope(EXTRACTION_VERSION - 2)).toMatchObject({
       scope: 'all', unrecordedHistory: true,
+    });
+  });
+
+  it('uses the recorded scope for the latest extraction upgrade', () => {
+    expect(extractionUpgradeScope(EXTRACTION_VERSION - 1)).toMatchObject({
+      scope: 'all', unrecordedHistory: false,
+      summaries: [expect.stringContaining(`v${EXTRACTION_VERSION}:`)],
     });
   });
 
@@ -73,10 +80,11 @@ describe('planIndexUpgrade', () => {
     expect(assessment.builtWith).toBe(EXTRACTION_VERSION - 1);
     expect(assessment.plan).toMatchObject({
       scope: 'all',
-      unrecordedHistory: true,
+      unrecordedHistory: false,
+      reasons: [expect.stringContaining(`v${EXTRACTION_VERSION}:`)],
       affectedFiles: 2,
       totalFiles: 2,
-      // 没有基线时用每文件启发式，并如实标注依据。
+      // Without a baseline, use the per-file heuristic and state that basis explicitly.
       durationBasis: 'heuristic',
     });
     expect(assessment.plan!.estimatedDurationMs).toBeGreaterThan(0);
@@ -115,7 +123,7 @@ describe('incremental migration', () => {
     const affected = cg.getFiles().map((file) => file.path);
     await cg.indexFiles(affected);
     await cg.sync();
-    // 迁移完成前不能盖戳：这里先确认“还没盖”时的状态仍然是 stale。
+    // The version stamp cannot advance before migration completes; verify the unstamped state remains stale.
     expect(cg.isIndexStale()).toBe(true);
 
     cg.stampExtractionVersion();
