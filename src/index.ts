@@ -868,6 +868,10 @@ export class CodeGraph {
       const changed = result.filesAdded + result.filesModified + result.filesRemoved;
       resourceMetrics().recordIndexRun('incremental', result.durationMs, changed);
     }
+    const buildInfo = this.getIndexBuildInfo();
+    result.reindexRecommended = this.isIndexStale();
+    result.builtWithExtractionVersion = buildInfo.extractionVersion;
+    result.currentExtractionVersion = EXTRACTION_VERSION;
     return result;
   }
 

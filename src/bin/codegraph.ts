@@ -64,7 +64,13 @@ import { BROWSER_ENV, DEFAULT_UI_PORT } from '../ui-server/constants';
 import type { UiServerHandle } from '../ui-server';
 import { lookupSymbolNodes, describeSymbolNode, groupDefinitions } from '../graph/symbol-lookup';
 import { analyzeImpact, findAffectedTests } from '../graph/change-impact';
-import { PERSONAL_DISTRIBUTION, PERSONAL_UPDATE_COMMAND, runtimeInfo } from '../runtime-info';
+import {
+  PERSONAL_DISTRIBUTION,
+  PERSONAL_REPOSITORY,
+  PERSONAL_UPDATE_COMMAND,
+  personalReleaseAssetUrl,
+  runtimeInfo,
+} from '../runtime-info';
 import { readResourceMetricsSnapshot, resourceMetrics, writeResourceMetricsSnapshot } from '../resource-metrics';
 import { describeResourceProfile, resolveResourceProfile, resolveQueryPoolSizing } from '../resource-profile';
 import { countLiveLspLeases } from '../lsp/lease-registry';
@@ -968,7 +974,8 @@ program
       const cg = await CodeGraph.open(projectPath);
 
       if (options.quiet) {
-        await cg.sync();
+        const result = await cg.sync();
+        if (result.lockUnavailable) process.exitCode = 1;
         persistResourceBaseline(projectPath);
         cg.destroy();
         return;
@@ -988,15 +995,27 @@ program
 
       const totalChanges = result.filesAdded + result.filesModified + result.filesRemoved;
 
-      if (totalChanges === 0) {
+      if (result.lockUnavailable) {
+        clack.log.warn('Sync did not run because another CodeGraph process holds the index writer lock. Retry after that process finishes.');
+        process.exitCode = 1;
+      } else if (totalChanges === 0 && !result.reindexRecommended) {
         clack.log.info('Already up to date');
       } else {
-        clack.log.success(`Synced ${formatNumber(totalChanges)} changed files`);
-        const details: string[] = [];
-        if (result.filesAdded > 0) details.push(`Added: ${result.filesAdded}`);
-        if (result.filesModified > 0) details.push(`Modified: ${result.filesModified}`);
-        if (result.filesRemoved > 0) details.push(`Removed: ${result.filesRemoved}`);
-        clack.log.info(`${details.join(', ')} ${getGlyphs().dash} ${formatNumber(result.nodesUpdated)} nodes in ${formatDuration(result.durationMs)}`);
+        if (totalChanges > 0) {
+          clack.log.success(`Synced ${formatNumber(totalChanges)} changed files`);
+          const details: string[] = [];
+          if (result.filesAdded > 0) details.push(`Added: ${result.filesAdded}`);
+          if (result.filesModified > 0) details.push(`Modified: ${result.filesModified}`);
+          if (result.filesRemoved > 0) details.push(`Removed: ${result.filesRemoved}`);
+          clack.log.info(`${details.join(', ')} ${getGlyphs().dash} ${formatNumber(result.nodesUpdated)} nodes in ${formatDuration(result.durationMs)}`);
+        }
+        if (result.reindexRecommended) {
+          clack.log.warn(
+            `Source changes are synchronized, but this index was built with extraction version ` +
+            `${result.builtWithExtractionVersion ?? 'unknown'} (current: ${result.currentExtractionVersion}).`,
+          );
+          clack.log.info(`Run \`codegraph index -f .\` from ${projectPath} once to rebuild extracted symbols and relationships.`);
+        }
       }
 
       clack.outro('Done');
@@ -2831,8 +2850,10 @@ program
         ? [opts.location as 'global' | 'local']
         : ['global', 'local'];
       let changed = 0;
+      const restartTargets = new Set<string>();
       for (const loc of locs) {
         for (const report of refreshTargets(ALL_TARGETS, loc)) {
+          if (report.status === 'refreshed' || report.status === 'unchanged') restartTargets.add(report.displayName);
           for (const p of report.changedPaths) {
             changed += 1;
             console.log(`  ${report.displayName}: refreshed ${p}`);
@@ -2841,6 +2862,9 @@ program
       }
       if (changed === 0) {
         console.log('All configured agent surfaces are already current.');
+      }
+      if (restartTargets.size > 0) {
+        console.log(`Fully quit and reopen these configured clients to load the installed MCP version: ${[...restartTargets].join(', ')}.`);
       }
       return;
     }
@@ -2986,8 +3010,98 @@ program
   .option('-f, --force', 'Reinstall even if already on the target version')
   .action(async (versionArg: string | undefined, options: { check?: boolean; force?: boolean }) => {
     if (PERSONAL_DISTRIBUTION) {
-      console.log(`Personal build:\n${PERSONAL_UPDATE_COMMAND}`);
-      console.log('This build does not install upstream releases. Use a tested commit or tag to pin an update.');
+      const up = await import('../upgrade');
+      const pinnedVersion = versionArg || process.env.CODEGRAPH_VERSION;
+      let target: string;
+      try {
+        target = up.normalizeVersion(
+          pinnedVersion
+            || await up.resolveLatestVersion(PERSONAL_REPOSITORY, 12_000, true),
+        );
+      } catch (err) {
+        error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      if (!up.parseSemver(target) || !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(target)) {
+        error(`Invalid personal release version: ${target}`);
+        process.exit(1);
+      }
+      const current = up.normalizeVersion(packageJson.version);
+      const updateAvailable = up.isUpdateAvailable(current, target);
+      console.log(`CodeGraph personal  current ${current}  target ${target}`);
+      if (options.check) {
+        console.log(updateAvailable ? `Update available: ${current} -> ${target}` : `Already on ${current}.`);
+        return;
+      }
+      if (!updateAvailable && !options.force && !pinnedVersion) {
+        console.log(`Already up to date (${current}). Use --force to reinstall.`);
+        return;
+      }
+
+      const method = up.detectInstallMethod({ filename: __filename, platform: process.platform, cwd: process.cwd() });
+      if (method.kind === 'source') {
+        warn(`Running from a source checkout at ${method.root}; refusing to replace it with a global package.`);
+        console.log(`Use a release install explicitly if desired:\n${PERSONAL_UPDATE_COMMAND}`);
+        return;
+      }
+      if (method.kind !== 'npm') {
+        error(`Cannot upgrade this ${method.kind} installation in place. Install the personal release explicitly instead.`);
+        process.exit(1);
+      }
+      const npmRoot = process.platform === 'win32'
+        ? up.defaultCapture('cmd.exe', ['/d', '/s', '/c', 'npm root -g'])
+        : up.defaultCapture('npm', ['root', '-g']);
+      let globalInstall = false;
+      try {
+        const expectedRoot = path.join(npmRoot?.code === 0 ? npmRoot.stdout.trim() : '', packageJson.name);
+        globalInstall = npmRoot?.code === 0
+          && path.relative(fs.realpathSync(expectedRoot), fs.realpathSync(path.resolve(__dirname, '..', '..'))) === '';
+      } catch { /* 无法确认当前全局目录时，不能新建另一份安装冒充原地升级。 */ }
+      if (!globalInstall) {
+        error('This entry is not the package in the active npm global prefix. Use its original package manager or resolve the competing install with `codegraph doctor`.');
+        process.exit(1);
+      }
+
+      const assetUrl = personalReleaseAssetUrl(target);
+      console.log(`Installing ${assetUrl}`);
+      const installCode = process.platform === 'win32'
+        ? up.defaultRun('cmd.exe', ['/d', '/s', '/c', `npm install -g "${assetUrl}"`])
+        : up.defaultRun('npm', ['install', '-g', assetUrl]);
+      if (installCode !== 0) {
+        error(`npm exited with code ${installCode}.`);
+        process.exit(1);
+      }
+
+      const probe = process.platform === 'win32'
+        ? up.defaultCapture('cmd.exe', ['/d', '/s', '/c', 'codegraph doctor --json'])
+        : up.defaultCapture('codegraph', ['doctor', '--json']);
+      let installed: ReturnType<typeof runtimeInfo> | null = null;
+      try { if (probe?.code === 0) installed = JSON.parse(probe.stdout); } catch { /* 旧入口可能没有 doctor。 */ }
+      const reported = installed?.version;
+      let matchesEntry = false;
+      try {
+        matchesEntry = installed?.distribution === 'personal'
+          && installed.packageName === packageJson.name
+          && path.relative(fs.realpathSync(installed.packageRoot), fs.realpathSync(path.resolve(__dirname, '..', '..'))) === '';
+      } catch { /* PATH 指向了不存在或无法确认的包。 */ }
+      if (!matchesEntry || !reported || !up.parseSemver(reported) || up.compareVersions(reported, target) !== 0) {
+        warn(`Installed ${target}, but the active PATH entry's package identity or version could not be verified (reported: ${reported ?? 'unknown'}).`);
+        console.log('Run `codegraph doctor` to find and remove the stale competing entry. Client configs were not refreshed.');
+        process.exitCode = 1;
+        return;
+      }
+
+      const refreshCode = process.platform === 'win32'
+        ? up.defaultRun('cmd.exe', ['/d', '/s', '/c', 'codegraph install --refresh'])
+        : up.defaultRun('codegraph', ['install', '--refresh']);
+      if (refreshCode !== 0) {
+        warn('The package was upgraded, but client config refresh failed. Run `codegraph install --refresh`.');
+        process.exitCode = 1;
+      }
+      console.log(`Upgrade complete: ${target}.`);
+      console.log(up.reindexAdvisory());
+      console.log('Fully quit and reopen every running client that uses CodeGraph MCP (including Codex). Existing MCP processes do not hot-switch binaries.');
+      console.log('Run `codegraph doctor` to confirm the active entry and any remaining competing installs.');
       return;
     }
     const up = await import('../upgrade');

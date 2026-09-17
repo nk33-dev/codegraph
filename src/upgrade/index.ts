@@ -176,7 +176,22 @@ export function compareVersions(a: string, b: string): number {
   // A prerelease is "less than" its release (1.0.0-rc < 1.0.0).
   if (sa.pre && !sb.pre) return -1;
   if (!sa.pre && sb.pre) return 1;
-  if (sa.pre && sb.pre) return sa.pre < sb.pre ? -1 : sa.pre > sb.pre ? 1 : 0;
+  if (sa.pre && sb.pre) {
+    const left = sa.pre.split('.');
+    const right = sb.pre.split('.');
+    for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+      const l = left[index];
+      const r = right[index];
+      if (l === undefined) return -1;
+      if (r === undefined) return 1;
+      if (l === r) continue;
+      const lNumeric = /^\d+$/.test(l);
+      const rNumeric = /^\d+$/.test(r);
+      if (lNumeric && rNumeric) return Number(l) - Number(r);
+      if (lNumeric !== rNumeric) return lNumeric ? -1 : 1;
+      return l < r ? -1 : 1;
+    }
+  }
   return 0;
 }
 
@@ -241,7 +256,31 @@ function httpsGet(
  * redirect has no such limit. Fall back to the API only if the redirect can't
  * be read.
  */
-export async function resolveLatestVersion(repo = REPO, timeoutMs = 12000): Promise<string> {
+export async function resolveLatestVersion(
+  repo = REPO,
+  timeoutMs = 12000,
+  includePrerelease = false,
+): Promise<string> {
+  if (includePrerelease) {
+    try {
+      const res = await httpsGet(
+        `https://api.github.com/repos/${repo}/releases?per_page=20`,
+        { 'User-Agent': 'codegraph-upgrade', Accept: 'application/vnd.github+json' },
+        timeoutMs,
+      );
+      const releases = JSON.parse(res.body);
+      // GitHub 列表按创建时间排序，补发旧版本不能让自动升级选中较低版本。
+      const release = Array.isArray(releases)
+        ? releases
+          .filter((entry) => entry && entry.draft !== true && typeof entry.tag_name === 'string'
+            && /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(entry.tag_name))
+          .sort((a, b) => compareVersions(b.tag_name, a.tag_name))[0]
+        : null;
+      if (release?.tag_name) return normalizeVersion(release.tag_name);
+    } catch {
+      /* 继续走普通 latest 解析，兼容没有预发布的仓库。 */
+    }
+  }
   try {
     const res = await httpsGet(
       `https://github.com/${repo}/releases/latest`,
@@ -320,9 +359,9 @@ const c = {
 export function reindexAdvisory(): string {
   return [
     c.dim('Your existing project indexes keep working, but were built by the previous version.'),
-    c.dim('To pick up this version’s extraction improvements, refresh each project:'),
-    `  ${c.cyan('codegraph sync')}        ${c.dim('# incremental, fast')}`,
-    `  ${c.cyan('codegraph index -f')}    ${c.dim('# full rebuild')}`,
+    c.dim('Incremental sync updates changed files but cannot upgrade extraction data already on disk.'),
+    c.dim('When `codegraph status` reports reindexRecommended, rebuild that project once:'),
+    `  ${c.cyan('codegraph index -f .')}  ${c.dim('# full extraction rebuild')}`,
     c.dim('(`codegraph status` flags any index that predates the engine you’re running.)'),
   ].join('\n');
 }

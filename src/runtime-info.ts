@@ -25,8 +25,16 @@ export function readBuildInfo(): BuildInfo | null {
 }
 
 export const PERSONAL_DISTRIBUTION = pkg.codegraphDistribution?.channel === 'personal';
-export const PERSONAL_INSTALL_SPEC = `github:${pkg.codegraphDistribution?.repository ?? 'nk33-dev/codegraph'}#${pkg.codegraphDistribution?.ref ?? 'personal'}`;
+export const PERSONAL_REPOSITORY = pkg.codegraphDistribution?.repository ?? 'nk33-dev/codegraph';
+export const PERSONAL_INSTALL_SPEC = `github:${PERSONAL_REPOSITORY}#${pkg.codegraphDistribution?.ref ?? 'personal'}`;
 export const PERSONAL_UPDATE_COMMAND = `npm pack "${PERSONAL_INSTALL_SPEC}"\nnpm install -g "./${pkg.name.replace(/^@/, '').replace('/', '-')}-${pkg.version}.tgz"`;
+
+export function personalReleaseAssetUrl(version: string): string {
+  const tag = version.startsWith('v') ? version : `v${version}`;
+  const packageVersion = tag.slice(1);
+  const asset = `${pkg.name.replace(/^@/, '').replace('/', '-')}-${packageVersion}.tgz`;
+  return `https://github.com/${PERSONAL_REPOSITORY}/releases/download/${tag}/${asset}`;
+}
 
 /** 显示 PATH 中的所有入口，只读文件，不执行可能指向其他安装的命令。 */
 function pathCommands(): string[] {
@@ -52,6 +60,6 @@ export function runtimeInfo() {
     build: readBuildInfo(),
     pathCommands: pathCommands(),
     viewerAvailable: fs.existsSync(path.join(packageRoot, 'dist', 'viewer', 'index.html')),
-    updateCommand: PERSONAL_DISTRIBUTION ? PERSONAL_UPDATE_COMMAND : 'codegraph upgrade',
+    updateCommand: 'codegraph upgrade',
   };
 }

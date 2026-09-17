@@ -127,6 +127,10 @@ export interface SyncResult {
   durationMs: number;
   /** 未执行同步，因为另一个进程持有索引写锁。 */
   lockUnavailable?: boolean;
+  /** 源文件虽已增量同步，但索引仍由旧提取版本构建，需要完整重建。 */
+  reindexRecommended?: boolean;
+  builtWithExtractionVersion?: number | null;
+  currentExtractionVersion?: number;
   changedFilePaths?: string[];
   /**
    * Symbol names whose set of definitions this sync CHANGED — names the synced

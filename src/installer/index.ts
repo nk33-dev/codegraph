@@ -31,7 +31,7 @@ import { isGitRepo, isSyncHookInstalled, installGitSyncHook } from '../sync/git-
 import { getCodeGraphDir, codeGraphDirName } from '../directory';
 import { getTelemetry, TELEMETRY_DOCS } from '../telemetry';
 import { maybeOfferBetaSignup } from './beta-signup';
-import { PERSONAL_DISTRIBUTION, PERSONAL_UPDATE_COMMAND } from '../runtime-info';
+import { PERSONAL_DISTRIBUTION } from '../runtime-info';
 
 // Backwards-compat: keep these named exports — downstream code may
 // import them. The shim in `config-writer.ts` continues to re-export
@@ -106,7 +106,7 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
   // 个人版只配置客户端，不让配置向导把刚装好的个人包替换成官方包。
   // 官方版保留原来的 CLI 安装询问；--yes 仍假定 CLI 已安装。
   if (PERSONAL_DISTRIBUTION) {
-    clack.log.info(`Personal CLI:\n${PERSONAL_UPDATE_COMMAND}\nUse codegraph doctor to verify the active entry.`);
+    clack.log.info('Personal CLI: use `codegraph upgrade`; run `codegraph doctor` to verify the active entry.');
   } else if (!useDefaults) {
     const shouldInstallGlobally = await clack.confirm({
       message: 'Install the codegraph CLI on your PATH? (Required so agents can launch the MCP server)',
@@ -235,6 +235,7 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
 
   // Step 5: per-target install loop.
   const installedIds: TargetId[] = [];
+  const restartTargets: string[] = [];
   let sawCreated = false;
   let sawUpdated = false;
   for (const target of targets) {
@@ -246,6 +247,8 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     }
     const result = target.install(location, { autoAllow, promptHook });
     installedIds.push(target.id);
+    // 配置字节未变也可能刚升级了包，已运行的客户端仍持有旧 MCP 进程。
+    restartTargets.push(target.displayName);
     for (const file of result.files) {
       if (file.action === 'created') sawCreated = true;
       if (file.action === 'updated') sawUpdated = true;
@@ -295,12 +298,20 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     'Next: index a project',
   );
 
+  if (restartTargets.length > 0) {
+    clack.note(
+      restartTargets.map((name) => `- ${name}`).join('\n') +
+        '\n\nFully quit and reopen these clients. Existing windows keep their current MCP process and will not switch automatically.',
+      'Restart required',
+    );
+  }
+
   // Deliver buffered telemetry while we're already in a long interactive
   // command — bounded (~1.5s worst case), invisible after a multi-second install.
   await getTelemetry().flushNow();
 
-  const finalNote = targets.length > 0
-    ? `Done! Restart your agent${targets.length > 1 ? 's' : ''} to use CodeGraph.`
+  const finalNote = restartTargets.length > 0
+    ? `Done! Restart ${restartTargets.length === 1 ? 'the listed client' : 'the listed clients'} to use CodeGraph.`
     : 'Done!';
   clack.outro(finalNote);
 }
