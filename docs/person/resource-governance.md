@@ -66,6 +66,7 @@
 - daemon 每 10 秒把快照原子写入 `<项目>/.codegraph/resource-metrics.json`，退出前再写一次；
 - `codegraph index` / `codegraph sync` 完成后也写一次，所以没跑 daemon 时也能留下基线；
 - `codegraph status`（文本与 `--json` 的 `resources` 字段）以及 MCP `codegraph_status` 展示生效档位与实际状态；**status 只读配置与快照，不启动 LSP、不启动 daemon**；
+- CLI status 只有在 pid 存活、项目注册表或 `daemon.pid` 身份匹配且快照不超过 60 秒时才用现在时显示 daemon。退出或过期快照标成 `LAST DAEMON SNAPSHOT`；JSON 通过 `reportedState`（`live/exited/stale`）和 `reportedAgeMs` 区分；
 - 分位数使用每个序列最多 256 个样本的环形缓冲，长时间运行不会无限占用内存。
 
 ## 代码归属
@@ -73,7 +74,7 @@
 | 入口 | 职责 |
 | --- | --- |
 | `src/resource-profile.ts` | 档位表、环境变量覆盖与钳制、`describeResourceProfile`、查询池尺寸推导 |
-| `src/resource-metrics.ts` | 计数器与分位数、快照结构、`.codegraph/resource-metrics.json` 原子读写 |
+| `src/resource-metrics.ts` | 计数器与分位数、快照结构、原子读写，以及快照 live/exited/stale 判定 |
 | `src/mcp/query-pool.ts` | worker 扩缩容状态机与队列、缩容定时器 |
 | `src/mcp/engine.ts` | 按档位创建查询池、启动日志、周期快照写入 |
 | `src/lsp/lease-registry.ts` | 跨 daemon 租约注册表（pid + 心跳 + 过期清理） |
@@ -104,7 +105,7 @@ npm test
 | 8 个并发只读调用后的缩容 | 空闲窗口后 `liveWorkers=1`，8 个调用全部成功返回，缩容后再查一次仍成功（`__tests__/query-pool-daemon.test.ts`，真实 daemon + 真实 worker） |
 | 缩容窗口的测试值 | 集成测试用 3 秒（档位默认 120 秒），档位语义不变 |
 | 同一项目多客户端 | 仍只有一套 daemon/LSP（`cli-shared-service.test.ts` 的「language server starts only once」继续通过） |
-| status 是否启动 LSP | 否：库级断言 `hasLiveServer() === false`、MCP `codegraph_status` 调用后同样为 false，且 `--json` 的 `reported` 为 null 时诚实降级 |
+| status 是否启动 LSP/daemon | 否：只做 `kill(pid, 0)` 与文件读取；无快照诚实降级，历史快照通过 `reportedState` 标明不是当前状态 |
 | 串行性能门禁 | `npm run test:perf`：6 个文件、267 项通过，26.75 秒 |
 | 并发全量测试 | `npm test`：266～267 个文件通过、0～2 个偶发失败（负载相关，单独运行均通过）；逐次结果见[开发验证记录](test-repairs.md) |
 | 节点 LRU 命中路径的指标开销 | 微基准三次交替测量均值约 5%，两次测量为 0～3%（首次有 JIT 预热偏差） |

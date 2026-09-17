@@ -71,7 +71,7 @@ import {
   personalReleaseAssetUrl,
   runtimeInfo,
 } from '../runtime-info';
-import { readResourceMetricsSnapshot, resourceMetrics, writeResourceMetricsSnapshot } from '../resource-metrics';
+import { readResourceMetricsSnapshot, reportedSnapshotState, resourceMetrics, writeResourceMetricsSnapshot } from '../resource-metrics';
 import { describeResourceProfile, resolveResourceProfile, resolveQueryPoolSizing } from '../resource-profile';
 import { countLiveLspLeases } from '../lsp/lease-registry';
 import type { Node, Edge } from '../types';
@@ -1160,6 +1160,8 @@ function collectResourceReport(projectPath: string): {
   poolMax: number;
   poolSource: string;
   snapshot: ReturnType<typeof readResourceMetricsSnapshot>;
+  snapshotState: ReturnType<typeof reportedSnapshotState>['state'];
+  snapshotAgeMs: number | null;
   liveLeases: number;
 } {
   const profile = resolveResourceProfile();
@@ -1168,14 +1170,18 @@ function collectResourceReport(projectPath: string): {
   try {
     liveLeases = countLiveLspLeases();
   } catch {
-    liveLeases = 0; // 租约目录不可读只是少一个数字，不影响 status。
+    liveLeases = 0; // An unreadable lease directory only removes one metric; status remains usable.
   }
+  const snapshot = readResourceMetricsSnapshot(projectPath);
+  const snapshotStatus = reportedSnapshotState(projectPath, snapshot);
   return {
     profile,
     description: describeResourceProfile(profile),
     poolMax: sizing.max,
     poolSource: sizing.source,
-    snapshot: readResourceMetricsSnapshot(projectPath),
+    snapshot,
+    snapshotState: snapshotStatus.state,
+    snapshotAgeMs: snapshotStatus.ageMs,
     liveLeases,
   };
 }
@@ -1287,6 +1293,8 @@ program
             liveLspLeases: resources.liveLeases,
             // daemon 周期写入的快照；daemon 未运行时为 null。
             reported: resources.snapshot,
+            reportedState: resources.snapshotState,
+            reportedAgeMs: resources.snapshotAgeMs,
           },
         }));
         cg.destroy();
@@ -1361,15 +1369,25 @@ program
       if (!reported) {
         console.log(`  Daemon:    no metrics reported ${getGlyphs().dash} daemon not running? (status itself starts no LSP)`);
       } else {
-        const age = Math.max(0, Math.round((Date.now() - reported.updatedAt) / 1000));
+        const age = Math.max(0, Math.round((resources.snapshotAgeMs ?? 0) / 1000));
         const q = reported.query;
         const cache = q.cacheHits + q.cacheMisses > 0
           ? `, cache ${q.cacheHits}/${q.cacheHits + q.cacheMisses}`
           : '';
-        console.log(
-          `  Daemon:    pool ${q.liveWorkers} live/${q.idleWorkers} idle of ${q.poolMax}, queue ${q.queueDepth}, ` +
-          `queries ${q.started} (p95 ${q.run.p95Ms}ms)${cache}`
-        );
+        const live = resources.snapshotState === 'live';
+        const why = resources.snapshotState === 'exited'
+          ? `that process has exited (pid ${reported.pid})`
+          : `no report for ${age}s ${getGlyphs().dash} the daemon stopped reporting`;
+        console.log(live
+          ? `  Daemon:    pool ${q.liveWorkers} live/${q.idleWorkers} idle of ${q.poolMax}, queue ${q.queueDepth}, ` +
+            `queries ${q.started} (p95 ${q.run.p95Ms}ms)${cache}`
+          : `  Daemon:    no daemon running ${getGlyphs().dash} the numbers below are the LAST DAEMON SNAPSHOT (${why}), not current state`);
+        if (!live) {
+          console.log(
+            `  Snapshot:  pool ${q.liveWorkers} live/${q.idleWorkers} idle of ${q.poolMax}, queue ${q.queueDepth}, ` +
+            `queries ${q.started} (p95 ${q.run.p95Ms}ms)${cache}`,
+          );
+        }
         const idx = reported.index;
         if (idx.fullRuns + idx.incrementalRuns > 0) {
           console.log(
@@ -1379,7 +1397,7 @@ program
         const lsp = reported.lsp;
         console.log(
           `  LSP usage: ${lsp.liveServers} live, ${lsp.starts} starts/${lsp.stops} stops (idle ${lsp.idleStops}, budget ${lsp.budgetStops}), ` +
-          `reported ${age}s ago by pid ${reported.pid}`
+          (live ? `reported ${age}s ago by pid ${reported.pid}` : `last reported ${age}s ago by pid ${reported.pid}`)
         );
       }
       console.log();

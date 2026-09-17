@@ -68,6 +68,31 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+function normalizeRootForCompare(root: string): string {
+  const normalized = path.resolve(root).replace(/\\/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+/**
+ * Whether `pid` is currently the daemon serving `root`.
+ * Uses process and file identity only; status checks must never connect to or start a daemon.
+ */
+export function isLiveDaemonFor(root: string, pid: number): boolean {
+  if (!isProcessAlive(pid)) return false;
+  const target = normalizeRootForCompare(root);
+  for (const record of listDaemons({ prune: false })) {
+    if (record.pid === pid && normalizeRootForCompare(record.root) === target) return true;
+  }
+
+  // The registry is discovery-only; the project lock is the authoritative fallback.
+  try {
+    const info = decodeLockInfo(fs.readFileSync(getDaemonPidPath(root), 'utf8'));
+    return !!info && info.pid === pid;
+  } catch {
+    return false;
+  }
+}
+
 /** Best-effort: record this daemon so `list`/`stop --all` can find it. */
 export function registerDaemon(rec: DaemonRecord): void {
   try {

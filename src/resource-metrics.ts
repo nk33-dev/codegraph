@@ -1,31 +1,30 @@
 /**
- * 运行期资源指标与基线记录（开发计划 §5 阶段一）。
+ * Runtime resource metrics and baselines (development plan section 5, phase 1).
  *
- * 记录内容：查询队列长度、live/idle worker、单次查询耗时、缓存命中、LSP 生命周期、
- * 全量与增量索引耗时。目的不是做遥测，而是让「阶段一之后每个功能的 CPU/内存/磁盘
- * 增长」有可比对的基线，并能通过 `codegraph status` 看到实际资源状态。
+ * Records query queue depth, live/idle workers, query latency, cache hits, LSP lifecycle,
+ * and full/incremental indexing duration. These are local operational baselines, not telemetry.
  *
- * 设计约束：
- *   - 全部为进程内计数，写入是廉价的同步操作，不引入 I/O 或异步；
- *   - 分位数用有界环形缓冲（每个序列最多 {@link SERIES_CAPACITY} 个样本），
- *     保证长时间运行不会无限增长内存；
- *   - 快照落盘是 best-effort：失败只影响 status 的展示，绝不影响查询与索引。
+ * Constraints:
+ *   - in-process counters use cheap synchronous updates with no I/O;
+ *   - percentiles use bounded ring buffers capped by {@link SERIES_CAPACITY};
+ *   - snapshot persistence is best-effort and never affects queries or indexing.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { getCodeGraphDir } from './directory';
+import { isLiveDaemonFor } from './mcp/daemon-registry';
 import type { ResourceProfileName } from './resource-profile';
 
-/** 每个耗时序列保留的样本数；足够算稳定的 p50/p95，又不会长期增长。 */
+/** Samples retained per duration series: enough for p50/p95 without unbounded growth. */
 export const SERIES_CAPACITY = 256;
 
-/** 快照文件名，位于项目的 `.codegraph/` 下。 */
+/** Snapshot filename under the project's `.codegraph/` directory. */
 export const RESOURCE_METRICS_FILENAME = 'resource-metrics.json';
 
 export interface DurationStats {
   count: number;
-  /** 累加值（所有样本，不只保留的窗口）。 */
+  /** Accumulated value across all samples, not only the retained window. */
   totalMs: number;
   lastMs: number;
   maxMs: number;
@@ -33,7 +32,7 @@ export interface DurationStats {
   p95Ms: number;
 }
 
-/** 有界耗时样本序列。 */
+/** Bounded duration sample series. */
 export class DurationSeries {
   private readonly samples: number[] = [];
   private next = 0;
@@ -78,7 +77,7 @@ export class DurationSeries {
   }
 }
 
-/** 已排序副本上的最近秩分位数；空样本返回 0。 */
+/** Nearest-rank percentile over a sorted copy; empty samples return zero. */
 function percentile(samples: readonly number[], q: number): number {
   if (samples.length === 0) return 0;
   const sorted = [...samples].sort((a, b) => a - b);
@@ -89,18 +88,18 @@ function percentile(samples: readonly number[], q: number): number {
 export interface QueryMetrics {
   started: number;
   completed: number;
-  /** 因等待超时返回「busy, retry」引导的次数。 */
+  /** Calls that timed out waiting and returned busy/retry guidance. */
   busy: number;
   failed: number;
   crashedWorkers: number;
-  /** 当前排队中（尚未派发）的调用数。 */
+  /** Calls currently queued but not dispatched. */
   queueDepth: number;
   liveWorkers: number;
   idleWorkers: number;
   poolMax: number;
-  /** 从入队到拿到结果的等待时间。 */
+  /** Time from enqueue to result. */
   wait: DurationStats;
-  /** worker 内实际执行时间（含回退到主线程的路径）。 */
+  /** Actual execution time, including main-thread fallback. */
   run: DurationStats;
   cacheHits: number;
   cacheMisses: number;
@@ -121,12 +120,12 @@ export interface LspMetrics {
   starts: number;
   stops: number;
   idleStops: number;
-  /** 因每项目软上限或全局预算而退出。 */
+  /** Exits caused by per-project soft limits or the global budget. */
   budgetStops: number;
   startDuration: DurationStats;
-  /** 上报时刻本进程内的活跃语言服务器数量。 */
+  /** Live language servers in this process at report time. */
   liveServers: number;
-  /** 上报时刻全局租约数量（跨 daemon，来自租约注册表）。 */
+  /** Global lease count across daemons at report time. */
   globalLeases: number;
 }
 
@@ -149,8 +148,8 @@ export interface PoolGauges {
 }
 
 /**
- * 进程内指标收集器。daemon 只有一个实例（`resourceMetrics()` 单例），
- * 测试可以 new 出自己的实例或调用 {@link resetResourceMetrics} 复位。
+ * In-process metric collector. A daemon uses the `resourceMetrics()` singleton;
+ * tests may construct isolated instances or call {@link resetResourceMetrics}.
  */
 export class ResourceMetrics {
   private readonly wait = new DurationSeries();
@@ -186,7 +185,7 @@ export class ResourceMetrics {
     this.queryStarted += 1;
   }
 
-  /** `waitMs` = 入队到派发，`runMs` = 派发到结果；回退到主线程时两者相同。 */
+  /** `waitMs` is enqueue-to-dispatch; `runMs` is dispatch-to-result. */
   recordQueryEnd(waitMs: number, runMs: number, outcome: 'ok' | 'busy' | 'error'): void {
     this.queryCompleted += 1;
     if (outcome === 'busy') this.queryBusy += 1;
@@ -302,36 +301,35 @@ export class ResourceMetrics {
 
 let globalMetrics: ResourceMetrics | null = null;
 
-/** 进程内单例；daemon、查询池、LSP 与索引都写入同一份。 */
+/** Process singleton shared by the daemon, query pool, LSP, and indexer. */
 export function resourceMetrics(): ResourceMetrics {
   if (!globalMetrics) globalMetrics = new ResourceMetrics();
   return globalMetrics;
 }
 
-/** 测试钩子：丢弃当前单例，下一次 `resourceMetrics()` 从零开始。 */
+/** Test hook: discard the singleton so the next `resourceMetrics()` starts empty. */
 export function resetResourceMetrics(): void {
   globalMetrics = null;
 }
 
 /**
- * 热路径友好的缓存命中记录（例如 QueryBuilder 的节点 LRU）。
+ * Hot-path cache-hit recording, such as QueryBuilder's node LRU.
  *
- * 与 `resourceMetrics().recordCache()` 的区别：单例还没建立时（库调用方、CLI
- * 单次命令）只做一次空判断就返回，不会为了指标先创建收集器，也不会在每次节点
- * 查询上付出对象查找的代价。
+ * Unlike `resourceMetrics().recordCache()`, this returns immediately when the singleton
+ * does not exist and never creates the collector merely to record a metric.
  */
 export function recordQueryCache(hit: boolean): void {
   globalMetrics?.recordCache(hit);
 }
 
-/** 快照文件路径。 */
+/** Snapshot file path. */
 export function getResourceMetricsPath(projectRoot: string): string {
   return path.join(getCodeGraphDir(projectRoot), RESOURCE_METRICS_FILENAME);
 }
 
 /**
- * best-effort 写入快照（临时文件 + rename，避免 status 读到半个 JSON）。
- * 返回是否写入成功——调用方只在需要诊断时关心。
+ * Best-effort atomic snapshot write using a temporary file and rename.
+ * Returns success for callers that need diagnostics.
  */
 export function writeResourceMetricsSnapshot(projectRoot: string, snapshot: ResourceMetricsSnapshot): boolean {
   const file = getResourceMetricsPath(projectRoot);
@@ -342,12 +340,12 @@ export function writeResourceMetricsSnapshot(projectRoot: string, snapshot: Reso
     fs.renameSync(tmp, file);
     return true;
   } catch {
-    try { fs.unlinkSync(tmp); } catch { /* 已不存在 */ }
+    try { fs.unlinkSync(tmp); } catch { /* Already absent. */ }
     return false;
   }
 }
 
-/** 读取快照；文件缺失、损坏或版本不符时返回 null（status 只降级展示）。 */
+/** Read a snapshot; missing, corrupt, or incompatible files return null. */
 export function readResourceMetricsSnapshot(projectRoot: string): ResourceMetricsSnapshot | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(getResourceMetricsPath(projectRoot), 'utf-8')) as ResourceMetricsSnapshot;
@@ -356,4 +354,21 @@ export function readResourceMetricsSnapshot(projectRoot: string): ResourceMetric
   } catch {
     return null;
   }
+}
+
+/** Daemons report every 10 seconds; older snapshots are historical rather than current state. */
+export const REPORTED_SNAPSHOT_STALE_MS = 60_000;
+
+export type ReportedSnapshotState = 'live' | 'exited' | 'stale';
+
+/** Classify whether a persisted snapshot still represents the current project daemon. */
+export function reportedSnapshotState(
+  projectRoot: string,
+  snapshot: ResourceMetricsSnapshot | null,
+  now: number = Date.now(),
+): { state: ReportedSnapshotState | null; ageMs: number | null } {
+  if (!snapshot) return { state: null, ageMs: null };
+  const ageMs = Math.max(0, now - snapshot.updatedAt);
+  if (!isLiveDaemonFor(projectRoot, snapshot.pid)) return { state: 'exited', ageMs };
+  return { state: ageMs > REPORTED_SNAPSHOT_STALE_MS ? 'stale' : 'live', ageMs };
 }
