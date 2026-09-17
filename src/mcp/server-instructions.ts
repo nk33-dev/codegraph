@@ -78,6 +78,10 @@ manifest when manual repair is needed. Refusals are explicit —
 an ambiguous name lists the candidates, a file that drifted from the index answers
 \`status:"stale"\` (run \`codegraph sync\` and retry), and a rename with no usable language server
 answers \`status:"unavailable"\` rather than a guessed text edit. Read the preview before applying.
+Rename previews report gaps between verifiable Graph references and LSP edits; apply refuses known gaps.
+Aliases and relationships without a reliable text location remain explicitly unverified. Position-based
+renames must resolve to one current indexed definition before apply. A coverage check is not a proof that
+unindexed or runtime references are complete.
 
 ## Anti-patterns
 
@@ -91,6 +95,7 @@ answers \`status:"unavailable"\` rather than a guessed text edit. Read the previ
 
 ## Limitations
 
+- Related tests default to \`direct\` and \`high\` confidence graph paths. Use \`mode:"tests", includeIndirect:true\` to inspect candidates reached through shared modules or longer paths; confidence is a graph heuristic, not execution proof.
 - For structured navigation use this SAME tool with mode=definitions or references and a symbol query; mode=symbols with a project-relative file query; mode=status with query="status"; mode=impact with a symbol name (what changing it reaches, with propagation distance); mode=tests with the changed files (space/comma separated, or a files array) to get the test files they reach. These modes return versioned JSON and structuredContent, including ambiguity, pagination, freshness and a \`routing\` block saying which source answered and why. Graph references are indexed relationships, not all LSP usage occurrences. Optional file narrows targets exactly; offset/limit page results (depth, 1-10, applies to impact/tests). Only status accepts checkFiles=true to inspect disk changes without syncing. Default mode still returns source and flow.
 - Add backend="lsp" when the graph's best-effort answer is not enough: it runs the project's real language server for definitions, references, mode=symbols and mode=impact (the symbols containing a reference, one hop), and it is the only backend for mode=diagnostics (graph has no diagnostics). Position queries take file + line (1-based) + column. backend="auto" picks one source per query and falls back to the graph when no server is available (the \`routing\` block says what happened); backend="both" runs both and merges, labelling each item's \`origin\` and marking locations both sources corroborate. The server must already be installed and pointed at from \`.codegraph/lsp.json\` (or CODEGRAPH_LSP_* env vars) — codegraph never installs one. With nothing configured you get status="unavailable" plus the remedy, which is a fact about the machine, not a failure: keep using backend="graph" (or your own tools) there. LSP locations can sit outside the index (marked "external", absolute paths) and its reference list includes the declaration.
 

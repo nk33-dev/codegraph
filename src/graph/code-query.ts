@@ -55,6 +55,8 @@ export interface CodeQueryRequest {
   depth?: number;
   /** tests only: the changed-file list; when files is given, query is not parsed for a file list. */
   files?: string[];
+  /** 仅 tests：是否包含经公共模块或宽依赖链命中的低置信度候选。 */
+  includeIndirect?: boolean;
 }
 
 export interface CodeSymbol {
@@ -167,7 +169,8 @@ export interface AffectedTestItem {
   language: Language | null;
   distance: number;
   reason: 'changed' | 'dependent';
-  /** The direct dependency files pointing at this test on the shortest dependency path (deduplicated, sorted). */
+  confidence: 'direct' | 'high' | 'indirect';
+  /** 所选置信度下最短路径的前驱文件，去重排序。 */
   via: string[];
 }
 
@@ -364,6 +367,10 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
     if (request.files.length > 500) throw new Error('files accepts at most 500 paths');
     if (request.mode !== 'tests') throw new Error('files is only supported in tests mode');
   }
+  if (request.includeIndirect !== undefined) {
+    if (typeof request.includeIndirect !== 'boolean') throw new Error('includeIndirect must be boolean');
+    if (request.mode !== 'tests') throw new Error('includeIndirect is only supported in tests mode');
+  }
   return {
     offset: pageNumber(request.offset, 0, 0, Number.MAX_SAFE_INTEGER),
     limit: pageNumber(request.limit, 50, 1, 200),
@@ -530,7 +537,10 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
       result.warnings.push(`${invalid.length} changed path(s) are outside the project root and were ignored: ${invalid.slice(0, 5).join(', ')}`);
     }
     if (files.length === 0) throw new Error('tests mode needs at least one project-relative changed file');
-    const analysis = findAffectedTests(cg, files, { depth: request.depth ?? DEFAULT_TESTS_DEPTH });
+    const analysis = findAffectedTests(cg, files, {
+      depth: request.depth ?? DEFAULT_TESTS_DEPTH,
+      includeIndirect: request.includeIndirect === true,
+    });
     const unknown = files.filter((f) => !cg.getFile(f));
     if (unknown.length > 0) {
       result.warnings.push(`${unknown.length} changed file(s) are not in the index, so their dependents cannot be known: ${unknown.slice(0, 5).join(', ')}`);
@@ -541,10 +551,16 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
       language: cg.getFile(test.filePath)?.language ?? null,
       distance: test.distance,
       reason: test.reason,
+      confidence: test.confidence,
       via: test.via,
     } satisfies AffectedTestItem));
     if (analysis.tests.length === 0) result.status = 'not_found';
     result.warnings.push('Related tests come from the graph\'s file dependency edges: a missing edge (dynamic require, reflection, unindexed file) means a missed test.');
+    if (!request.includeIndirect && analysis.indirectCandidates.length > 0) {
+      result.warnings.push(
+        `${analysis.indirectCandidates.length} indirect test candidate(s) reached through broad/shared dependency chains were hidden; pass includeIndirect=true to inspect them.`,
+      );
+    }
     result.routing.sources.graph = analysis.tests.length;
     result.page.nextOffset = offset + result.items.length < result.page.total ? offset + result.items.length : null;
     return result;

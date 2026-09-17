@@ -95,6 +95,7 @@ export interface ChangeContext {
     filePath: string;
     distance: number;
     reason: 'changed' | 'dependent';
+    confidence: 'direct' | 'high' | 'indirect';
     via: string[];
   }>;
   missingTestRisks: MissingTestRisk[];
@@ -604,8 +605,7 @@ export async function analyzeChangeContext(
   }
   if (options.candidateFiles && options.candidateFiles.length > 0) {
     const candidates = new Set(options.candidateFiles.map(normalizePath));
-    const overlaps = gitChanges.some((change) => candidates.has(change.path) || (change.previousPath && candidates.has(change.previousPath)));
-    if (!overlaps) return null;
+    gitChanges = gitChanges.filter((change) => candidates.has(change.path) || (change.previousPath && candidates.has(change.previousPath)));
   }
   if (gitChanges.length === 0) return null;
 
@@ -644,6 +644,11 @@ export async function analyzeChangeContext(
   const currentFiles = files.filter((file) => file.change !== 'deleted').map((file) => file.path);
   const testAnalysis = findAffectedTests(cg, currentFiles, { depth: 5 });
   const tests = testAnalysis.tests.slice(0, MAX_AFFECTED_TESTS);
+  if (testAnalysis.indirectCandidates.length > 0) {
+    warnings.push(
+      `${testAnalysis.indirectCandidates.length} 个经公共模块或较长依赖链命中的测试仅作为间接候选，未混入默认关联测试。`,
+    );
+  }
 
   const fanIn = cg.getFanIn(rootNodes.map((node) => node.id));
   const missingTestRisks = tests.length === 0
@@ -714,7 +719,7 @@ export function formatChangeContext(context: ChangeContext): string {
   if (context.affectedTests.length > 0) {
     lines.push('', '**Related tests**');
     for (const test of context.affectedTests.slice(0, 10)) {
-      lines.push(`- ${test.filePath} (distance ${test.distance}, ${test.reason})`);
+      lines.push(`- ${test.filePath} (${test.confidence}, distance ${test.distance}, ${test.reason})`);
     }
     if (context.affectedTests.length > 10) lines.push(`- ... and ${context.affectedTests.length - 10} more tests`);
   }

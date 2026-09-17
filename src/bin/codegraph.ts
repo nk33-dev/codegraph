@@ -1406,13 +1406,14 @@ program
   .option('--severity <number>', 'mode=diagnostics: minimum severity 1=error … 4=hint (default 4)')
   .option('--exclude-declaration', 'backend=lsp references: omit the declaration itself')
   .option('--depth <number>', 'mode=impact/tests: propagation depth 1–10 (impact default 2, tests default 5)')
+  .option('--include-indirect', 'mode=tests: include low-confidence candidates reached through shared dependency hubs')
   .option('--offset <number>', 'Structured result offset (0-based)')
   .option('--limit <number>', 'Structured page size (1–200)')
   .option('--check-files', 'Status mode: inspect disk changes without syncing')
   .option('--changes', 'Attach Git changed symbols, semantic edge deltas, affected entries, and related tests')
   .option('--base <ref>', 'Git commit/ref used as the change-analysis baseline (default: HEAD)')
   .option('--deep-changes', 'Build an isolated temporary baseline index for resolved semantic edge comparison')
-  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; mode?: string; backend?: string; file?: string; line?: string; column?: string; severity?: string; excludeDeclaration?: boolean; depth?: string; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean }) => {
+  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; mode?: string; backend?: string; file?: string; line?: string; column?: string; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
 
     try {
@@ -1431,6 +1432,7 @@ program
       if (options.severity !== undefined) args.severity = Number(options.severity);
       if (options.excludeDeclaration) args.includeDeclaration = false;
       if (options.depth !== undefined) args.depth = Number(options.depth);
+      if (options.includeIndirect) args.includeIndirect = true;
       if (options.offset !== undefined) args.offset = Number(options.offset);
       if (options.limit !== undefined) args.limit = Number(options.limit);
       if (options.checkFiles) args.checkFiles = true;
@@ -2675,10 +2677,11 @@ program
   .option('-p, --path <path>', 'Project path')
   .option('--stdin', 'Read file list from stdin (one per line)')
   .option('-d, --depth <number>', 'Max dependency traversal depth', '5')
+  .option('--include-indirect', 'Include low-confidence candidates reached through shared dependency hubs')
   .option('-f, --filter <glob>', 'Custom glob filter for test files (e.g. "e2e/*.spec.ts")')
   .option('-j, --json', 'Output as JSON')
   .option('-q, --quiet', 'Only output file paths, no decoration')
-  .action(async (fileArgs: string[], options: { path?: string; stdin?: boolean; depth?: string; filter?: string; json?: boolean; quiet?: boolean }) => {
+  .action(async (fileArgs: string[], options: { path?: string; stdin?: boolean; depth?: string; includeIndirect?: boolean; filter?: string; json?: boolean; quiet?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
 
     try {
@@ -2735,6 +2738,7 @@ program
       // and the tool would give different answers.
       const analysis = findAffectedTests(cg, changedFiles, {
         depth: maxDepth,
+        includeIndirect: options.includeIndirect === true,
         ...(customFilter ? { isTest: (filePath: string) => customFilter!.test(filePath) } : {}),
       });
       const sortedTests = analysis.tests.map((test) => test.filePath);
@@ -2744,6 +2748,8 @@ program
         console.log(JSON.stringify({
           changedFiles,
           affectedTests: sortedTests,
+          tests: analysis.tests,
+          indirectCandidates: analysis.indirectCandidates.map((test) => test.filePath),
           totalDependentsTraversed: analysis.dependentsTraversed,
         }, null, 2));
       } else if (options.quiet) {
@@ -2751,10 +2757,16 @@ program
       } else {
         if (sortedTests.length === 0) {
           info('No test files affected by the changed files.');
+          if (!options.includeIndirect && analysis.indirectCandidates.length > 0) {
+            info(`${analysis.indirectCandidates.length} indirect candidate(s) were hidden; use --include-indirect to inspect them.`);
+          }
         } else {
           console.log(chalk.bold(`\nAffected test files (${sortedTests.length}):\n`));
-          for (const t of sortedTests) {
-            console.log('  ' + chalk.cyan(t));
+          for (const test of analysis.tests) {
+            console.log(`  ${chalk.cyan(test.filePath)} ${chalk.dim(`[${test.confidence}, distance ${test.distance}]`)}`);
+          }
+          if (!options.includeIndirect && analysis.indirectCandidates.length > 0) {
+            console.log(chalk.dim(`\n  ${analysis.indirectCandidates.length} indirect candidate(s) hidden; use --include-indirect to inspect them.`));
           }
           console.log();
         }

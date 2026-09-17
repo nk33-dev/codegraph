@@ -37,7 +37,7 @@ import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, emptyCodeQueryResult, type CodeQ
 import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
 import { editTools } from './edit-tool';
 import { isTestFile, normalizeNameToken } from '../search/query-utils';
-import { groupDefinitions, lastQualifierPart, matchesSymbol } from '../graph/symbol-lookup';
+import { groupDefinitions, lastQualifierPart, lookupSymbolNodes, matchesSymbol } from '../graph/symbol-lookup';
 import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
 import {
   existsSync,
@@ -1389,6 +1389,11 @@ export const tools: ToolDefinition[] = [
         depth: {
           type: 'number',
           description: 'mode=impact/tests only: propagation depth, 1–10 (impact defaults to 2, tests to 5).',
+        },
+        includeIndirect: {
+          type: 'boolean',
+          description: 'mode=tests only: include low-confidence candidates reached through broad/shared dependency chains. Default false.',
+          default: false,
         },
         line: {
           type: 'number',
@@ -3551,7 +3556,7 @@ export class ToolHandler {
     } catch {
       budget = getExploreOutputBudget(Infinity);
     }
-    const maxFiles = clamp((args.maxFiles as number) || budget.defaultMaxFiles, 1, 20);
+    let maxFiles = clamp((args.maxFiles as number) || budget.defaultMaxFiles, 1, 20);
 
     // File paths named in the query become PINNED files: guaranteed admission,
     // top of the rank order, funded first — and their span is REMOVED from the
@@ -3577,6 +3582,45 @@ export class ToolHandler {
           matchQuery = normalizeQuerySpelling(extraction.strippedQuery);
         }
       } catch { /* path pinning must never fail an explore call */ }
+    }
+
+    // 单符号意图查询不应被“定义、调用方、测试”等普通词扩散成一次架构级搜索。
+    // 只有索引能精确确认一个代码形状标识符，且其余文本全是检索意图时才收束；
+    // 多符号流程、架构问题和显式路径仍走完整探索路径。
+    let focusedSymbolQuery = false;
+    let focusedNode: Node | null = null;
+    const requestedTests = /\btests?\b|\btesting\b|测试/i.test(query);
+    const focusedFilePriority = new Map<string, number>();
+    if (pinnedFiles.length === 0 && unresolvedPathSpans.length === 0 && !changeIntent) {
+      const codeTokens = [...new Set(
+        (matchQuery.match(/[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*/g) ?? [])
+          .filter((token) => /[._$]|::|[a-z][A-Z]|^[A-Z]/.test(token)),
+      )];
+      const exactTokens = codeTokens.filter((token) => {
+        try { return lookupSymbolNodes(cg, token).nodes.length === 1; } catch { return false; }
+      });
+      if (exactTokens.length === 1) {
+        const token = exactTokens[0]!;
+        const remainder = matchQuery
+          .split(token).join(' ')
+          .replace(/\b(?:the|a|an|of|and|or|for|to|from|in|its|please|show|find|where|how|what|is|are|definition|definitions|declaration|declarations|caller|callers|callee|callees|call|calls|usage|usages|reference|references|test|tests|testing|implementation|implementations|source|code)\b/gi, ' ')
+          .replace(/定义|声明|调用方|调用者|被谁调用|调用|引用|测试|实现|源码|位置|查找|查询|展示|以及|还有|和|的|请|看看/g, ' ')
+          .replace(/[^A-Za-z0-9_$\u3400-\u9fff]+/g, ' ')
+          .trim();
+        if (!remainder) {
+          matchQuery = token;
+          focusedNode = lookupSymbolNodes(cg, token).nodes[0]!;
+          focusedSymbolQuery = true;
+          if (args.maxFiles === undefined) maxFiles = Math.min(maxFiles, 4);
+          budget = {
+            ...budget,
+            maxOutputChars: Math.min(budget.maxOutputChars, 14_000),
+            defaultMaxFiles: Math.min(budget.defaultMaxFiles, 4),
+            maxCharsPerFile: Math.min(budget.maxCharsPerFile, 5_000),
+            maxEdgesPerRelationshipKind: Math.min(budget.maxEdgesPerRelationshipKind, 6),
+          };
+        }
+      }
     }
     const pinnedSet = new Set(pinnedFiles);
     const pinnedOrder = new Map(pinnedFiles.map((p, i) => [p, i]));
@@ -3639,12 +3683,27 @@ export class ToolHandler {
     // that prevents context bloat, so more nodes just means better coverage
     // across entry points (especially for large files like Svelte components).
     // Matching runs on the path-stripped query; `query` stays for display.
-    const subgraph = await cg.findRelevantContext(matchQuery, {
+    // 精确单符号复用图遍历，避免 FTS 把 Upgrade 一类名称片段匹配到无关模块。
+    const subgraph = focusedNode ? cg.traverse(focusedNode.id, {
+      maxDepth: 1,
+      direction: 'both',
+      edgeKinds: ['calls', 'references', 'imports', 'exports', 'extends', 'implements', 'overrides', 'instantiates'],
+      limit: 80,
+    }) : await cg.findRelevantContext(matchQuery, {
       searchLimit: 8,
       traversalDepth: 3,
       maxNodes: 200,
       minScore: 0.2,
     });
+    if (focusedNode) {
+      focusedFilePriority.set(focusedNode.filePath, 0);
+      for (const edge of subgraph.edges) {
+        if (edge.target !== focusedNode.id) continue;
+        const caller = subgraph.nodes.get(edge.source);
+        if (!caller || caller.filePath === focusedNode.filePath) continue;
+        focusedFilePriority.set(caller.filePath, isTestFile(caller.filePath) ? 2 : 1);
+      }
+    }
 
     // “review current changes” 一类查询可能不含任何符号名；用改动文件中的定义补种子，
     // 让同一次 explore 仍能返回源码，而不是落入空搜索。
@@ -4103,6 +4162,7 @@ export class ToolHandler {
     // never match — so express's routing question spent 59% of its envelope on
     // three test files while `lib/router/index.js` never rendered.
     const isLowValue = (p: string) => {
+      if (focusedSymbolQuery && requestedTests && isTestFile(p)) return false;
       const lp = p.toLowerCase();
       return (
         /(?:^|\/)(tests?|__tests?__|specs?)\//.test(lp) ||
@@ -4403,6 +4463,12 @@ export class ToolHandler {
       (fileTermHits.get(fp) ?? 0) >= 2 &&
       (entryFiles.has(fp) || centralFiles.has(fp));
 
+    // 明确要求的定义、调用者和测试不应在分数门槛处被通用文件排名淘汰。
+    for (const [filePath] of focusedFilePriority) {
+      if (!requestedTests && isTestFile(filePath)) continue;
+      const group = fileGroups.get(filePath);
+      if (group && !relevantFiles.some(([candidate]) => candidate === filePath)) relevantFiles.push([filePath, group]);
+    }
     const sortedFiles = relevantFiles.sort((a, b) => {
       const aPath = a[0].toLowerCase();
       const bPath = b[0].toLowerCase();
@@ -4414,6 +4480,13 @@ export class ToolHandler {
       const bPin = pinnedSet.has(b[0]) ? 1 : 0;
       if (aPin !== bPin) return bPin - aPin;
       if (aPin && bPin) return (pinnedOrder.get(a[0]) ?? 0) - (pinnedOrder.get(b[0]) ?? 0);
+
+      if (focusedSymbolQuery) {
+        const priority = (filePath: string) => !requestedTests && isTestFile(filePath)
+          ? 4 : focusedFilePriority.get(filePath) ?? 3;
+        const difference = priority(a[0]) - priority(b[0]);
+        if (difference !== 0) return difference;
+      }
 
       // Agent-named files next (it asked for a symbol defined here by name).
       const aNamed = namedSeedFiles.has(a[0]) ? 1 : 0;
@@ -4570,7 +4643,7 @@ export class ToolHandler {
         // asked for the file itself, generated/test or not.
         worth: pinnedSet.has(fp) ? 1 : rankPenalty(fp),
         spine: group.nodes.some((n) => flow.pathNodeIds.has(n.id)),
-        pinned: pinnedSet.has(fp),
+        pinned: pinnedSet.has(fp) || (focusedFilePriority.has(fp) && (requestedTests || !isTestFile(fp))),
       })),
       budget,
       maxFiles,
@@ -5395,6 +5468,9 @@ export class ToolHandler {
       const ranges: Array<{ start: number; end: number; name: string; kind: string; importance: number; spine: boolean; spineCallLine?: number }> = [...rangeNodes.values()]
         // Drop whole-file envelope nodes (containers covering >50% of the file).
         .filter(n => !(ENVELOPE_KINDS.has(n.kind) && (n.endLine - n.startLine + 1) > fileLines.length * 0.5))
+        // 大型调用者只展示本次符号的调用现场，避免从 main 等入口的顶部开始截断。
+        .filter(n => !(focusedNode && n.id !== focusedNode.id && (focusedFilePriority.get(filePath) ?? 3) > 0
+          && (focusedFilePriority.get(filePath) ?? 3) < 3 && n.endLine - n.startLine > 80))
         .map(n => {
           let importance = 1;
           if (entryNodeIds.has(n.id)) importance = 10;
@@ -5418,6 +5494,7 @@ export class ToolHandler {
         const outgoing = cg.getOutgoingEdges(node.id);
         for (const edge of outgoing) {
           if (!edge.line || edge.line <= 0 || edge.kind === 'contains') continue;
+          if (focusedNode && node.id !== focusedNode.id && edge.target !== focusedNode.id) continue;
           const key = `${edge.line}:${edge.target}`;
           if (edgeLines.has(key)) continue;
           edgeLines.add(key);

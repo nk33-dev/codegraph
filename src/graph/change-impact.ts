@@ -143,15 +143,23 @@ export interface AffectedTest {
   filePath: string;
   distance: number;
   reason: 'changed' | 'dependent';
-  /** The direct dependency files pointing at this test on the shortest dependency path (deduplicated, sorted, at most 10). */
+  confidence: 'direct' | 'high' | 'indirect';
+  /** 所选置信度下最短路径的前驱文件，去重排序后最多保留 10 个。 */
   via: string[];
 }
 
 export interface AffectedTestsAnalysis {
+  /** 默认可执行集合：直接测试和高置信度影响测试；includeIndirect=true 时也包含间接候选。 */
   tests: AffectedTest[];
+  /** 经过公共模块或较长依赖链命中的候选，默认不混入普通测试集合。 */
+  indirectCandidates: AffectedTest[];
+  totalDiscovered: number;
   /** The total number of dependency files discovered during traversal (including tests), matching the CLI `affected` count. */
   dependentsTraversed: number;
 }
+
+const HIGH_CONFIDENCE_MAX_DISTANCE = 3;
+const HIGH_CONFIDENCE_FAN_OUT = 12;
 
 /**
  * Related tests: a changed file counts as a hit when it is itself a test; otherwise the search walks
@@ -163,49 +171,97 @@ export interface AffectedTestsAnalysis {
 export function findAffectedTests(
   cg: CodeGraph,
   changedFiles: string[],
-  options: { depth: number; isTest?: (filePath: string) => boolean },
+  options: { depth: number; isTest?: (filePath: string) => boolean; includeIndirect?: boolean },
 ): AffectedTestsAnalysis {
   const isTest = options.isTest ?? isTestPath;
   const maxDepth = options.depth;
   const found = new Map<string, AffectedTest>();
   const dependents = new Set<string>();
+  const dependentCache = new Map<string, string[]>();
+  const dependentsOf = (filePath: string): string[] => {
+    let cached = dependentCache.get(filePath);
+    if (!cached) {
+      cached = cg.getFileDependents(filePath);
+      dependentCache.set(filePath, cached);
+    }
+    return cached;
+  };
+  const confidenceRank = (confidence: AffectedTest['confidence']): number =>
+    confidence === 'direct' ? 3 : confidence === 'high' ? 2 : 1;
+  const classify = (distance: number, narrowPath: boolean): AffectedTest['confidence'] => {
+    if (distance <= 1) return 'direct';
+    if (distance <= HIGH_CONFIDENCE_MAX_DISTANCE && narrowPath) {
+      return 'high';
+    }
+    return 'indirect';
+  };
 
-  const add = (filePath: string, distance: number, reason: AffectedTest['reason'], via: string): void => {
+  const add = (
+    filePath: string,
+    distance: number,
+    reason: AffectedTest['reason'],
+    via: string,
+    narrowPath: boolean,
+  ): void => {
+    const confidence = reason === 'changed' ? 'direct' : classify(distance, narrowPath);
     const existing = found.get(filePath);
     if (!existing) {
-      found.set(filePath, { filePath, distance, reason, via: via ? [via] : [] });
+      found.set(filePath, { filePath, distance, reason, confidence, via: via ? [via] : [] });
       return;
     }
-    if (!via || existing.via.includes(via)) return;
-    existing.via.push(via);
-    if (distance < existing.distance) {
-      existing.distance = distance;
-      existing.reason = reason;
+    const rankDifference = confidenceRank(confidence) - confidenceRank(existing.confidence);
+    if (rankDifference > 0 || (rankDifference === 0 && distance < existing.distance)) {
+      found.set(filePath, { filePath, distance, reason, confidence, via: via ? [via] : [] });
+      return;
+    }
+    if (rankDifference === 0 && distance === existing.distance && via && !existing.via.includes(via)) {
+      existing.via.push(via);
     }
   };
 
   for (const file of changedFiles) {
     if (isTest(file)) {
-      add(file, 0, 'changed', '');
+      add(file, 0, 'changed', '', true);
       continue;
     }
-    const queue: Array<{ file: string; depth: number }> = [{ file, depth: 0 }];
-    const visited = new Set<string>([file]);
-    while (queue.length > 0) {
-      const current = queue.shift()!;
+    const queue: Array<{ file: string; depth: number; narrowPath: boolean }> = [
+      { file, depth: 0, narrowPath: true },
+    ];
+    // 同一文件分别保留经过公共模块和未经过公共模块的最短路径，避免先到的弱路径遮住强路径。
+    const visited = new Set<string>([`true:${file}`]);
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const current = queue[cursor]!;
       if (current.depth >= maxDepth) continue;
-      for (const dependent of cg.getFileDependents(current.file)) {
-        if (visited.has(dependent)) continue;
-        visited.add(dependent);
+      for (const dependent of dependentsOf(current.file)) {
+        if (dependent === file) continue;
         dependents.add(dependent);
-        if (isTest(dependent)) add(dependent, current.depth + 1, 'dependent', current.file);
-        else queue.push({ file: dependent, depth: current.depth + 1 });
+        if (isTest(dependent)) {
+          add(dependent, current.depth + 1, 'dependent', current.file, current.narrowPath);
+        } else {
+          const narrowPath = current.narrowPath && dependentsOf(dependent).length <= HIGH_CONFIDENCE_FAN_OUT;
+          const key = `${narrowPath}:${dependent}`;
+          if (visited.has(key)) continue;
+          visited.add(key);
+          queue.push({
+            file: dependent,
+            depth: current.depth + 1,
+            narrowPath,
+          });
+        }
       }
     }
   }
 
-  const tests = [...found.values()]
+  const ordered = [...found.values()]
     .map((test) => ({ ...test, via: [...test.via].sort().slice(0, 10) }))
-    .sort((a, b) => a.filePath.localeCompare(b.filePath));
-  return { tests, dependentsTraversed: dependents.size };
+    .sort((a, b) =>
+      confidenceRank(b.confidence) - confidenceRank(a.confidence)
+      || a.distance - b.distance
+      || a.filePath.localeCompare(b.filePath)
+    );
+  const indirectCandidates = ordered.filter((test) => test.confidence === 'indirect');
+  const tests = options.includeIndirect
+    ? ordered
+    : ordered.filter((test) => test.confidence !== 'indirect');
+  return { tests, indirectCandidates, totalDiscovered: ordered.length, dependentsTraversed: dependents.size };
 }

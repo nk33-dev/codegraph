@@ -11,7 +11,7 @@ The same tool and the same command, with two more values each for `mode` and `ba
 | Automatic source selection | `codegraph_explore {mode:"definitions", backend:"auto", query:"Name"}` |
 | Two-source merging | `codegraph_explore {mode:"references", backend:"both", query:"Name"}` |
 | Change impact | `codegraph_explore {mode:"impact", query:"Name", depth:2}` or `backend:"both"` |
-| Related tests | `codegraph_explore {mode:"tests", query:"src/a.ts src/b.ts"}` (or `files:["src/a.ts"]`) |
+| Related tests | `codegraph_explore {mode:"tests", query:"src/a.ts src/b.ts"}` (or `files:["src/a.ts"]`); indirect candidates require `includeIndirect:true` |
 | Service diagnostics | `codegraph_explore {mode:"status", backend:"auto", query:"status"}` |
 | Run the CLI through the shared service | `codegraph explore resolveProjectPath --mode definitions --backend lsp` (automatically reused when a daemon exists) |
 
@@ -41,6 +41,10 @@ Library users go through the same entry point: `CodeGraph.queryCodeWithBackend(r
 | The server is available | lsp | the semantic results come from the language server |
 
 After `auto` has selected lsp it still falls back: when the server returns `unavailable`/`error`, the graph index is used instead and this is explained on the first line of `warnings`; when the server returns an empty result (`not_found`) while the graph has items, the graph index is used instead and the server's warnings are carried along — **"the server did not answer" and "this thing does not exist" must not be conflated**. A position query is the one exception: it has no graph version, so it is returned as `unavailable`/`not_found` from the server rather than answered by name.
+
+## 关联测试分层
+
+关联测试的 `direct` 表示测试文件自身变化或直接依赖改动文件；`high` 表示三跳内、所有中间模块的反向依赖数不超过 12 的路径；其余为 `indirect`。这是图启发式分类。存在多条路径时先取最高置信度，再取该置信度下的最短距离，并只保留对应前驱；分类不会依赖邻接边枚举顺序。`includeIndirect` 经统一路由传递，CLI、MCP 和库返回同一分类。
 
 ## Two-source merging (`both`)
 

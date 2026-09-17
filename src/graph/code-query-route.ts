@@ -415,6 +415,7 @@ export function projectRequest(request: CodeQueryRequest, source: CodeQuerySourc
     ...(request.limit !== undefined ? { limit: request.limit } : {}),
     ...(request.depth !== undefined ? { depth: request.depth } : {}),
     ...(source === 'graph' && request.files !== undefined ? { files: request.files } : {}),
+    ...(source === 'graph' && request.includeIndirect !== undefined ? { includeIndirect: request.includeIndirect } : {}),
     ...(source === 'graph' && request.checkFiles ? { checkFiles: true } : {}),
     ...(source === 'lsp' && request.line !== undefined ? { line: request.line } : {}),
     ...(source === 'lsp' && request.column !== undefined ? { column: request.column } : {}),
@@ -434,10 +435,10 @@ export async function queryCodeRouted(
   deps: CodeQueryRouteDeps,
 ): Promise<CodeQueryResult> {
   const requested = request.backend ?? 'graph';
+  const { offset, limit } = validateCodeQueryRequest(request);
   if (requested === 'graph') return deps.queryGraph(projectRequest(request, 'graph'));
   if (requested === 'lsp') return deps.queryLsp(projectRequest(request, 'lsp'));
 
-  const { offset, limit } = validateCodeQueryRequest(request);
   const language = languageForQuery(cg, request);
   const availability = deps.lspAvailability(language);
   const decision = decideRoute(request, language, availability);
