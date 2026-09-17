@@ -126,7 +126,7 @@ describe('No-root-index session policy', () => {
     expect(instructions).toMatch(/codegraph init/);
     // ...but it is NOT the full single-project playbook (that's sent only when
     // the root itself is indexed — keeps the common case tight).
-    expect(instructions).not.toMatch(/## How to query/);
+    expect(instructions).not.toMatch(/## How to use/);
   });
 
   it('tools/list exposes the tools even when the server root has no index (#964)', async () => {
@@ -176,7 +176,7 @@ describe('No-root-index session policy', () => {
     child = spawnServer(tempDir);
     const init = await request(child, { id: 0, method: 'initialize', params: initializeParams(tempDir) });
     const instructions = (init.result as { instructions: string }).instructions;
-    expect(instructions).toMatch(/How to query/);
+    expect(instructions).toMatch(/How to use/);
     expect(instructions).not.toMatch(/inactive/i);
 
     const list = await request(child, { id: 1, method: 'tools/list' });

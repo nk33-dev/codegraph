@@ -18,6 +18,7 @@
 | 符号重命名、正文替换、前后插入与默认预览 | [结构化编辑](structured-edits.md) |
 | 本地入口、doctor、GitHub 安装、版本切换、daemon 版本切换与索引升级 | [个人使用与安装](personal-usage.md) |
 | 资源档位、查询池自动缩容与 LSP 预算 | [资源档位与自动回收](resource-governance.md) |
+| MCP 固定表面、缓存稳定性与字符开销边界 | [MCP 表面与缓存稳定性](mcp-surface.md) |
 | Steps、Windows 清理、WASM 测试运行与性能修复 | [开发验证记录](test-repairs.md) |
 
 CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_explore` 和 `codegraph_edit`。可视化沿用上游功能，只有显式启动 `codegraph ui` / `web` 才运行 HTTP 服务。
@@ -40,10 +41,16 @@ personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、ma
 
 ## 本批未发布改动（2026-09-17）
 
-四项用户报告问题的实现，**未提交、未发布，也不在 personal.4 安装包里**：
+以下用户报告问题的实现，**未提交、未发布，也不在 personal.4 安装包里**：
+
+- 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,284`，并移除随项目规模变化的工具描述；契约见 [MCP 表面与缓存稳定性](mcp-surface.md)。
+- 匿名使用统计改为默认关闭；安装器默认不勾选，只有保存选择、`codegraph telemetry on` 或 `CODEGRAPH_TELEMETRY=1` 会开启。
+- 编辑后索引刷新补齐 grammar 预加载与引用解析，新符号和调用边在 `indexSynced:true` 前均可查询；直接 `apply:true` 与可选预览绑定的说明已统一。
+- `status` 区分 live/exited/stale daemon 快照；未知目标的意图词不再参与模糊检索；blast radius 分开统计 callers、importers 和 references。
 
 - 跨文件重命名由“只报缺口”改为“LSP 优先、索引补全、补不了就拒绝”（AST 确认的位置才补编辑，结果标 `plannedBy`），契约见[结构化编辑](structured-edits.md#rename-completeness-guard)。
 - 唯一精确符号查询的意图词（定义/所有/调用方/相关测试）不再参与模糊匹配，契约见[结构化查询](structured-queries.md#意图词收束explore)。
+- 后续体验补修：动态 namespace import 成为可解析引用，调用/构造边记录准确标识符列；自然语言关系词改为结构化意图，大型精确类查询保留自身定义；编辑预览增加 `canApply/blockers`；MCP 常驻说明去重压缩。以上仍未提交、未发布，验证边界见[开发验证记录](test-repairs.md#2026-09-17mcp-体验复审与补修)。
 - 升级后旧 daemon 自动切换，并新增 `codegraph daemon --restart`；索引升级新增 `codegraph sync --upgrade-index`（先给估算再确认，范围有登记时才增量迁移），用法与边界见[个人使用与安装](personal-usage.md#升级后的-daemon-版本切换)。
 - 实现范围、验证结果与未验证边界见[开发验证记录](test-repairs.md#2026-09-17跨文件重命名补全意图词收束daemon-版本切换与索引升级)。
 

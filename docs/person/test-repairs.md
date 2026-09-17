@@ -1,5 +1,29 @@
 # 个人版开发验证记录
 
+## 2026-09-17：MCP 表面、遥测与五项体验缺陷合并
+
+本批把两个未提交 worktree 的有效实现择优合入 `personal`，并保留此前的动态 namespace import、准确调用列、结构化中文意图和编辑安全修复。**当前未推送、未发布、未安装。**
+
+### 实现
+
+- MCP 默认仍只有 `codegraph_explore` 与 `codegraph_edit`，固定表面由 `20,338` 字符降到 `7,284`；初始化说明、schema 与重复尾注收缩，tools/list 不再随仓库规模变化。
+- 遥测默认关闭；环境临时开启不持久化为全局 opt-in，旧 `default-notice` 记录不算显式同意，installer/CLI 保存的真实选择继续生效。
+- `ExtractionOrchestrator.indexFiles()` 预加载目标 grammar；编辑服务在抽取后显式调用 `CodeGraph.resolveReferencesForFiles()`，补齐新符号引入的调用边。该方法与 `indexFiles()` 分开，保留崩溃恢复测试需要的“抽取完成、解析未跑”状态；解析失败会如实返回索引未完全同步，不会吞错后报告 `indexSynced:true`。
+- 直接 `apply:true` 保持可用：重新规划、复核当前字节并事务写入；`expectPreviewHash + operationId` 是可选的预览绑定。代码、MCP 描述、初始化说明与个人文档统一。
+- daemon 快照按 pid 存活、项目身份和 60 秒时效分为 `live/exited/stale`；非 live 状态明确显示 `LAST DAEMON SNAPSHOT`，JSON 增加 `reportedState/reportedAgeMs`。
+- 自然语言检索在进入 FTS 前删除意图词，保留限定名结构和真实同名符号；未知目标不再被 callers/related/code 等词带到无关源码。
+- blast radius 按 callers/importers/references 分类；同一依赖存在多类边时稳定采用 caller > importer > reference，避免由数据库返回顺序决定分类。
+- 准确调用列暴露了两个旧假设：PHP 静态导入判定改为检查方法名前的 `$Receiver->`，UI Steps 对链式调用使用外层 span，并让参数内调用排在外层 effect 前。没有回退准确列或动态导入能力。
+
+### 验证
+
+- `npm run build`：通过。
+- 合并后的首次专项：10 个文件、61 项通过。
+- `npm run check:quick`：类型检查通过；公共入口扩展到 222 个测试文件，3506 项通过、160 项跳过、3 项失败。失败为 PHP 变量/静态接收者 1 项和 UI Steps 顺序 2 项，单独重跑仍失败，因此没有标为偶发；完成上述兼容修复后，PHP 11/11、UI Steps 18/18 通过。
+- 修复后 `npm run build` 再次通过；最终联合聚焦 15 个文件、154 项全部通过。
+- 最终 `npm run check:quick`：类型检查通过；206 个测试文件、3509 项通过，16 个文件/160 项按环境条件跳过，0 失败。
+- 未运行完整 `npm test`、隔离安装或远端 CI。
+
 ## 2026-09-17：personal.5 三平台 CI 修复
 
 运行 `35222050320` 的三平台构建均通过，但各有测试失败：
@@ -118,6 +142,28 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - 重新建立的个人版性能基线：`ui-server-api` 的「本仓库自身索引热路径」预算 100ms → 250ms（串行实测 139～177ms，索引规模 892 文件、该符号 1035 条入边）；其余计时预算未改。
 - 资源实测（临时项目：60 文件、300 节点、480 边、DB 0.50MB）：全量索引 1532ms、增量同步 1161ms/5 文件、daemon 空闲 RSS 123.6MB/11 线程、8 个并发 explore 后 RSS 105.6MB/8 线程；节点 LRU 命中路径的指标开销约 0～5%。
 - `git diff --check` 通过。
+
+## 2026-09-17：MCP 体验复审与补修
+
+状态：代码已实现并完成受影响测试与构建验证；未提交、未推送、未发布，未替换全局 CLI。全局安装的 personal.5 不包含本节改动。
+
+### 体验发现与实现
+
+- 精确查询大型类时，通用 envelope 过滤可能只返回调用方而丢掉定义文件；精确目标自身现在不参与该过滤。
+- “所有直接调用方和相关测试”中的“直接”原先残留为第二主题；现在关系、范围和测试被解析为结构化意图，而不是继续扩充一份无边界停用词表。
+- `instantiates` 和成员调用边原先常记录表达式起点，导致 Graph 知道引用却无法按列补编辑；现在记录构造类型或成员标识符的 AST 字节列。
+- JS/TS `const mod = await import('./x')` 现在产生 AST 证明的 namespace mapping，`mod.member()` 可解析到模块导出并参与重命名；动态解构与计算属性仍拒绝猜测。
+- 编辑结果增加 `canApply` 与 `blockers`；无 watcher 的只读连接不再每次产生误导性 warning，真实 degraded 状态仍告警。
+- MCP initialize 常驻说明从整篇手册收敛为两个默认工具的必要工作流和安全边界，去掉“只有一个工具”的事实矛盾。
+- 提取版本升至 27；调用/构造坐标影响多语言，升级范围保守登记为 `all`。
+
+### 验证
+
+- `npm run typecheck`：通过。
+- 首轮 4 文件专项：684 项通过、2 项失败；两项都来自动态 import 未覆盖函数体局部变量的同一 AST 路由，修复后对应提取测试与实际 apply 重命名单测分别通过。
+- 主体实现完成后 `npm run check:quick` 通过：77 个测试文件、1831 项通过、3 项条件跳过。它由 23 个变更文件选择 74 个受影响测试入口，Vitest workspace 同时执行了其中的 perf 项目；未把跳过项记为通过。随后收紧“未 await 的 import Promise”和同名泛型参数坐标边界，定向提取 3 项、意图检索 6 项及类型检查通过。
+- `npm run build` 通过，包含 TypeScript、SQL/WASM 复制、viewer 构建与产物检查。
+- 未运行完整 `npm test`、隔离安装或三平台 CI，不能把本轮记为全量/跨平台/发布通过。
 
 ## 2026-09-16：全量测试修复
 

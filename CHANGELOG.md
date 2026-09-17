@@ -14,6 +14,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,284`，保留 `codegraph_explore`、`codegraph_edit` 及全部参数和 Graph/LSP 能力；工具描述不再随仓库规模变化，重复响应尾注同步缩短。
+- 匿名使用统计改为默认关闭：未显式开启时不记录、不落盘也不联网；安装器默认不勾选，仍可用 `codegraph telemetry on` 或 `CODEGRAPH_TELEMETRY=1` 主动开启。旧版自动生成的 `default-notice` 记录不再视为显式同意。
 - `v1.6.0-personal.5` 交付 personal.4 后续修复、重命名补全、检索意图收束、索引升级计划和共享服务版本切换。
 - 跨文件重命名改为“LSP 优先、索引补全、补不了就拒绝”：AST 逐字符确认过的位置由索引补成编辑（结果里标为 `plannedBy: "graph"`），只有行没有列、含别名以及动态导入行上未覆盖的出现仍然拒绝写盘，不再只报缺口。
 - 意图词不再参与模糊匹配：唯一精确符号之外，“定义/所有/调用方/相关测试”这类词只当作检索意图，收束后只展开目标符号、直接关系和直接测试，避免 `runUpgrade` 被切成 `run` 片段后混入无关文件。

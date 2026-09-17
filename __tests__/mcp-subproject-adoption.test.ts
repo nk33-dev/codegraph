@@ -140,7 +140,7 @@ describe('MCP workspace sub-project adoption (#1606) + no-default diagnostics (#
     // Instructions match what the engine adopted: the FULL single-project
     // playbook, not the per-project variant.
     const instructions = initResult.result.instructions as string;
-    expect(instructions).not.toContain('per-project; pass projectPath');
+    expect(instructions).not.toContain('no default indexed project');
   }, 20000);
 
   it('lists several indexed sub-projects instead of adopting one, in stderr and in tool responses', async () => {
@@ -166,7 +166,7 @@ describe('MCP workspace sub-project adoption (#1606) + no-default diagnostics (#
     expect(stderr.text()).toContain('Indexed sub-projects found:');
     // Ambiguous root → per-project instructions variant.
     const instructions = initResult.result.instructions as string;
-    expect(instructions).toContain('per-project; pass projectPath');
+    expect(instructions).toContain('no default indexed project');
   }, 20000);
 
   it('does not scan below a base that is not a workspace (no manifest, no .git)', async () => {
