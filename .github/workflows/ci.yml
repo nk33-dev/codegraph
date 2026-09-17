@@ -39,10 +39,8 @@ jobs:
             workers: 4
           - os: macos-latest
             workers: 4
-          # Windows 的索引测试还会启动解析 worker 和 CLI 子进程；文件级并发叠加后
-          # 会让单测从亚秒级膨胀到数十秒，并引发超时后的 SQLite EBUSY 连锁失败。
           - os: windows-latest
-            workers: 1
+            workers: 4
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
