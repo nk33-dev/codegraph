@@ -47,6 +47,7 @@ export interface RenamePlan {
   files: EditFilePreview[];
   family: LspFamily | null;
   warnings: string[];
+  blockers: string[];
 }
 
 interface GraphRenameLocation {
@@ -55,12 +56,12 @@ interface GraphRenameLocation {
   column: number;
   kind: 'definition' | 'reference';
   /**
-   * 位置逐字符核实过：提取器记录的行列正好落在改名的标识符上。
-   * 只有这种位置才允许由 Graph 生成编辑；靠“这一行只有一次出现”推断出来的位置
-   * 只能用于覆盖校验的提示，不能用来写盘。
+   * The location was verified character by character: the extractor's line and column
+   * point exactly at the renamed identifier. Only these locations may produce Graph edits;
+   * locations inferred from a unique same-line occurrence are diagnostic only.
    */
   confirmed: boolean;
-  /** 未确认的原因（写进警告，解释为什么拒绝而不是直接改）。 */
+  /** Why the location is unconfirmed, included in warnings that explain refusal. */
   unconfirmedReason?: string;
 }
 
@@ -78,8 +79,8 @@ function toProjectRelative(root: string, absolutePath: string): string | null {
 }
 
 /**
- * 用 Graph 已知的静态引用核对 LSP WorkspaceEdit 的覆盖范围。
- * Graph 只充当安全哨兵，不生成替代编辑；启发式边没有可靠文本位置，因此不参与拒绝判断。
+ * Compare LSP WorkspaceEdit coverage against static references known to Graph.
+ * Graph acts as a safety guard. Heuristic edges lack reliable text positions and do not block apply.
  */
 function graphRenameLocations(
   cg: CodeGraph,
@@ -122,12 +123,12 @@ function graphRenameLocations(
     const match = column === null ? (matches.length === 1 ? matches[0] : undefined)
       : matches.find((candidate) => candidate.index! >= column);
     if (!match) {
-      // 别名和跨行关系不一定含原名；无可靠文本位置时只能报告未核实，不能猜测补改。
+      // Aliases and cross-line relations may not contain the original name; report them as unverified instead of guessing.
       unverified += 1;
       continue;
     }
-    // 位置确认的门槛：提取器记录的列必须正好落在标识符起点（AST 位置），
-    // 而不是“这一行只有一个同名标识符”的推断。
+    // Confirmation requires the extractor column to point exactly at the identifier start,
+    // not an inference based on a unique same-line occurrence.
     const confirmed = column !== null && match.index === column && identifierAt(lineText, match.index!, name);
     add({
       filePath: source.filePath,
@@ -144,12 +145,12 @@ function graphRenameLocations(
   return [...locations.values()];
 }
 
-/** 整个标识符匹配（词边界 + unicode 字母数字），用于改名位置与出现次数的核对。 */
+/** Match complete identifiers for rename-location and occurrence-count validation. */
 function namePattern(name: string): RegExp {
   return new RegExp(`(?<![\\p{L}\\p{N}_$])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_$])`, 'gu');
 }
 
-/** 行内某个 UTF-16 列上是否正好是 `name`（逐字符核实，不是整文件文本替换）。 */
+/** Verify that `name` starts at a UTF-16 column; this validates a position and never performs text replacement. */
 function identifierAt(lineText: string, column: number, name: string): boolean {
   if (column < 0 || column + name.length > lineText.length) return false;
   if (lineText.slice(column, column + name.length) !== name) return false;
@@ -159,7 +160,7 @@ function identifierAt(lineText: string, column: number, name: string): boolean {
   return !isWord(before) && !isWord(after);
 }
 
-/** 已规划的编辑是否覆盖这一处出现（1-based 行、UTF-16 列、名字长度）。 */
+/** Whether a planned edit covers this 1-based line, UTF-16 column, and identifier length. */
 function coversPosition(edits: InternalTextEdit[], line: number, column: number, nameLength: number): boolean {
   const startLine = line - 1;
   const endColumn = column + nameLength;
@@ -172,7 +173,7 @@ function coversPosition(edits: InternalTextEdit[], line: number, column: number,
   });
 }
 
-/** Graph 位置是否已被规划覆盖（相对路径 + 行列）。 */
+/** Whether a Graph location is covered by the plan, using relative path, line, and column. */
 function coversLocation(
   editsByPath: Map<string, InternalTextEdit[]>,
   location: GraphRenameLocation,
@@ -183,13 +184,13 @@ function coversLocation(
 }
 
 /**
- * 动态导入行上未被覆盖的出现：`const { runUpgrade } = await import('./updater')`
- * 这类解构绑定目前没有边，索引和语言服务器都可能漏掉它；而只改掉同一文件里的调用位置，
- * 会写出语法正确但语义损坏的代码——比不改更危险。
+ * Detect uncovered occurrences on dynamic-import lines such as
+ * `const { runUpgrade } = await import('./updater')`. Destructured bindings currently
+ * have no edge, so both the index and language server may miss them; changing only the
+ * call site would produce syntactically valid but semantically broken code.
  *
- * 只检查**含导入调用**的行（`import(` / `require(`），所以不会把注释、字符串里的同名
- * 文本或普通同名局部变量误判成必改内容（那正是全文件文本替换才会犯的错）。
- * 这里只用出现位置做校验，绝不据此生成编辑。
+ * Only lines containing `import(` or `require(` are inspected, avoiding comments,
+ * strings, and unrelated local names. Occurrences validate coverage and never generate edits.
  */
 function findUncoveredImportBindings(
   text: string,
@@ -212,7 +213,7 @@ function findUncoveredImportBindings(
   return uncovered;
 }
 
-/** 行列请求可能指向调用者内部，必须先解析定义，不能把外层函数当成重命名目标。 */
+/** A position may point inside a caller, so resolve the definition before choosing the rename target. */
 async function renameCoverageTarget(
   cg: CodeGraph,
   manager: LspManager,
@@ -246,11 +247,11 @@ async function renameCoverageTarget(
 }
 
 /**
- * 把 Graph 确认过的位置补成编辑，并入语言服务器那批编辑（同一 URI 复用同一个键）。
+ * Turn Graph-confirmed locations into edits and merge them into the language-server edits by URI.
  *
- * 这条路径存在的理由：语言服务器的“工作区”不等于索引的工作区。测试目录被 tsconfig
- * 排除、工作区只加载了一半时，服务器会只改定义却返回成功。位置来自提取器记录的 AST
- * 行列（confirmed），因此这里**不是**文本替换：一个位置必须逐字符核实过才会生成编辑。
+ * Language-server and indexed workspaces may differ. When tsconfig excludes tests or only
+ * part of a workspace is loaded, a server may rename only the definition and still report
+ * success. Confirmed extractor AST positions close those gaps without whole-file text replacement.
  */
 function addGraphEdit(
   editsByUri: Map<string, InternalTextEdit[]>,
@@ -266,8 +267,8 @@ function addGraphEdit(
     const normalized = uriToNormalizedPath(uri);
     if (normalized && toProjectRelative(root, normalized) === location.filePath) { key = uri; break; }
   }
-  // validatePathWithinRoot 返回 realpath；URI 仍沿用索引根目录的写法，避免 macOS
-  // /var 与 /private/var（或目录链接）让后续相对路径检查误报项目外文件。
+  // validatePathWithinRoot returns a realpath, but the URI keeps the indexed-root spelling.
+  // This prevents macOS /var vs /private/var and directory aliases from failing later root checks.
   if (!key) key = pathToFileURL(path.resolve(root, location.filePath)).href;
   const edits = editsByUri.get(key) ?? [];
   edits.push({
@@ -293,6 +294,7 @@ export async function planRename(
 ): Promise<RenamePlan> {
   const root = cg.getProjectRoot();
   const warnings: string[] = [];
+  const blockers: string[] = [];
   const language = target.language;
   const family = familyForLanguage(language);
   if (!family) {
@@ -373,12 +375,11 @@ export async function planRename(
   const renameTargets = new Set(renames.map((entry) => entry.to));
   const renameSources = new Set(renames.map((entry) => entry.from));
 
-  // ---- 覆盖核对（在生成预览之前）----
-  // 语言服务器的工作区不等于索引的工作区：测试目录被 tsconfig 排除、工作区只加载了一半时，
-  // 服务器会“只改定义却返回成功”。这里用 Graph 已知的静态引用核对覆盖，并且：
-  //   - 位置经过 AST 行/列确认的缺口，由索引补编辑（plannedBy: 'graph'）；
-  //   - 只有一个“可能位置”或含别名的关系，仍然拒绝写盘，绝不猜着改。
-  // 补进来的编辑与语言服务器的编辑走完全相同的校验、预览、哈希与事务路径。
+  // ---- Coverage validation before preview generation ----
+  // Language-server and indexed workspaces may differ. Graph checks all known static references:
+  //   - gaps with AST-confirmed lines and columns become `plannedBy: 'graph'` edits;
+  //   - possible-only or aliased locations still block apply instead of being guessed.
+  // Added edits follow the same validation, preview, hashing, and transaction path as LSP edits.
   const plannedByPath = new Map<string, InternalTextEdit[]>();
   for (const [uri, edits] of editsByUri) {
     const absolutePath = uriToNormalizedPath(uri);
@@ -398,6 +399,7 @@ export async function planRename(
   if (!coverageTarget) {
     const message = 'The position could not be mapped to one current indexed definition; cross-file rename coverage is unverified.';
     if (request.apply) throw new CodeEditRefusal(message, 'rejected', 'Retry with the exact symbol name and definition file after syncing the index.');
+    blockers.push(message);
     warnings.push(`${message} Apply will be refused; retry with the symbol name and definition file.`);
   }
 
@@ -409,7 +411,7 @@ export async function planRename(
     const missing = graphLocations.filter((location) => !coversLocation(plannedByPath, location, name.length));
     const completable: GraphRenameLocation[] = [];
     for (const location of missing) {
-      // 补不了（未确认，或位置已不在项目内）就仍然算缺口：宁可拒绝，也不假装改完。
+      // An unconfirmed or out-of-project location remains a gap; refuse instead of claiming completion.
       if (!location.confirmed || !addGraphEdit(editsByUri, root, location, name.length, newName)) {
         remainingGaps.push(location);
         continue;
@@ -435,8 +437,8 @@ export async function planRename(
     }
   }
 
-  // 候选文件集在 Graph 补编辑之后才算：补进来的文件必须和语言服务器的编辑一样走完
-  // 校验、预览、哈希与事务路径，否则就是“计划里有、写盘时没有”的静默缺口。
+  // Compute candidate files after Graph completion so added files pass through the same
+  // validation, preview, hashing, and transaction path as language-server edits.
   const uris = new Set<string>([
     ...editsByUri.keys(), ...renames.map((entry) => entry.from), ...renames.map((entry) => entry.to),
     ...creates, ...deletes,
@@ -574,11 +576,11 @@ export async function planRename(
     throw new CodeEditRefusal('the language server returned a workspace edit with no file changes', 'rejected');
   }
 
-  // ---- 其余缺口：不能补的位置一律拒绝写盘 ----
-  // 两道检查都只用位置做**校验**，不生成编辑：
-  //   1. 索引知道位置、但无法逐字符确认（只有行没有列、别名、跨行关系）；
-  //   2. 动态导入行上仍有没被覆盖的出现（`const { runUpgrade } = await import('./x')`
-  //      目前没有边）——只补一部分会写出语法正确、语义损坏的代码，比不改更危险。
+  // ---- Remaining gaps block writes ----
+  // These checks validate positions and never generate edits:
+  //   1. indexed locations that cannot be verified character by character;
+  //   2. uncovered occurrences on dynamic-import lines, including destructured bindings
+  //      that still have no edge. Partial renames are more dangerous than refusing the write.
   const uncovered: GraphRenameLocation[] = [];
   if (coverageName) {
     for (const file of files) {
@@ -613,13 +615,14 @@ export async function planRename(
         'Fix the language-server project configuration (for example, include directories excluded by tsconfig) so the server reports every occurrence, then retry.',
       );
     }
+    blockers.push(message);
     warnings.push(`${message}. Nothing is applied by this preview; apply will be refused until the gap is resolved.`);
   }
   if (files.length > 1) {
     warnings.push(`The rename touches ${files.length} files; the preview lists every one and all files are verified before writing starts.`);
   }
   files.sort((a, b) => a.filePath.localeCompare(b.filePath));
-  return { files, family, warnings };
+  return { files, family, warnings, blockers };
 }
 
 /** The text an edit currently replaces, computed on the original file content. */

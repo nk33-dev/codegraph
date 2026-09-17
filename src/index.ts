@@ -860,6 +860,27 @@ export class CodeGraph {
   }
 
   /**
+   * Resolve references introduced by the given files after extraction.
+   *
+   * `indexFiles()` intentionally remains extraction-only because recovery tests rely on the
+   * intermediate state where nodes exist but resolution has not run. Edit refreshes call this
+   * second step explicitly, matching incremental sync: resolve references from changed files,
+   * then retry historical failures that their newly introduced names may satisfy (#1240).
+   */
+  async resolveReferencesForFiles(filePaths: string[]): Promise<void> {
+    const normalized = [...new Set(filePaths.map((filePath) => filePath.replace(/\\/g, '/')))];
+    if (normalized.length === 0) return;
+
+    const unresolvedRefs = this.queries.getUnresolvedReferencesByFiles(normalized);
+    if (unresolvedRefs.length > 0) this.resolver.resolveAndPersist(unresolvedRefs);
+
+    const retryable = this.queries.getRetryableFailedReferences(
+      this.queries.getNodeNamesByFiles(normalized),
+    );
+    if (retryable.length > 0) await this.resolver.resolveAndPersistListYielding(retryable);
+  }
+
+  /**
    * Sync with current file state (incremental update)
    *
    * Uses a mutex to prevent concurrent indexing operations.

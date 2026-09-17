@@ -2430,6 +2430,13 @@ export class ExtractionOrchestrator {
     let totalNodes = 0;
     let totalEdges = 0;
 
+    // Match the incremental sync path by preloading grammars for all requested files.
+    // Direct indexFiles callers otherwise fail in a fresh process before parsing starts.
+    if (filePaths.length > 0) {
+      const overrides = loadExtensionOverrides(this.rootDir);
+      await loadGrammarsForLanguages(preloadLanguagesForFiles(filePaths, overrides));
+    }
+
     for (const filePath of filePaths) {
       const result = await this.indexFile(filePath);
 

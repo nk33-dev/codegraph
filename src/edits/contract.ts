@@ -38,7 +38,7 @@ export type EditFileOperation = typeof EDIT_FILE_OPERATIONS[number];
  *   - `not_found`   the target symbol does not exist in the index;
  *   - `ambiguous`   the name matches several definitions (say which by passing `file`);
  *   - `stale`       the index position no longer matches the file on disk;
- *   - `conflict`    the file changed between preview and apply, or `expectPreviewHash` did not match;
+ *   - `conflict`    the file changed, a bound preview hash did not match, or an operation ID was reused for different content;
  *   - `unavailable` rename without a usable language server (not installed / not configured / no rename support);
  *   - `rejected`    the operation was refused on safety grounds (unsafe workspace edit, invalid range, …);
  *   - `not_indexed` the project has no index;
@@ -63,13 +63,16 @@ export interface CodeEditRequest {
   newName?: string;
   /** replace-body / insert-before / insert-after: the replacement or inserted text. */
   content?: string;
-  /** false (default) = build the preview only; true = write the files after re-verifying them. */
+  /**
+   * false (default) previews only. true replans, re-verifies current bytes, and writes directly.
+   * The hash and ID below are optional bindings for a reviewed two-step write.
+   */
   apply?: boolean;
-  /** apply only: the `previewHash` a previous preview returned; a mismatch refuses to write. */
+  /** apply only, optional: bind the write to a previous preview; a mismatch refuses to write. */
   expectPreviewHash?: string;
   /**
-   * Stable idempotency key. A preview returns one; reuse it for apply and every retry so a lost
-   * response cannot apply the same workspace edit twice.
+   * Optional idempotency key. Preview returns one; reuse it for apply and retries. A direct apply
+   * derives a default from request identity, and reusing an ID for different content conflicts.
    */
   operationId?: string;
   projectPath?: string;
@@ -77,7 +80,7 @@ export interface CodeEditRequest {
 
 /** One text edit in the result: 1-based lines, 0-based columns in **UTF-16 code units**. */
 export interface EditTextEdit {
-  /** 该处编辑的来源：'lsp'（语言服务器）或 'graph'（索引中 AST 确认的位置）。 */
+  /** Origin of this edit: the language server or an AST-confirmed Graph location. */
   plannedBy?: 'lsp' | 'graph';
   startLine: number;
   startColumn: number;
@@ -177,6 +180,10 @@ export interface CodeEditResult {
   /** What the caller asked for; `false` means "preview only, write nothing". */
   applyRequested: boolean;
   status: CodeEditStatus;
+  /** Whether the preview satisfies all known safety gates and may be applied. */
+  canApply: boolean;
+  /** Machine-readable apply blockers, so callers need not infer safety from warning text. */
+  blockers: string[];
   projectRoot: string | null;
   target: CodeEditTarget | null;
   files: EditFilePreview[];
@@ -204,7 +211,7 @@ export function emptyCodeEditResult(
   applyRequested = false,
 ): CodeEditResult {
   return {
-    schemaVersion: 1, operation, applyRequested, status: 'preview', projectRoot: null, target: null,
+    schemaVersion: 1, operation, applyRequested, status: 'preview', canApply: false, blockers: [], projectRoot: null, target: null,
     files: [], summary: { files: 0, edits: 0, additions: 0, deletions: 0, previewTruncated: false },
     previewHash: null, operationId: null,
     routing: { source: null, lsp: { requested: operation === 'rename', available: false, family: null, reason: null } },

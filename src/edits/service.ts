@@ -65,6 +65,8 @@ async function syncIndex(cg: CodeGraph, files: EditFilePreview[]): Promise<{ syn
         warnings.push(`The index was not fully refreshed: ${outcome.errors.filter((error) => error.severity === 'error').slice(0, 3).map((error) => error.message).join('; ')}`);
         return { synced: false, indexFiles: outcome.filesIndexed, warnings };
       }
+      // Extraction writes nodes and syntax edges; resolution is required for the new call edges.
+      await cg.resolveReferencesForFiles(targets);
       return { synced: true, indexFiles: outcome.filesIndexed, warnings };
     }
     return { synced: true, indexFiles: 0, warnings };
@@ -77,14 +79,20 @@ async function syncIndex(cg: CodeGraph, files: EditFilePreview[]): Promise<{ syn
 function fail(result: CodeEditResult, error: unknown): void {
   if (error instanceof CodeEditRefusal) {
     result.status = error.status;
-    result.warnings.push(error.remedy ? `${error.message} — ${error.remedy}` : error.message);
+    result.canApply = false;
+    const detail = error.remedy ? `${error.message} — ${error.remedy}` : error.message;
+    result.blockers.push(detail);
+    result.warnings.push(detail);
     if (result.operation === 'rename' && error.status === 'unavailable') {
       result.routing.lsp = { ...result.routing.lsp, available: false, reason: error.message };
     }
     return;
   }
   result.status = 'error';
-  result.warnings.push(error instanceof Error ? error.message : String(error));
+  result.canApply = false;
+  const detail = error instanceof Error ? error.message : String(error);
+  result.blockers.push(detail);
+  result.warnings.push(detail);
 }
 
 /**
@@ -119,11 +127,14 @@ export async function editCode(
       result.files = plan.files;
       result.routing.source = 'lsp';
       result.routing.lsp = { requested: true, available: true, family: plan.family, reason: null };
+      result.blockers.push(...plan.blockers);
+      result.canApply = plan.blockers.length === 0;
       result.warnings.push(...plan.warnings);
     } else {
       const planned = planGraphEdit(request, target);
       result.files = [planned];
       result.routing.source = 'index';
+      result.canApply = true;
       if (request.operation === 'replace-body') {
         // The replaced range is the definition's (modifiers included), which can start earlier than
         // the parser's node — report the range that is actually replaced.
@@ -155,15 +166,16 @@ export async function editCode(
 
   if (!request.apply) {
     result.status = 'preview';
-    result.warnings.push('Nothing was written: this is a preview. Pass apply:true (with expectPreviewHash to bind it to this preview) to write it.');
+    result.warnings.push('Nothing was written: this is a preview. Pass apply:true to write it; add expectPreviewHash and this operationId to bind the write to this preview (a mismatch then refuses with status="conflict" instead of writing).');
     return result;
   }
 
   if (request.expectPreviewHash !== undefined && request.expectPreviewHash !== result.previewHash) {
     result.status = 'conflict';
-    result.warnings.push(
-      `expectPreviewHash does not match this preview (${result.previewHash}); the file or the request changed since the preview. Nothing was written.`,
-    );
+    result.canApply = false;
+    const detail = `expectPreviewHash does not match this preview (${result.previewHash}); the file or the request changed since the preview. Nothing was written.`;
+    result.blockers.push(detail);
+    result.warnings.push(detail);
     return result;
   }
 
@@ -182,7 +194,7 @@ export async function editCode(
     }
     fail(result, error);
     if (result.operationId && result.applied) {
-      try { completeEditTransaction(cg.getProjectRoot(), result.operationId, result); } catch { /* 原事务记录仍保留。 */ }
+      try { completeEditTransaction(cg.getProjectRoot(), result.operationId, result); } catch { /* Keep the original transaction record. */ }
     }
     return result;
   }

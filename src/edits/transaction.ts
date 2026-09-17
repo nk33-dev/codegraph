@@ -1,8 +1,9 @@
 /**
- * 持久化的跨文件编辑事务。
+ * Persistent cross-file edit transactions.
  *
- * 每个事务都位于项目自己的 `.codegraph/edit-transactions/`，因此暂存文件、备份和源码
- * 默认处在同一文件系统。提交前会再次核对设备号；跨卷目标会在写源码前被拒绝。
+ * Each transaction lives under the project's `.codegraph/edit-transactions/`, keeping staged
+ * files, backups, and source on one filesystem by default. Device IDs are checked before commit,
+ * and cross-volume targets are rejected before source is changed.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -68,17 +69,17 @@ let faultHook: ((point: string) => void) | null = null;
 let operationFaultHook: ((point: string) => void) | null = null;
 let deviceHook: ((target: string, device: number, label: string) => number) | null = null;
 
-/** 仅供契约测试模拟进程在持久化边界被终止。 */
+/** Test-only hook that simulates termination at persistence boundaries. */
 export function __setEditTransactionFaultForTests(hook: ((point: string) => void) | null): void {
   faultHook = hook;
 }
 
-/** 仅供契约测试模拟可回滚的文件操作失败。 */
+/** Test-only hook that simulates recoverable filesystem failures. */
 export function __setEditTransactionOperationFaultForTests(hook: ((point: string) => void) | null): void {
   operationFaultHook = hook;
 }
 
-/** 仅供契约测试模拟目标位于另一文件系统。 */
+/** Test-only hook that simulates a target on another filesystem. */
 export function __setEditTransactionDeviceForTests(
   hook: ((target: string, device: number, label: string) => number) | null,
 ): void {
@@ -112,7 +113,7 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
     fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
     fs.renameSync(temporary, filePath);
   } catch (error) {
-    try { fs.rmSync(temporary, { force: true }); } catch { /* 保留原始错误。 */ }
+    try { fs.rmSync(temporary, { force: true }); } catch { /* Preserve the original error. */ }
     throw error;
   }
 }
@@ -135,8 +136,8 @@ function saveManifest(root: string, manifest: TransactionManifest): void {
 function cleanupTerminalArtifacts(root: string, manifest: TransactionManifest): void {
   if (manifest.state !== 'complete' && manifest.state !== 'rolled_back') return;
   const directory = transactionDir(root, manifest.operationId);
-  try { fs.rmSync(path.join(directory, 'staged'), { recursive: true, force: true }); } catch { /* 下次维护可再清。 */ }
-  try { fs.rmSync(path.join(directory, 'backups'), { recursive: true, force: true }); } catch { /* 下次维护可再清。 */ }
+  try { fs.rmSync(path.join(directory, 'staged'), { recursive: true, force: true }); } catch { /* A later cleanup can retry. */ }
+  try { fs.rmSync(path.join(directory, 'backups'), { recursive: true, force: true }); } catch { /* A later cleanup can retry. */ }
   for (const file of manifest.files) {
     file.stageFile = null;
     file.backupFile = null;
@@ -171,7 +172,7 @@ function withTransactionLock<T>(root: string, action: () => T): T {
           continue;
         }
       } catch (readError) {
-        // wx 创建和写入之间锁可能暂时为空；不能把刚创建的锁当成损坏文件抢走。
+        // A lock may be briefly empty between exclusive creation and write; do not steal a newly created lock.
         if ((readError as NodeJS.ErrnoException).code === 'ENOENT') continue;
         try {
           if (readError instanceof SyntaxError && Date.now() - fs.statSync(lockPath).mtimeMs > 60_000) {
@@ -187,12 +188,12 @@ function withTransactionLock<T>(root: string, action: () => T): T {
       }
       throw new CodeEditRefusal('another structured edit is currently committing in this project', 'conflict');
     }
-    // 事务本身的 EEXIST 是写入失败，不能被获取锁的重试逻辑吞掉后再次执行。
+    // EEXIST from the transaction itself is a write failure and must not be retried as lock acquisition.
     try { return action(); } finally {
       try {
         const owner = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as { pid?: number };
         if (owner.pid === process.pid) fs.rmSync(lockPath, { force: true });
-      } catch { /* 锁已被清理。 */ }
+      } catch { /* The lock was already removed. */ }
     }
   }
   throw new CodeEditRefusal('the structured-edit transaction lock could not be acquired', 'conflict');
@@ -250,7 +251,7 @@ function writeFileAtomic(filePath: string, content: string, mode?: number): void
     if (mode !== undefined) fs.chmodSync(temporary, mode);
     fs.renameSync(temporary, filePath);
   } catch (error) {
-    try { fs.rmSync(temporary, { force: true }); } catch { /* 保留原始错误。 */ }
+    try { fs.rmSync(temporary, { force: true }); } catch { /* Preserve the original error. */ }
     throw error;
   }
 }
@@ -405,7 +406,7 @@ function restoreFile(root: string, file: TransactionFile): void {
   const source = sourcePath(root, file);
   const destination = destinationPath(root, file);
   const expectedResult = file.resultHash;
-  // rename 消耗暂存文件；即使进程尚未来得及记录 committed，也能辨别是否已落盘。
+  // rename consumes the staged file, revealing a completed write even if `committed` was not persisted yet.
   const stagedContentWritten = file.committed || (file.stageFile !== null && !fs.existsSync(file.stageFile));
   if (file.operation === 'create') {
     if (!stagedContentWritten) { file.state = 'unchanged'; return; }
@@ -419,7 +420,7 @@ function restoreFile(root: string, file: TransactionFile): void {
   }
 
   const sourceHash = contentHash(source);
-  // 只撤销本事务写出的内容。外部修改、删除或不可读文件都保留，交给恢复清单处理。
+  // Revert only bytes written by this transaction. Preserve external edits, deletions, and unreadable files for recovery.
   if ((sourceHash !== file.baseHash && sourceHash !== expectedResult && sourceHash !== null)
     || (file.operation === 'modify' && !stagedContentWritten && sourceHash !== file.baseHash)
     || (sourceHash === null && (fs.existsSync(source) || file.operation === 'modify'))
@@ -439,7 +440,7 @@ function restoreFile(root: string, file: TransactionFile): void {
   if (sha256(backup) !== file.baseHash) throw new Error(`backup for ${file.filePath} does not match the original content`);
   const mode = fs.statSync(file.backupFile).mode;
   if (sourceHash !== file.baseHash) writeFileAtomic(source, backup, mode);
-  // 原路径成功恢复后再删除移动目标；备份损坏或恢复失败时仍保留提交后的内容。
+  // Remove a moved target only after restoring the original path; keep committed content when recovery fails.
   if (removeDestination) fs.rmSync(destination);
   file.state = 'restored';
 }
@@ -494,7 +495,7 @@ export function applyEditTransaction(
       manifest = prepareManifest(root, operationId, requestHash, previewHash, files, result);
     } catch (error) {
       if (!existed) {
-        try { fs.rmSync(directory, { recursive: true, force: true }); } catch { /* 暂存残留不覆盖原始错误。 */ }
+        try { fs.rmSync(directory, { recursive: true, force: true }); } catch { /* Staging residue must not replace the original error. */ }
       }
       throw error;
     }
@@ -561,14 +562,17 @@ export function readRecordedEdit(
   }
   if (!['complete', 'rolled_back', 'recovery_required'].includes(manifest.state)) return null;
   const result = structuredClone(manifest.result);
+  // personal.5 and earlier terminal records lack these fields; fill them during replay for contract compatibility.
+  result.canApply ??= result.status === 'applied';
+  result.blockers ??= result.canApply ? [] : [...result.warnings];
   if (result.applied) result.applied.replayed = true;
   result.warnings.push(`operationId "${operationId}" was already terminal; returning its recorded result without writing again.`);
   return result;
 }
 
 /**
- * 恢复中断于暂存/部分提交的事务。已经完整提交但尚未刷新索引的事务会保留提交结果，
- * 由异步打开路径刷新索引后调用 completeEditTransaction 完成记录。
+ * Recover transactions interrupted during staging or partial commit. Fully committed transactions
+ * awaiting index refresh preserve their result until the async open path calls completeEditTransaction.
  */
 export function recoverPendingEditTransactions(root: string): EditRecoveryOutcome[] {
   if (!fs.existsSync(transactionRoot(root))) return [];
@@ -580,8 +584,8 @@ export function recoverPendingEditTransactions(root: string): EditRecoveryOutcom
         const directory = path.join(transactionRoot(root), entry.name);
         const manifest = readManifest(path.join(directory, 'manifest.json'));
         if (!manifest) {
-          // manifest 之前只会写事务目录内的暂存/备份，不会碰源码，可直接清理。
-          try { fs.rmSync(directory, { recursive: true, force: true }); } catch { /* 下次启动重试。 */ }
+          // Before the manifest, only transaction-local staging and backup files exist; source is untouched.
+          try { fs.rmSync(directory, { recursive: true, force: true }); } catch { /* Retry on the next startup. */ }
           continue;
         }
         if (['complete', 'rolled_back', 'recovery_required'].includes(manifest.state)) continue;
@@ -605,7 +609,7 @@ export function recoverPendingEditTransactions(root: string): EditRecoveryOutcom
       return outcomes;
     });
   } catch (error) {
-    // 另一个活跃写入者持锁时不能把它当成崩溃事务；本次打开继续，下次启动再检查。
+    // A lock held by an active writer is not a crashed transaction; continue opening and retry next startup.
     if (error instanceof CodeEditRefusal && error.status === 'conflict') return [];
     throw error;
   }

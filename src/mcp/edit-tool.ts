@@ -15,7 +15,7 @@ export const EDIT_TOOL_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: false,
   // It rewrites source files; the preview default is a safety measure, not a license to omit the hint.
   destructiveHint: true,
-  // 默认 operation ID 来自稳定请求身份；同参数重试会重放终态，不会再次写入。
+  // The default operation ID comes from stable request identity, so identical retries replay the terminal result.
   idempotentHint: true,
   openWorldHint: false,
 };
@@ -23,51 +23,51 @@ export const EDIT_TOOL_ANNOTATIONS: ToolAnnotations = {
 export const editTools: ToolDefinition[] = [
   {
     name: 'codegraph_edit',
-    description: 'Structured symbol editing — rename a symbol, replace a symbol body, or insert code before/after a symbol. PREVIEWS BY DEFAULT: with apply:false (the default) it writes NOTHING and returns the per-file diff, resolved target, previewHash and operationId. Pass apply:true with both ids to write transactionally; retries with the same operationId return the persisted result without writing twice. Cross-file failure rolls committed files back, retaining a per-file recovery manifest if rollback cannot finish. Operations: rename (whole-project, uses the project\'s language server — textDocument/rename; with no server installed you get status="unavailable", never a textual guess), replace-body (replaces the indexed definition including its signature), insert-before / insert-after (insert whole lines relative to the definition). Targets resolve through the index by symbol name plus an optional exact file, or by file + line for rename. A stale file is refused. After commit the index and live language servers are synchronized. Prefer codegraph_explore first to see the symbol and its blast radius.',
+    description: 'Edit an indexed symbol: rename, replace its definition, or insert code. Preview is default and reports canApply/blockers. Direct apply:true needs no IDs; it replans, verifies, and writes transactionally. For a reviewed two-step write, pass expectPreviewHash and reuse operationId. Rename uses LSP plus verified Graph references. Unsafe targets are refused.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          description: 'rename (symbol → newName, whole project, needs a language server); replace-body (replace the definition of symbol with content); insert-before / insert-after (insert content as whole lines before/after the definition of symbol).',
+          description: 'rename (LSP), replace-body (full indexed definition), insert-before, or insert-after.',
           enum: ['rename', 'replace-body', 'insert-before', 'insert-after'],
         },
         symbol: {
           type: 'string',
-          description: 'The target symbol: an exact name or qualified name resolved through the index (e.g. "run", "View.render", "CodeGraph.queryCode"). Required for replace-body/insert-* and for a name-based rename.',
+          description: 'Exact or qualified target name. Required except for position-based rename.',
         },
         file: {
           type: 'string',
-          description: 'Exact project-relative file (e.g. "src/a.ts"): pins the target when a name matches several definitions, and narrows a rename when several modules define the same name.',
+          description: 'Exact project-relative file; disambiguates same-named definitions.',
         },
         line: {
           type: 'number',
-          description: 'rename only: 1-based line of the symbol, for a position-based rename instead of a name (pair with file).',
+          description: 'rename only: 1-based target line; pair with file.',
         },
         column: {
           type: 'number',
-          description: 'rename only: 0-based column in UTF-16 code units for the line above (default 0).',
+          description: 'rename only: 0-based UTF-16 column.',
         },
         newName: {
           type: 'string',
-          description: 'rename only: the new symbol name (no whitespace).',
+          description: 'rename only: new name without whitespace.',
         },
         content: {
           type: 'string',
-          description: 'replace-body/insert-*: the text to put in place (replace-body replaces the whole definition) or insert as whole lines. Written with the file\'s own line ending; for replace-body leading indentation is stripped because the declaration\'s own indentation stays in the file.',
+          description: 'replace-body/insert only: replacement definition or inserted lines.',
         },
         apply: {
           type: 'boolean',
-          description: 'false (default) = preview only, write nothing. true = write the files after re-verifying each one against the bytes the preview was computed from.',
+          description: 'false previews; true replans, verifies, and writes. IDs are optional.',
           default: false,
         },
         expectPreviewHash: {
           type: 'string',
-          description: 'apply only: the previewHash returned by an earlier preview of the same change; a mismatch refuses to write (status="conflict").',
+          description: 'apply only, optional: bind the write to an earlier previewHash.',
         },
         operationId: {
           type: 'string',
-          description: 'Stable idempotency key returned by preview. Reuse it for apply and every retry; a completed operation returns its recorded result without writing again.',
+          description: 'Optional idempotency key; reuse the preview ID for apply and retries.',
         },
         projectPath: {
           type: 'string',

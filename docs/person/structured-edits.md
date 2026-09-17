@@ -15,7 +15,8 @@ There was no pre-existing edit flow to reuse: this phase establishes `src/edits/
 | Capability | Call |
 | --- | --- |
 | Preview a body replacement | `codegraph_edit {operation:"replace-body", symbol:"run", file:"src/a.ts", content:"export function run() { return 42; }"}` |
-| Apply it | `... , apply:true, expectPreviewHash:"<hash>", operationId:"<id from preview>"` |
+| Apply it, bound to the preview read | `... , apply:true, expectPreviewHash:"<hash>", operationId:"<id from preview>"` |
+| Apply it directly (one call, nothing bound) | `... , apply:true` |
 | Insert before/after a symbol | `codegraph_edit {operation:"insert-after", symbol:"View", file:"view.js", content:"export function helper() {}"}` |
 | Rename (whole project) | `codegraph_edit {operation:"rename", symbol:"Widget", file:"a.ts", newName:"Gadget"}` |
 | Rename from a position | `codegraph_edit {operation:"rename", file:"a.ts", line:1, column:13, newName:"Gadget"}` |
@@ -41,11 +42,13 @@ Library users call `CodeGraph.editCode(request)`; `queryCode`/`queryCodeWithBack
 | `line` / `column` | `rename` only: a position target (1-based line, 0-based UTF-16 column) instead of a name |
 | `newName` | `rename` only, no whitespace |
 | `content` | `replace-body`/`insert-*` only |
-| `apply` | `false` (default) = preview only |
-| `expectPreviewHash` | `apply: true` only: refuse to write unless the preview hash matches |
-| `operationId` | Stable idempotency key; preview supplies a default, and callers may provide a unique key |
+| `apply` | `false` (default) = preview only. `true` replans and writes in the same call; the two IDs below are optional |
+| `expectPreviewHash` | `apply: true` only, optional: bind the write to a specific preview and refuse on mismatch |
+| `operationId` | Optional idempotency key; preview supplies one, while direct apply derives a default from request identity |
 
 An argument that does not belong to the operation is an error, not something ignored: `content` on a rename, `newName` on a body replacement, `line` on an insert, or `expectPreviewHash` without `apply` all fail outright.
+
+A bare `apply: true` re-plans against the current index and re-verifies every target file against the current bytes before staging. It does not bind the write to a previously reviewed preview. Callers that require review-to-write identity must pass `expectPreviewHash` and reuse `operationId`.
 
 ## Result contract
 
@@ -67,6 +70,7 @@ Other fields:
 - `previewHash`: a stable hash of the planned change — no randomness, so a preview taken by the CLI and one taken by the daemon agree. Hand it back with `apply: true` to make the write refuse if anything moved on.
 - `operationId`: stable request identity. A terminal operation is replayed from disk; reusing the ID for different request content returns `conflict`.
 - `routing`: which source planned the change (`index`/`lsp`) and, for rename, whether a language server was requested, could be used, and which family.
+- `canApply` / `blockers`: 预览是否已通过当前已知安全门槛，以及阻止 apply 的结构化原因；调用方不需要从英文 `warnings` 中解析“apply will be refused”。
 - `applied`: present after commit or rollback — operation ID, replay flag, transaction state, paths committed, index status, and each file's committed/restored/manual-recovery state.
 - `warnings`: the honest notes, including "Nothing was written: this is a preview", a server that returned no rename edits, a workspace edit touching several files, and the fragment-kind note below.
 
@@ -87,6 +91,7 @@ The MCP tool sets `isError` for every status other than `preview`/`applied`: a r
 3. Files commit one by one from the same-filesystem staging area. A later failure restores earlier files in reverse order; an incomplete rollback retains backups and returns a per-file recovery action.
 4. The manifest records each commit boundary. Startup rolls back interrupted staging/commit states; a fully committed edit interrupted during index refresh is kept and re-indexed.
 5. The index is refreshed and live language servers receive supported file notifications. Unsupported servers still have old documents closed explicitly.
+6. Refresh means symbols and call edges are both current: `indexFiles()` preloads the edited files' grammars, then the edit service resolves references introduced by those files. The resolution step remains separate from `indexFiles()` so recovery tests can still model extraction completed before resolution.
 
 The full phase-five contract is in [幂等与事务式结构化编辑](edit-transactions.md).
 
@@ -96,9 +101,11 @@ The full phase-five contract is in [幂等与事务式结构化编辑](edit-tran
 
 1. **LSP 仍是位置第一来源**。计划器把 WorkspaceEdit 与 Graph 已知的静态定义/引用位置核对；启发式边（`provenance: 'heuristic'` 或 `synthesizedBy`）不参与判断，也永远不会被转换成编辑。
 2. **索引补全 LSP 没覆盖的位置**。缺口里“行 + 列都被提取器记录、且逐字符核实到标识符”的位置由 Graph 生成编辑，与 LSP 的编辑走完全相同的校验、预览、哈希与事务路径，并在结果的 `files[].edits[].plannedBy` 上标为 `"graph"`（LSP 的标为 `"lsp"`），预览同时给出补全数量与文件列表。**这不是文本替换**：位置必须与 AST 记录的行列逐字符吻合，`confirmed` 为假的位置永远不会生成编辑。
-3. **补不了的就拒绝写盘**。两类情况仍然拒绝：（a）只有“可能位置”（没有列）或含别名的关系；（b）动态导入行上未被覆盖的出现——`const { runUpgrade } = await import('./updater')` 这种解构绑定目前没有边，只改同一文件里的调用位置会写出语法正确但语义损坏的代码。拒绝时预览列出具体位置并给出修复方向。
+3. **补不了的就拒绝写盘**。两类情况仍然拒绝：（a）只有“可能位置”（没有列）或含别名的关系；（b）动态导入行上未被覆盖的出现——`const { runUpgrade } = await import('./updater')` 这种解构绑定目前没有边，只改同一文件里的调用位置会写出语法正确但语义损坏的代码。拒绝时预览列出具体位置，并以 `canApply:false` / `blockers[]` 暴露给调用方。
 
-覆盖比较使用当前源码中的行列范围，同一行的多个引用不会因其中一个被编辑就全部算作覆盖；引用文件已变化时要求先同步。行列请求先确认定义；从调用位置发起时通过 LSP definition 映射到当前索引，无法唯一确认时预览警告、`apply` 拒绝。检查只能发现图已知的缺口，不保证未索引或运行时引用完整——例如 `const mod = await import('./x')` 后的 `mod.runUpgrade()` 目前没有边，动态导入的覆盖扩展仍在后续计划中。
+覆盖比较使用当前源码中的行列范围，同一行的多个引用不会因其中一个被编辑就全部算作覆盖；引用文件已变化时要求先同步。调用和构造边记录实际标识符列，不再把 `new Widget()` 的 `new` 列当成 `Widget` 的位置。行列请求先确认定义；从调用位置发起时通过 LSP definition 映射到当前索引，无法唯一确认时预览警告、`apply` 拒绝。
+
+JS/TS 的 `const mod = await import('./x')` 现在由 AST 提取 namespace binding，`mod.runUpgrade()` 可沿模块映射解析到导出符号并携带成员的准确位置；这不是正则文本替换。动态解构绑定、计算属性和运行时模块路径仍是不证明就不改的边界。检查只能证明图已知的缺口已覆盖，不能保证任意反射引用完整。
 
 ## Code ownership
 
@@ -111,6 +118,7 @@ The full phase-five contract is in [幂等与事务式结构化编辑](edit-tran
 | `src/edits/lsp-rename.ts` | rename planning: name position, WorkspaceEdit → per-file plans, root/kind/range validation, Graph-confirmed coverage completion (`plannedBy`) |
 | `src/edits/transaction.ts` | persistent staging, backup, commit, rollback, replay and startup recovery |
 | `src/edits/service.ts` | the one flow: validate → resolve → plan → preview → transaction → index/LSP sync |
+| `src/extraction/index.ts` | `indexFiles()` grammar preload; extraction remains separate from reference resolution |
 | `src/lsp/manager.ts` | rename request, WorkspaceEdit normalization, document close/change and workspace file notifications |
 | `src/lsp/code-query-lsp.ts` | `symbolNamePosition` extracted from the query context so queries and rename share one name-position rule |
 | `src/mcp/edit-tool.ts` | the `codegraph_edit` definition and its mutating annotations (kept out of the read-only `tools` array) |

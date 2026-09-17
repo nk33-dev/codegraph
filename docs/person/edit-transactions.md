@@ -5,7 +5,7 @@
 
 ## 契约
 
-- 预览同时返回 `previewHash` 和稳定 `operationId`。apply 应回传两者；断线、超时或代理重启后继续使用同一个 `operationId`。
+- 预览同时返回 `previewHash` 和稳定 `operationId`。直接 `apply:true` 可以不带两者，会按当前索引重新规划并复核磁盘字节；要把写入绑定到已审阅预览时，应回传两者，断线、超时或代理重启后继续使用同一个 `operationId`。
 - `previewHash` 约束计划内容，`operationId` 约束请求身份，两者用途不同。相同 operation ID 但请求内容不同会返回 `conflict`。
 - 事务记录位于 `.codegraph/edit-transactions/<operationId>/manifest.json`。目标文件全部校验并暂存后才进入提交阶段。
 - 暂存区与项目位于同一 `.codegraph` 文件系统。检测到跨卷目标时在提交前拒绝；符号链接目标也拒绝，避免替换链接本身或越过预期边界。
@@ -15,6 +15,7 @@
 - `CodeGraph.open()` 会检测中断于暂存、部分提交或索引刷新阶段的事务。前两者回滚；完整提交保留源码结果并补做索引同步。
 - 创建、移动、删除会通知已运行且声明对应能力的 LSP。服务器不支持文件事件时，CodeGraph 仍关闭旧文档，并在结果中说明降级。
 - 删除或移动后的索引同步若遇到其他进程持有写锁，结果明确返回 `indexSynced:false` 并提示运行 `codegraph sync`，不会把未执行的同步误报为成功。
+- 非结构性编辑通过 `indexFiles()` 刷新时会先预加载目标 grammar，再显式解析这些文件引入的引用；新符号及调用边在结果报告 `indexSynced:true` 前都必须可查询。`indexFiles()` 本身仍保持仅抽取语义，供崩溃恢复路径使用。
 
 成功提交的 manifest 和结果记录会保留，用于幂等重放和审计；不再需要的 staged/backups 会在终态持久化后清理，只有 `recovery_required` 保留恢复材料。若需要在源码恢复到相同内容后再次执行同一请求，应提供一个新的自定义 `operationId`。
 

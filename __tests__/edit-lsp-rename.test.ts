@@ -326,14 +326,16 @@ describe('a server that cannot rename', () => {
 
 
 /**
- * 跨文件重命名覆盖补全（个人版）。
+ * Cross-file rename coverage completion for the personal fork.
  *
- * 语言服务器的工作区常常小于索引的工作区：测试目录被 tsconfig 排除、工作区只加载了一半时，
- * 服务器会“只改定义却返回成功”。契约是：
- *   1. 索引里 AST 确认过的位置，由 Graph 补成编辑（plannedBy: "graph"），与 LSP 编辑走同一条
- *      校验/预览/哈希/事务路径；
- *   2. 只有“可能位置”或含别名的关系仍然拒绝写盘；
- *   3. 计划内文件里还有没被覆盖的同名出现（例如动态导入解构绑定）时，拒绝写盘而不是只改一部分。
+ * A language-server workspace may be smaller than the indexed workspace. When tsconfig excludes
+ * tests or only part of a workspace is loaded, the server may rename only the definition and report
+ * success. The contract is:
+ *   1. Graph completes AST-confirmed locations as `plannedBy: "graph"` edits through the same
+ *      validation, preview, hashing, and transaction path as LSP edits;
+ *   2. possible-only or aliased locations still block writes;
+ *   3. uncovered same-name occurrences in planned files, such as destructured dynamic imports,
+ *      block writes instead of allowing a partial rename.
  */
 describe('rename coverage completed from the index', () => {
   const UPDATER = 'export function runUpgrade(): string {\n  return "v1";\n}\n';
@@ -374,11 +376,61 @@ describe('rename coverage completed from the index', () => {
     expect(read('__tests__/updater.test.ts')).not.toContain('runUpgrade()');
   }, 30_000);
 
+  it('构造调用有精确列时可由 Graph 补齐，不再把普通类重命名误判为不完整', async () => {
+    writeFile('src/widget.ts', 'export class Widget {}\n');
+    writeFile('src/create-widget.ts',
+      "import { Widget } from './widget';\n" +
+      'export function createWidget(): Widget { return new Widget(); }\n');
+    await cg.sync();
+    vi.spyOn(cg.getLspManager(), 'rename').mockResolvedValue({
+      retried: false,
+      items: [{
+        kind: 'edits', uri: pathToFileURL(path.join(project.root, 'src/widget.ts')).href, newUri: null,
+        edits: [{ range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } }, newText: 'Gadget' }],
+      }],
+    });
+
+    const preview = await cg.editCode({ operation: 'rename', symbol: 'Widget', file: 'src/widget.ts', newName: 'Gadget' });
+
+    expect(preview).toMatchObject({ status: 'preview', canApply: true, blockers: [] });
+    const consumer = preview.files.find((file) => file.filePath === 'src/create-widget.ts')!;
+    expect(consumer.edits.some((edit) => edit.oldText === 'Widget' && edit.plannedBy === 'graph')).toBe(true);
+    expect(preview.warnings.join(' ')).not.toMatch(/coverage is incomplete/);
+  }, 30_000);
+
+  it('解析动态 namespace import，并补齐成员调用的跨文件重命名', async () => {
+    writeFile('src/consumer.ts',
+      'export async function useIt(): Promise<string> {\n' +
+      "  const up = await import('./upgrade/updater');\n" +
+      '  return up.runUpgrade();\n' +
+      '}\n');
+    await cg.sync();
+    vi.spyOn(cg.getLspManager(), 'rename').mockResolvedValue({
+      retried: false,
+      items: [{
+        kind: 'edits', uri: pathToFileURL(path.join(project.root, 'src/upgrade/updater.ts')).href, newUri: null,
+        edits: [{ range: { start: { line: 0, character: 16 }, end: { line: 0, character: 26 } }, newText: 'runUpgradeV2' }],
+      }],
+    });
+
+    const request = { operation: 'rename' as const, symbol: 'runUpgrade', file: 'src/upgrade/updater.ts', newName: 'runUpgradeV2' };
+    const preview = await cg.editCode(request);
+    expect(preview).toMatchObject({ status: 'preview', canApply: true, blockers: [] });
+    const consumer = preview.files.find((file) => file.filePath === 'src/consumer.ts')!;
+    expect(consumer.edits).toContainEqual(expect.objectContaining({
+      plannedBy: 'graph', startLine: 3, oldText: 'runUpgrade', newText: 'runUpgradeV2',
+    }));
+
+    const applied = await cg.editCode({ ...request, apply: true, expectPreviewHash: preview.previewHash });
+    expect(applied.status, applied.warnings.join('\n')).toBe('applied');
+    expect(read('src/consumer.ts')).toContain('up.runUpgradeV2()');
+  }, 30_000);
+
   it('通过目录别名打开项目时，Graph 补全沿用该根目录且仍能应用', async () => {
     const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-rename-alias-'));
     const alias = path.join(aliasParent, 'project');
     try {
-      // junction 在 Windows 无需符号链接权限；POSIX 复现 macOS /var → /private/var。
+      // A Windows junction needs no symlink privilege; POSIX reproduces macOS /var to /private/var aliases.
       fs.symlinkSync(project.root, alias, process.platform === 'win32' ? 'junction' : 'dir');
       vi.spyOn(cg, 'getProjectRoot').mockReturnValue(alias);
       const result = await cg.editCode({
@@ -389,7 +441,7 @@ describe('rename coverage completed from the index', () => {
       expect(read('__tests__/updater.test.ts')).toContain('runUpgradeV2()');
     } finally {
       await cg.getLspManager().close();
-      // 仅移除本用例创建的链接，不递归触碰它指向的项目。
+      // Remove only the link created by this test, never recurse into its target project.
       if (fs.existsSync(alias)) {
         if (process.platform === 'win32') fs.rmdirSync(alias);
         else fs.unlinkSync(alias);
@@ -399,7 +451,7 @@ describe('rename coverage completed from the index', () => {
   }, 30_000);
 
   it('refuses a partial completion when the file has an occurrence the index cannot confirm', async () => {
-    // 动态导入解构绑定目前没有边：调用位置可确认，绑定位置不可确认。
+    // Destructured dynamic-import bindings still have no edge: the call is known, but the binding is not.
     writeFile('src/consumer.ts',
       'export async function useIt(): Promise<string> {\n' +
       "  const { runUpgrade } = await import('./upgrade/updater');\n" +
@@ -408,7 +460,8 @@ describe('rename coverage completed from the index', () => {
     await cg.sync();
 
     const preview = await cg.editCode({ operation: 'rename', symbol: 'runUpgrade', file: 'src/upgrade/updater.ts', newName: 'runUpgradeV2' });
-    expect(preview.status).toBe('preview');
+    expect(preview).toMatchObject({ status: 'preview', canApply: false });
+    expect(preview.blockers.join(' ')).toMatch(/coverage is incomplete/);
     expect(preview.warnings.join(' ')).toMatch(/coverage is incomplete/);
 
     const applied = await cg.editCode({
