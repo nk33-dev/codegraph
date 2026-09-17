@@ -34,7 +34,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            workers: 4
+          - os: macos-latest
+            workers: 4
+          # Windows 的索引测试还会启动解析 worker 和 CLI 子进程；文件级并发叠加后
+          # 会让单测从亚秒级膨胀到数十秒，并引发超时后的 SQLite EBUSY 连锁失败。
+          - os: windows-latest
+            workers: 1
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -45,4 +53,4 @@ jobs:
       - run: npm ci
       - run: npm run build
       # 只跑 engine + ui 两个项目；串行严格计时的 perf 项目不在这里。
-      - run: npm test
+      - run: npm test -- --maxWorkers=${{ matrix.workers }}

@@ -107,7 +107,7 @@ describe('Read-only annotations on the codegraph MCP tools (#1018)', () => {
 
 describe('Live tool surface keeps annotations with a project open (#1018)', () => {
   let tempDir: string;
-  let cg: CodeGraph;
+  let cg: CodeGraph | null = null;
   const original = process.env[ENV];
 
   beforeEach(async () => {
@@ -120,15 +120,16 @@ describe('Live tool surface keeps annotations with a project open (#1018)', () =
   });
 
   afterEach(() => {
-    cg.close();
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    cg?.close();
+    cg = null;
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     if (original === undefined) delete process.env[ENV];
     else process.env[ENV] = original;
   });
 
   it('getTools() keeps annotations, incl. codegraph_explore whose description is rebuilt', () => {
     process.env[ENV] = ALL_TOOLS;
-    const got = new ToolHandler(cg).getTools();
+    const got = new ToolHandler(cg!).getTools();
     expect(got.length).toBeGreaterThan(0);
     expectSurface(got);
 

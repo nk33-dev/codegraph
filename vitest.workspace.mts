@@ -65,6 +65,8 @@ export default defineWorkspace([
       // Windows CI 并发索引时，真实仓库 fixture 通常需要 5～8 秒。这里只放宽失败上限，
       // 不增加成功用例的运行时间；严格性能预算仍由独立的 perf 项目负责。
       testTimeout: 15_000,
+      // beforeEach 可能包含真实索引；setup 未完成时 Vitest 仍会执行 afterEach。
+      hookTimeout: 30_000,
     },
   },
   {

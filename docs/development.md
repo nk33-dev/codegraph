@@ -125,7 +125,7 @@ Tests create temp dirs with `fs.mkdtempSync` and clean up in `afterEach`. They w
 
 Timing assertions go through `perfBudget` / `expectWithinBudget` (`__tests__/perf-utils.ts`): the strict millisecond budget only applies in the serial perf project (`npm run test:perf`, which sets `CODEGRAPH_PERF_ASSERT=1` and runs with a single fork); the normal `npm test` run relaxes those budgets so a loaded 4-worker run can't decide the result. Put a new timing-sensitive suite in the `PERF_SUITES` list in `vitest.workspace.mts`.
 
-CI gate: `.github/workflows/ci.yml` runs `npm ci && npm run build && npm test` on Windows, Ubuntu and macOS. Real language servers, native-kernel builds, packaged-install checks and daemon recovery/soak run in `.github/workflows/hardening.yml` on a schedule or manual dispatch. Energy measurements remain manual because shared runners are not comparable.
+CI gate: `.github/workflows/ci.yml` runs `npm ci && npm run build && npm test` on Windows, Ubuntu and macOS. Windows uses one Vitest file worker because each indexing test starts its own parse workers and CLI subprocesses; stacking four file workers caused runner-wide contention, timeout cascades and SQLite cleanup failures. Ubuntu and macOS keep four workers. Real language servers, native-kernel builds, packaged-install checks and daemon recovery/soak run in `.github/workflows/hardening.yml` on a schedule or manual dispatch. Energy measurements remain manual because shared runners are not comparable.
 
 ### Windows-gated tests
 
