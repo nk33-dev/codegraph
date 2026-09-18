@@ -1,5 +1,13 @@
 # 个人版开发验证记录
 
+## 2026-09-18：MCP 上下文优化最终复核
+
+- 合并 P0 固定表面与 P2 观测能力；P1 只保留 stable stale 输出、确定性排序、去重会话边界和测试隔离修复，未合入未经模型级 A/B 验证的预算/关系裁剪开关。
+- 修正 catch-up 指标：promise reject 单独计为 `failed`，不再误报为 `ready`。
+- `npm run check:quick`：类型检查通过；关联测试 877 通过、3 跳过，唯一失败是 CLI 用例读取了构建前的旧 `dist`，源码侧断言与实现一致。
+- `npm run build`：通过；随后 `npm run test:focused -- __tests__/resource-status.test.ts` 为 10/10 通过，确认最终 CLI 产物包含 `failed` 指标。
+- 未运行模型级 A/B；本批不改变默认检索范围或预算，也不声称模型 token、Read/Grep 或墙钟收益。
+
 ## 2026-09-17：MCP 时延、常驻加载与 Read 回退（P2）
 
 P2 阶段「先测量再设计」：只补测量能力与决策，不改默认检索行为，也不实现窄查询快路径（理由与前置条件见 [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md)）。**当前未推送、未发布、未安装。**
