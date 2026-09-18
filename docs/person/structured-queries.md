@@ -53,6 +53,7 @@ Development verification must invoke the local `node dist/bin/codegraph.js`; a g
 - 只有索引能**唯一**精确确认一个代码形状标识符（camelCase、PascalCase、snake_case 或限定名）时才会收束；
 - 该符号之外的关系词先解析为 `definitions/callers/callees/references/tests/direct/all/related` 意图；“所有直接调用方和相关测试”不会再把“直接”作为第二个检索主题送进 FTS。剥离后还有真正的检索目标（第二个符号、主题名词、文件名）才保持完整探索路径；
 - 收束后只展开目标符号、它的直接关系和直接测试：`traverse` 深度 1、默认 `maxFiles` 收敛到 4，测试文件仅在查询明确要求测试时参与排序与预算，且只作为直接调用者进入；定义、非测试直接调用方和测试会在 `Requested View` 中分类列出；
+- 明确要求“相关测试”时，测试文件默认只输出**测试摘要**（文件、测试声明及其行号、每个声明实际调用的生产符号，长测试体只抽样并声明省略），不再整篇渲染测试源码；`includeTestSource: true` 才按普通源码渲染该文件，测试全文仍可通过再次 explore 该测试名（或结构化 `mode: tests`）取得；
 - 直接关系不再依赖通用遍历恰好保留该节点，而是与结构化 `references`、rename 覆盖检查共同复用 `src/graph/incoming-relations.ts`。因此动态 namespace import 的成员调用（如 `up.runUpgrade()`）也会稳定进入直接调用方；已有对应 LSP 进程时会合并其引用并标出 `graph` / `lsp` 来源，显式 `backend:"both"` 可要求启动并合并，默认不会仅为自然语言 explore 冷启动语言服务器；
 - 精确目标是覆盖文件大半的大型类/模块时，目标定义自身不再被通用“容器 envelope”过滤；预算不足可以裁剪，但不能只返回调用方而丢掉定义文件；
 - 词表刻意不包含主题名词（缓存、索引、部署、`helper`、`method`、`read`…），因此“Session method helper”“DataService read load”这类多词查询不会被误收束成单符号查询。
@@ -62,6 +63,13 @@ Development verification must invoke the local `node dist/bin/codegraph.js`; a g
 ## Blast radius 依赖分类
 
 `codegraph_explore` 的 blast radius 仍通过全部入边收集依赖，但展示时按真实语义分成 callers（calls/instantiates/navigates）、importers（imports）和 references。只导入模块的文件不再计为调用点；同一依赖节点存在多种边时按 caller、importer、reference 的优先级稳定归类，避免依赖数据库返回顺序。
+
+真实报告：顶部写成 “2 callers in src/bin/codegraph.ts”，实际是 `main` 一个直接调用方加一个测试文件；原因是每个类别的**数量**取了该类别全部依赖，而**文件位置**只列非测试文件，两个口径不同。现在的契约：
+
+- 每个类别先按“测试 / 非测试”切分，数量和文件位置都只从同一份切片计算，测试不进入生产调用方计数；
+- 同一个文件被同时记为模块 import 依赖和其内部符号依赖时只算一个（有具体符号时取具体符号），因此计数不再高于其下列出的行；
+- 行首给出两个不重叠的数字：生产依赖符号数与测试文件数，`uniq.length` 那种“总依赖数”不再作为唯一口径；
+- `src/ui-server/api/wire.ts` 的调用方分组、`node.ts` 的 counts 与 UI 视图不在本次改动范围内，仍是各自独立的既有口径。
 
 ## Code ownership and upstream sync
 
@@ -83,5 +91,7 @@ Incremental indexing remains the responsibility of the existing sync/orchestrato
 ## Verification
 
 `__tests__/code-query.test.ts` uses real TS, JS and Rust files plus SQLite, covering definition ambiguity, exact file qualification, hierarchy, graph references, cross-project, CLI/MCP consistency, real MCP handshake, watcher state, file modification/rename/deletion, and consistency of incremental and rebuild results after a Git branch switch.
+
+`__tests__/explore-blast-radius.test.ts` 固定依赖分类与计数口径（测试调用方只计为测试文件、生产调用方数量与所列文件一致、纯导入文件仍单独归类），`__tests__/explore-test-summary.test.ts` 固定测试摘要契约（测试声明与 exercises 标注、测试体省略与抽样、`includeTestSource: true` 的全文路径、未请求测试时不受影响）。`__tests__/explore-intent-query-focus.test.ts` 继续覆盖意图词收束本身。
 
 The shared freshness function also runs the original mcp-stale-slice and mcp-staleness-banner regressions. Complete build and full test results are recorded in the task handover/commit description; baseline failures of other tests must not be recorded as everything passing.

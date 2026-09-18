@@ -40,6 +40,7 @@ export type ExploreRenderMode =
   | 'clusters'      // ranked contiguous clusters
   | 'focused'       // per-symbol view, named/spine bodies full
   | 'skeleton'      // per-symbol view, signatures only
+  | 'test-summary'  // requested test file: test names + which symbols they exercise
   | 'stale-omitted' // drifted on disk; source deliberately withheld
   | 'backref'       // fully served by an earlier call this session (CG-18)
   | 'dropped';      // rendered into `lines` but cut by the final hard ceiling

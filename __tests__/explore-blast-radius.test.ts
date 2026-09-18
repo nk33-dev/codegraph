@@ -93,8 +93,10 @@ describe('codegraph_explore — blast radius', () => {
     expect(text).toMatch(/caller/); // a caller count is reported
     // It names WHERE (the caller file) — not the caller's source body.
     expect(text).toContain('feature.ts');
-    // The direct covering test file is surfaced.
+    // The direct covering test file is surfaced, and is NOT one of the callers.
     expect(text).toMatch(/tests:.*feature\.test\.ts/);
+    const line = text.split('\n').find((value) => value.startsWith('- `target`'))!;
+    expect(line).toMatch(/1 production dependent \+ 1 test file/);
   });
 
   it('surfaces tests that cover a symbol transitively through its callers (#1475)', async () => {
@@ -123,10 +125,31 @@ describe('codegraph_explore — blast radius', () => {
 
     expect(line).toBeDefined();
     expect(line).toMatch(/2 callers in `src\/callers\.ts`/);
-    expect(line).toMatch(/2 importers in/);
-    expect(line).toContain('`src/importer-only.ts`');
+    // ONE importer, not two: the file node and its caller are the same
+    // dependency, and the segment counts the specific symbol.
+    expect(line).toMatch(/1 importer in `src\/importer-only\.ts`/);
     expect(line).not.toMatch(/\b[3-9]\d* callers\b/);
-    expect(line).toMatch(/\b4 dependents:/);
+    // The headline splits the two categories explicitly: every dependent here is
+    // production code, and the total is the sum of the segments below it.
+    expect(line).toMatch(/3 production dependents/);
+    expect(line).not.toMatch(/test file/);
+  });
+
+  it('counts a test caller as a test file, never as a production caller (#caller-count)', async () => {
+    // Reported: the bullet read `2 callers in src/feature.ts` where the truth was
+    // one production caller plus one test in a DIFFERENT file — the count took
+    // the whole kind while the file list took only its production half.
+    const res = await handler.execute('codegraph_explore', { query: 'target' });
+    const line = res.content[0].text.split('\n').find((value) => value.startsWith('- `target`'));
+
+    expect(line).toBeDefined();
+    // One caller, and the file the same segment names is the file it is in.
+    expect(line).toMatch(/1 caller in `src\/feature\.ts`/);
+    expect(line).not.toMatch(/2 callers? in `src\/feature\.ts`/);
+    // The headline counts production code and test files separately, so neither
+    // number can be read as the other category's.
+    expect(line).toMatch(/1 production dependent \+ 1 test file/);
+    expect(line).toMatch(/tests: `src\/feature\.test\.ts`/);
   });
 
   it('omits symbols that have no dependents from the blast radius', async () => {

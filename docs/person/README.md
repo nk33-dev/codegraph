@@ -53,6 +53,7 @@ personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、ma
 - 匿名使用统计改为默认关闭；安装器默认不勾选，只有保存选择、`codegraph telemetry on` 或 `CODEGRAPH_TELEMETRY=1` 会开启。
 - 编辑后索引刷新补齐 grammar 预加载与引用解析，新符号和调用边在 `indexSynced:true` 前均可查询；直接 `apply:true` 与可选预览绑定的说明已统一。
 - `status` 区分 live/exited/stale daemon 快照；未知目标的意图词不再参与模糊检索；blast radius 分开统计 callers、importers 和 references。
+- 用户报告的两项 explore 输出问题：blast radius 行首的调用方数量与所列文件口径不一致（测试节点混入生产调用方，且模块 import 依赖与文件内符号重复计数），现在分类计数与文件位置同源；明确要求“相关测试”时测试文件默认只给测试摘要，测试源码需显式 `includeTestSource: true`，契约见[结构化查询](structured-queries.md#blast-radius-依赖分类)。
 
 - 跨文件重命名由“只报缺口”改为“LSP 优先、索引补全、补不了就拒绝”（AST 确认的位置才补编辑，结果标 `plannedBy`），契约见[结构化编辑](structured-edits.md#rename-completeness-guard)。
 - 唯一精确符号查询的意图词（定义/所有/调用方/相关测试）不再参与模糊匹配，契约见[结构化查询](structured-queries.md#意图词收束explore)。

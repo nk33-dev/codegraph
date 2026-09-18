@@ -902,6 +902,28 @@ const POINTER_MAX_FILES = 10;
  */
 const ELIDED_SYMBOL_CAP = 6;
 
+/**
+ * Header tag for a compact test-file section, and the size below which a test
+ * file is not worth summarizing at all (a 30-line suite already says everything
+ * the summary would, and the file itself is cheaper to read in place).
+ */
+const TEST_SUMMARY_TAG = 'test summary';
+const TEST_SUMMARY_MIN_LINES = 80;
+
+/**
+ * Per-test-symbol body cap inside a compact test-file section (see
+ * {@link buildTestFileSummary}). A test declaration bigger than this collapses to
+ * its declaration line plus the first {@link TEST_DECL_SAMPLE_LINES} lines, and
+ * says so in its own body.
+ */
+const TEST_DECL_BODY_MAX = 200;
+/** Sampled lines kept from an oversized test declaration. */
+const TEST_DECL_SAMPLE_LINES = 6;
+/** Test declarations named in one compact test-file section. */
+const TEST_DECL_CAP = 14;
+/** Exercised symbols named per test declaration before "+N more". */
+const TEST_DECL_CALLEE_CAP = 4;
+
 type ElidedSymbolRef = { name: string; kind: string; startLine: number };
 
 /**
@@ -926,6 +948,117 @@ export function symbolsBetweenRanges(
   }
   out.sort((a, b) => a.startLine - b.startLine);
   return out;
+}
+
+/**
+ * Compact replacement for a requested test file's SOURCE (see the explore render
+ * loop's test-summary branch).
+ *
+ * A natural-language query can ask for "related tests" without asking for the
+ * tests' bodies. Rendering them whole is how one such query reached 23.5K chars
+ * of which the test file was the bulk: at that point the response is mostly
+ * fixture literals, and the answer the agent asked for — where the tests are and
+ * what they exercise — is buried in it.
+ *
+ * So a test file renders as its test declarations plus a SAMPLED body each,
+ * paired with the production symbols those declarations actually reference. The
+ * full test references stay available the documented way rather than being
+ * guessed at: `codegraph_explore` with a test's name returns its exact body
+ * (test files are ordinary indexed files), and `includeTestSource: true` renders
+ * this whole file as source in the current call.
+ *
+ * @param nodes  the file's indexed symbols (test declarations included)
+ * @param lines  the file's current source, one entry per line
+ * @param withLineNumbers  number the emitted lines like every other source section
+ * @param callSites  every `line → symbol` edge leaving this file, targets resolved
+ */
+export function buildTestFileSummary(
+  nodes: readonly Node[],
+  lines: readonly string[],
+  withLineNumbers: boolean,
+  callSites: ReadonlyArray<{ line: number; name: string }>,
+): { body: string; ranges: ExploreLineRange[]; declarations: number; sampled: number } {
+  const numbered = (from: number, to: number): string =>
+    lines.slice(from - 1, to).map((text, i) => `${from + i}\t${text}`).join('\n');
+
+  // Infrastructure, not a test: the file node owns the whole file, test files
+  // import freely at the top (an `import` node's range can therefore name every
+  // import in it), and a data table or a `const` of fixtures is setup rather
+  // than a test. What is left is the behaviour — functions, methods, suites.
+  const CALLABLE = new Set([
+    'function', 'method', 'constructor', 'component', 'test', 'test_case',
+    'class', 'interface', 'enum', 'struct', 'trait', 'protocol',
+  ]);
+  const candidates = nodes
+    .filter((n) => n.startLine > 0 && (n.endLine ?? 0) > n.startLine)
+    .filter((n) => CALLABLE.has(n.kind) || /^describe|^suite$/i.test(n.name))
+    .sort((a, b) => a.startLine - b.startLine || (a.endLine ?? a.startLine) - (b.endLine ?? b.startLine));
+
+  // Overlapping declarations (a `describe` wrapping its cases, a suite class and
+  // its methods) render ONE span, not one each: slicing the current bytes once
+  // per member would re-emit the same lines with the same numbers.
+  const selected: Node[] = [];
+  let coveredTo = 0;
+  for (const node of candidates) {
+    if (node.startLine <= coveredTo) continue;
+    selected.push(node);
+    coveredTo = node.endLine ?? node.startLine;
+  }
+  const shown = selected.slice(0, TEST_DECL_CAP);
+
+  const blocks: string[] = [];
+  const ranges: ExploreLineRange[] = [];
+  let sampled = 0;
+  for (const node of shown) {
+    const end = node.endLine ?? node.startLine;
+    const size = end - node.startLine + 1;
+    let body: string;
+    if (size <= TEST_DECL_BODY_MAX) {
+      body = numbered(node.startLine, end);
+      ranges.push({ start: node.startLine, end });
+    } else {
+      sampled++;
+      const head = Math.min(end, node.startLine + TEST_DECL_SAMPLE_LINES - 1);
+      body = `${numbered(node.startLine, head)}\n… +${end - head} lines (test body elided — explore \`${node.name}\` for all of it)`;
+      ranges.push({ start: node.startLine, end: head });
+    }
+    // `startLine` can point at a decorator or an enclosing `describe`, so scan a
+    // few lines forward for the one that actually names the test.
+    let lineNo = node.startLine;
+    for (let k = 0; k < 4; k++) {
+      if ((lines[node.startLine - 1 + k] ?? '').includes(node.name)) { lineNo = node.startLine + k; break; }
+    }
+    const declaration = (lines[lineNo - 1] ?? '').trim();
+    // What this test exercises: the call edges whose site falls inside it,
+    // deduped and capped so one wide test cannot list thirty names.
+    const exercises: string[] = [];
+    for (const site of callSites) {
+      if (site.line < node.startLine || site.line > end) continue;
+      if (exercises.includes(site.name)) continue;
+      exercises.push(site.name);
+    }
+    const named = exercises.slice(0, TEST_DECL_CALLEE_CAP);
+    const moreCalls = exercises.length - named.length;
+    const comment = named.length > 0
+      ? `  // exercises ${named.join(', ')}${moreCalls > 0 ? `, +${moreCalls} more` : ''}`
+      : '';
+    // The declaration line is named from the INDEX when the source line cannot
+    // be found (a symbol whose `startLine` moved after an edit), so it can never
+    // be duplicated above the body it heads.
+    const heading = declaration.includes(node.name) ? declaration : node.name;
+    blocks.push(`${withLineNumbers ? `${lineNo}\t` : ''}${heading}${comment}\n${body}`);
+  }
+
+  let body = blocks.join('\n\n');
+  const omitted = selected.length - shown.length;
+  if (omitted > 0) body += `\n\n// … +${omitted} more test declaration${omitted === 1 ? '' : 's'} in this file`;
+  if (sampled > 0) body += `\n// ${sampled} test bod${sampled === 1 ? 'y' : 'ies'} sampled above — explore a test by name for its full body`;
+  if (body.trim().length === 0) {
+    // Nothing indexed to summarize: name the file rather than emit an empty
+    // fence, so the response still says WHERE this test file is.
+    body = `${numbered(1, Math.min(lines.length, 3))}\n// … ${lines.length} lines of test source (no indexed test declaration)`;
+  }
+  return { body, ranges, declarations: selected.length, sampled };
 }
 
 /**
@@ -1448,6 +1581,11 @@ export const tools: ToolDefinition[] = [
         includeChanges: {
           type: 'boolean',
           description: 'explore only: attach Git changes, affected entries, and related tests.',
+          default: false,
+        },
+        includeTestSource: {
+          type: 'boolean',
+          description: 'explore only: when the query asks for related tests, render those test files as full source instead of the default compact summary (test declarations, what each exercises, sampled bodies). Omit it — a later explore of a test NAME returns that test\'s exact body.',
           default: false,
         },
         baseRef: {
@@ -3397,7 +3535,8 @@ export class ToolHandler {
       let incoming: Array<{ node: Node; edge: Edge }> = [];
       try { incoming = cg.getCallers(root.id) as Array<{ node: Node; edge: Edge }>; } catch { /* skip this root */ }
 
-      // A dependent can have several incoming-edge kinds; keep its strongest semantic role.
+      // A dependent can have several incoming-edge kinds; keep its strongest
+      // semantic role.
       const classified = new Map<string, { node: Node; kind: BlastRadiusDependentKind }>();
       for (const item of incoming) {
         if (!item?.node) continue;
@@ -3408,33 +3547,74 @@ export class ToolHandler {
           kind: existing ? strongerBlastRadiusKind(existing.kind, candidate) : candidate,
         });
       }
-      const uniq = [...classified.values()].map((item) => item.node);
-      if (uniq.length === 0) continue; // no blast radius → nothing to flag
 
+      // A file node reached through its own `imports` edge is the SAME dependency
+      // as the symbol inside it, counted twice — `src/feature.ts`'s module node
+      // imports the target that `src/feature.ts`'s `caller` also calls. Symbols
+      // win; the file node is kept only where no symbol from that file is a
+      // dependent at all, which is a genuine fact (the query's `widgetRender`
+      // fixture: a file that imports and never calls).
+      const byFile = new Map<string, Map<string, { node: Node; kind: BlastRadiusDependentKind }>>();
+      for (const entry of classified.values()) {
+        const file = rel(entry.node.filePath);
+        const bucket = byFile.get(file);
+        if (bucket) bucket.set(entry.node.id, entry);
+        else byFile.set(file, new Map([[entry.node.id, entry]]));
+      }
+      const specific: Array<{ node: Node; kind: BlastRadiusDependentKind }> = [];
+      for (const bucket of byFile.values()) {
+        const symbols = [...bucket.values()].filter((entry) => entry.node.kind !== 'file');
+        specific.push(...(symbols.length > 0 ? symbols : [...bucket.values()]));
+      }
+      if (specific.length === 0) continue; // no blast radius → nothing to flag
+
+      // Each kind is split into production dependents and test dependents BEFORE
+      // the count and the file list are derived, and both come from the SAME
+      // slice. Counting a kind's whole membership while listing only its
+      // production files is what made `1 caller in main.ts` print as
+      // `2 callers in main.ts` — the second one being a test — right next to a
+      // Requested View that correctly separated the two. The headline counts
+      // production DEPENDENTS and test FILES, so the two numbers cannot overlap.
       const byKind: Record<BlastRadiusDependentKind, Node[]> = { calls: [], imports: [], references: [] };
-      for (const item of classified.values()) byKind[item.kind].push(item.node);
+      for (const entry of specific) byKind[entry.kind].push(entry.node);
       const segments: string[] = [];
       const dependentTestFiles = new Set<string>();
+      let productionDependents = 0;
       for (const kind of BLAST_RADIUS_KIND_ORDER) {
         const nodes = byKind[kind];
         if (nodes.length === 0) continue;
-        const files = [...new Set(nodes.map((node) => rel(node.filePath)))];
-        for (const file of files) if (isTestFile(file)) dependentTestFiles.add(file);
-        const nonTest = files.filter((file) => !isTestFile(file));
-        const shown = nonTest.slice(0, FILE_CAP).map((file) => `\`${file}\``).join(', ');
-        const more = nonTest.length > FILE_CAP ? ` +${nonTest.length - FILE_CAP} more` : '';
+        const production = nodes.filter((node) => !isTestFile(rel(node.filePath)));
+        for (const node of nodes) {
+          const file = rel(node.filePath);
+          if (isTestFile(file)) dependentTestFiles.add(file);
+        }
+        if (production.length === 0) continue; // tests only — reported in the tests clause
+        productionDependents += production.length;
+        const files = [...new Set(production.map((node) => rel(node.filePath)))];
+        const shown = files.slice(0, FILE_CAP).map((file) => `\`${file}\``).join(', ');
+        const more = files.length > FILE_CAP ? ` +${files.length - FILE_CAP} more` : '';
         const where = shown ? ` in ${shown}${more}` : '';
         const [one, many] = BLAST_RADIUS_KIND_LABELS[kind];
-        segments.push(`${nodes.length} ${nodes.length === 1 ? one : many}${where}`);
+        segments.push(`${production.length} ${production.length === 1 ? one : many}${where}`);
       }
 
       const testFiles = [...dependentTestFiles];
-      const tests = testFiles.length > 0
-        ? `; tests: ${testFiles.slice(0, FILE_CAP).map((file) => `\`${file}\``).join(', ')}${testFiles.length > FILE_CAP ? ` +${testFiles.length - FILE_CAP}` : ''}`
-        : this.indirectTestNote(cg, uniq, rel);
+      const testCount = testFiles.length;
+      const tests = testCount > 0
+        ? `; tests: ${testFiles.slice(0, FILE_CAP).map((file) => `\`${file}\``).join(', ')}${testCount > FILE_CAP ? ` +${testCount - FILE_CAP}` : ''}`
+        : this.indirectTestNote(cg, specific.map((entry) => entry.node).filter((n) => n.kind !== 'file'), rel);
+      // Two numbers that cannot overlap: production DEPENDENT SYMBOLS and test
+      // FILES. A file node double-counted with its own symbols is why this used
+      // to read higher than the caller list under it.
+      const breakdown = `${productionDependents} production dependent${productionDependents === 1 ? '' : 's'}`
+        + (testCount > 0 ? ` + ${testCount} test file${testCount === 1 ? '' : 's'}` : '');
+      const segmentsText = segments.length > 0 ? `: ${segments.join('; ')}` : '';
+      const testTail = tests || (testCount > 0
+        ? `; ${testCount} test file${testCount === 1 ? '' : 's'} depend on this`
+        : '');
 
       entries.push(
-        `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${uniq.length} dependent${uniq.length === 1 ? '' : 's'}: ${segments.join('; ')}${tests}`,
+        `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${breakdown}${segmentsText}${testTail}`,
       );
     }
     if (entries.length === 0) return '';
@@ -3448,19 +3628,24 @@ export class ToolHandler {
   }
 
   /**
-   * Test-coverage note for a blast-radius entry whose DIRECT callers include no
-   * test file. A helper called only by production code can still be exercised
-   * by tests further up the caller chain (#1475: 40% of directly-unflagged
-   * symbols had a test within 2-3 hops), so walk up to 2 more hops before
-   * claiming anything — and even then claim only what was measured.
+   * Test-coverage note for a blast-radius entry whose production dependents
+   * include no test file. A helper called only by production code can still be
+   * exercised by tests further up the caller chain (#1475: 40% of
+   * directly-unflagged symbols had a test within 2-3 hops), so walk up to 2 more
+   * hops before claiming anything — and even then claim only what was measured.
+   *
+   * `dependents` are SYMBOLS: a file node reached by its import edge is a
+   * container, and `getCallers` on a container walks importers rather than the
+   * call graph the hop count describes.
    */
-  private indirectTestNote(cg: CodeGraph, directCallers: Node[], rel: (p: string) => string): string {
-    const MAX_HOPS = 3; // direct callers are hop 1
+  private indirectTestNote(cg: CodeGraph, dependents: Node[], rel: (p: string) => string): string {
+    const MAX_HOPS = 3; // direct dependents are hop 1
     const BUDGET = 64;  // getCallers lookups per entry — bounds god-fan-in symbols
     const FILE_CAP = 2;
+    if (dependents.length === 0) return `; no tests found within ${MAX_HOPS} caller hops`;
     let budget = BUDGET;
-    const visited = new Set(directCallers.map((n) => n.id));
-    let frontier = directCallers;
+    const visited = new Set(dependents.map((n) => n.id));
+    let frontier = dependents;
     for (let hop = 2; hop <= MAX_HOPS && frontier.length > 0 && budget > 0; hop++) {
       const next: Node[] = [];
       const found = new Set<string>();
@@ -3486,10 +3671,10 @@ export class ToolHandler {
       frontier = next;
     }
     // Budget exhaustion means hops 2-3 weren't fully searched — fall back to
-    // the weaker claim that IS established by the direct-caller check.
+    // the weaker claim that IS established by the direct-dependents check.
     return budget > 0
       ? `; no tests found within ${MAX_HOPS} caller hops`
-      : '; no test calls this directly';
+      : '; no test reaches this within the hops searched';
   }
 
   /**
@@ -3653,6 +3838,13 @@ export class ToolHandler {
     const focusedRelationSources = new Map<string, { source: Node; line: number; origins: Set<'graph' | 'lsp'> }>();
     const queryIntent = parseQueryIntent(query);
     const requestedTests = queryIntent.tests;
+    // "Include the relevant tests" means include the TESTS, not their bodies:
+    // every text segment inside them is fixture literal. The default is
+    // therefore the compact summary (see `buildTestFileSummary`), and rendering
+    // the source is the explicit opt-in. A plain query — one that never asked
+    // for tests — is untouched, so a test file reached incidentally still renders
+    // exactly as it always did.
+    const compactTestFiles = requestedTests && args.includeTestSource !== true;
     const focusedFilePriority = new Map<string, number>();
     if (pinnedFiles.length === 0 && unresolvedPathSpans.length === 0 && !changeIntent) {
       const codeTokens = [...new Set(
@@ -5190,7 +5382,7 @@ export class ToolHandler {
          * it). The loop itself charges the real cost — see `sectionCost`.
          */
         overhead: number;
-        mode: 'whole' | 'clusters' | 'focused' | 'skeleton';
+        mode: 'whole' | 'clusters' | 'focused' | 'skeleton' | 'test-summary';
         clipped: boolean;
         /** The undeduped render, kept for the no-new-source fallback. */
         fullBody: string;
@@ -5414,6 +5606,55 @@ export class ToolHandler {
           });
           continue;
         }
+      }
+
+      // Requested test file → a compact summary instead of its source, decided
+      // BEFORE the whole-file and cluster arms below. A query that asks for
+      // "related tests" is asking WHERE the tests are and what they exercise;
+      // rendering the bodies whole is what made one such response 23.5K chars of
+      // mostly fixture literals — and because a test file is usually small, the
+      // whole-file arm would otherwise ship it entire before any summary path
+      // was consulted. `includeTestSource: true` (or a query that never asked for
+      // tests) renders it as source, exactly as before.
+      if (compactTestFiles && isTestFile(filePath) && fileLines.length > TEST_SUMMARY_MIN_LINES) {
+        const callSites: Array<{ line: number; name: string }> = [];
+        for (const node of fileIndexNodes) {
+          let outgoing: Edge[] = [];
+          try { outgoing = cg.getOutgoingEdges(node.id); } catch { continue; }
+          for (const edge of outgoing) {
+            if (!edge.line || edge.line <= 0) continue;
+            if (!['calls', 'references', 'instantiates', 'navigates'].includes(edge.kind)) continue;
+            const target = subgraph.nodes.get(edge.target) ?? cg.getNode(edge.target);
+            if (!target || isTestFile(target.filePath)) continue;
+            callSites.push({ line: edge.line, name: lastQualifierPart(target.qualifiedName) });
+          }
+        }
+        const summary = buildTestFileSummary(fileIndexNodes, fileLines, withLineNumbers, callSites);
+        const testTag = `${TEST_SUMMARY_TAG} — ${summary.declarations} declaration${summary.declarations === 1 ? '' : 's'}, bodies sampled; explore a test by name for its body, or \`includeTestSource: true\` for the source; do NOT Read`;
+        const testHeader = fileSectionHeader(filePath, testTag);
+        const summaryCost = testHeader.length + 2 + summary.body.length + lang.length + 11;
+        if (summary.body.length <= fundedHeadroom && totalChars + summaryCost <= renderCeiling) {
+          emitFileSection({
+            header: testHeader,
+            body: summary.body,
+            ranges: summary.ranges,
+            covered: [],
+            overhead: 260,
+            mode: 'test-summary',
+            clipped: true,
+            fullBody: summary.body,
+            fullRanges: summary.ranges,
+          });
+          continue;
+        }
+        // Too tight even for the summary. A file the loop already reserved bytes
+        // for is never silently dropped: name it, so a follow-up call can ask for
+        // its tests by name.
+        const pointer = pointerLineFor(filePath, group.nodes);
+        lines.push(testHeader, '', pointer, '');
+        totalChars += testHeader.length + pointer.length + 4;
+        diag?.recordRender(filePath, 'test-summary', 0, true);
+        continue;
       }
 
       // Whole-file rule: if a relevant file is small enough to afford, return it
