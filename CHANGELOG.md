@@ -15,6 +15,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Personal fork
 
 - `v1.6.0-personal.6` 收敛 MCP 固定表面与重复说明，稳定 stale/status 输出，补充首调用时延观测，并交付 personal.5 后续的遥测、编辑索引刷新和跨平台修复。
+- 个人发布改由 GitHub Actions 完整构建、验证和上传：`personal` 作为 fork 默认分支注册发布工作流，标签从包版本自动推导并绑定精确提交，开发机不再生成或上传发布资产。
 - 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,024`，保留 `codegraph_explore`、`codegraph_edit` 及全部参数和 Graph/LSP 能力；工具描述不再随仓库规模变化，重复响应尾注与重复的「已展示源码视为已读取」声明同步收敛。
 - P0 公共契约修正：默认表面不再读取仓库规模；显式 `CODEGRAPH_MCP_TOOLS` 严格按白名单返回；`maxFiles` 移除错误的固定默认值；`mode` 明确列出结构化模式；explore 响应只陈述本次调用事实。
 - stale banner、footer 和文本 status 改用稳定状态并按路径排序；结构化 status 只排序、不删除既有时间字段。跨调用源码去重继续默认关闭，并补齐无会话记录、新会话和文件恢复后的边界验证。

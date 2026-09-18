@@ -7,9 +7,11 @@
 - 常规 CI 在 Windows、Ubuntu、macOS 执行 `npm ci`、build 和全量测试。
 - `Hardening` 夜间/手动工作流验证三平台安装包、三平台原生 kernel、真实 TypeScript/Python LSP，以及 daemon/事务恢复和并发客户端。
 - `Personal Release` 手动工作流验证并上传个人 `.tgz` 与 `SHA256SUMS`，创建或刷新个人 GitHub prerelease，不写回分支、不发布 npm。
+- GitHub 默认分支设为 `personal`，让个人工作流可被 Actions 注册；`main` 继续只同步上游。发布资产由 GitHub runner 构建和上传，不要求开发机持续运行。
 - 上游 `Release` 工作流增加仓库身份保护，在 `nk33-dev/codegraph` 不运行上游标签、PAT、npm scope 和 `main` 写回流程。
 - 根包元数据指向 `nk33-dev/codegraph`，并设置 `private: true`，防止把根包误发到 registry。版本号和包名未擅自修改。
 - 安装产物验证覆盖 doctor、构建指纹、UI/WASM 资源、Graph 查询、编辑预览、事务 apply 和相同 operation ID 重放。
+- 工作流按包版本推导 tag，先确认同一提交的 CI 成功，再用精确 `GITHUB_SHA` 创建标签；既有 tag 指向其他提交时拒绝覆盖。
 
 ## 评测记录要求
 

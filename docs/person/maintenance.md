@@ -73,3 +73,7 @@ Long-lived entry points and contracts are written into the corresponding feature
 - First verify your own package name, download repository, update source and workflow write-back branch; do not revert to the upstream release target or write personal release commits to main.
 - GitHub commands explicitly specify `--repo nk33-dev/codegraph`; disabling upstream's pushurl does not prevent mistaken gh operations. Commits, pushes, tags and releases are performed as authorized by the user.
 - Plan, implementation, verification and release are described separately, and a successful release does not mean installation and running have been tested in practice.
+- GitHub 默认分支是 `personal`，使该分支上的 `workflow_dispatch` 能被 Actions 注册；本地 `main` 仍只快进同步 `upstream/main`，两者职责不同。
+- 常规个人发布不在开发机生成或上传资产。完成版本与发行说明提交后，只推送 `personal`，等待同一提交的三平台 CI 成功，再触发 `Personal Release`；GitHub runner 负责 build、隔离安装、`npm pack`、`SHA256SUMS`、标签和 prerelease。
+- AI 不得为了发布在本地运行 `npm run build`、`npm test`、`npm run verify:personal-install`、`npm pack` 或 `gh release create/upload`。只有 GitHub Actions 不可用且用户明确要求本地故障回退时，才允许复现远端步骤，并记录原因与清理结果。
+- `Personal Release` 的 tag 输入可留空，由 `package.json` 自动推导；工作流必须用触发时的 `GITHUB_SHA` 创建标签，并拒绝覆盖指向其他提交的既有标签。

@@ -67,6 +67,22 @@ codegraph doctor --json
 
 `v1.6.0-personal.6` 的个人版 `upgrade` 只解析 `nk33-dev/codegraph` 的 GitHub Release，不会下载官方发行版。它从最近 20 个发布中按语义版本选择最新版本（含 prerelease）的 `.tgz`，也支持 `codegraph upgrade <tag>` / `CODEGRAPH_VERSION` 固定版本、`--check` 只检查和 `--force` 重装。原地升级只接受当前 npm 全局目录里的安装；源码 checkout、项目局部安装、npx 和未知布局不会被替换或悄悄新建另一份全局安装。升级后用 `doctor --json` 校验版本、个人发行身份和包路径，确认 PATH 没有遮蔽才刷新客户端配置。旧版可使用上述固定 Release 安装命令切换到新版。
 
+## 在 GitHub 发布
+
+个人 fork 的 GitHub 默认分支是 `personal`，因此该分支上的 `Personal Release` 可直接从 Actions 页面或 CLI 触发。常规发布不依赖开发机持续开机，也不在本地生成 `.tgz`：
+
+1. 在 `personal` 完成版本号、lockfile、发行说明和分层提交；
+2. 一次推送 `personal`，等待同一提交的 Windows、Ubuntu、macOS CI 全部成功；
+3. 触发 `Personal Release`（tag 可留空，工作流按 `package.json` 自动推导）；
+4. GitHub runner 重新安装依赖、构建、隔离验证、打包、生成 `SHA256SUMS`，并把精确提交 SHA 标记为 prerelease。
+
+```powershell
+gh workflow run "Personal Release" --repo nk33-dev/codegraph --ref personal
+gh run list --repo nk33-dev/codegraph --workflow "Personal Release" --limit 1
+```
+
+工作流会拒绝以下情况：同一提交的 CI 尚未成功、输入 tag 与包版本不一致、发行说明缺失，或既有 tag 指向另一个提交。AI 常规发布不得在本地运行 build、全量测试、隔离安装、`npm pack` 或 `gh release create/upload`；本地只保留开发所需的快速检查，发布产物与临时构建由 runner 生命周期自动清理。
+
 ## 切换已有安装
 
 先用 `Get-Command codegraph -All` 和 `doctor` 确认入口。安装包验证完成后再处理旧的 npm 全局版与独立安装版，避免安装失败时失去可用入口。不要执行 `codegraph uninit`，它会删除项目索引。
@@ -75,4 +91,4 @@ MCP 如果配置的是 `command = "codegraph"`，会跟随启动它的应用所�
 
 ## 开发验证
 
-日常修改先运行 `npm run check:quick`，或用 `npm run test:focused -- <test files>` 指定专项测试。`npm run build`、`npm test` 与 `npm run verify:personal-install` 留给共享核心、构建/安装器和发布前检查，不在每次小改动后重复执行。具体改动、测试结果和环境范围见[开发验证记录](test-repairs.md)，项目首页只介绍功能和用法。
+日常修改先运行 `npm run check:quick`，或用 `npm run test:focused -- <test files>` 指定专项测试。本地完整构建只用于确有必要的共享核心、构建/安装器调试；发布前的 build、全量测试和隔离安装由 GitHub CI / `Personal Release` 执行，不在开发机重复。具体改动、测试结果和环境范围见[开发验证记录](test-repairs.md)，项目首页只介绍功能和用法。

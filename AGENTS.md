@@ -5,7 +5,7 @@ CodeGraph 是本地代码图、CLI 与 MCP 工具的个人 fork。只做用户�
 ## 协作与分支
 
 - 中文交流和新增注释，代码标识符保持英文；修改前读懂相关文件，技术不确定时查文档。
-- `main` 只快进同步 `upstream/main`；`personal` 维护个人功能，短期分支从它创建并合回。提交用 `type(scope): 中文说明`。
+- `main` 只快进同步 `upstream/main`；`personal` 维护个人功能并作为个人 fork 的 GitHub 默认分支，短期分支从它创建并合回。提交用 `type(scope): 中文说明`。
 - GitHub 操作指定 `--repo nk33-dev/codegraph`。提交、推送、标签和发布按用户授权执行，不沿用上游维护者的远端、机器或发布配置。
 - 修改功能时同步更新[个人文档](docs/person/README.md)，区分计划、实现、验证与发布。
 
@@ -14,8 +14,8 @@ CodeGraph 是本地代码图、CLI 与 MCP 工具的个人 fork。只做用户�
 - 已有 `.codegraph/` 时优先用 CodeGraph 查结构与调用链；索引不覆盖的内容再定向搜索，过期结果核对源码，不擅自建立新索引。
 - 公共入口是 `src/index.ts`；多处使用的图推导放 `src/graph/`，避免 CLI/MCP/UI 各算一套。MCP 用法说明只维护 `src/mcp/server-instructions.ts`。
 - 同步前读[维护流程](docs/person/maintenance.md)：按旧入口到现模块映射迁移行为，保持单一运行入口；Git 无冲突不能替代语义检查。大版本/重构在同步分支验证，保留合并历史，数据迁移先在副本验证恢复。
-- 开发中先运行 `npm run check:quick`，它只做类型检查和受影响测试；也可用 `npm run test:focused -- <test files>` 明确指定。只有共享核心、构建/安装器、跨平台流程、发布前检查或用户明确要求时才运行完整 `npm run build` 与 `npm test`，同一提交内容未变化时不重复跑全量。安装器变更补契约测试及 CHANGELOG；纯文档检查差异和链接。核对实际产物与平台，未运行或失败的检查不得称为通过。
-- 个人发布方案未适配前，不直接运行上游发布流程或向上游 npm 包名发布；不主动改版本和包名。
+- 开发中先运行 `npm run check:quick`，它只做类型检查和受影响测试；也可用 `npm run test:focused -- <test files>` 明确指定。只有共享核心、构建/安装器、跨平台流程或用户明确要求时才在本地运行完整 `npm run build` 与 `npm test`，同一提交内容未变化时不重复跑全量。个人发布的完整构建、全量测试、隔离安装、打包、校验和与 Release 上传全部交给 GitHub CI / `Personal Release`，AI 不在本地执行 `npm run build`、`npm test`、`verify:personal-install`、`npm pack` 或 `gh release create/upload`，除非用户明确要求本地故障回退。安装器变更补契约测试及 CHANGELOG；纯文档检查差异和链接。核对实际产物与平台，未运行或失败的检查不得称为通过。
+- 个人发布只从 `personal` 的干净提交触发 GitHub `Personal Release`，并等待同一提交的 CI 成功；不直接运行上游发布流程、不从本地上传资产、不向上游 npm 包名发布。版本和标签只在用户明确授权发布时修改。
 
 ## 按任务读取
 
