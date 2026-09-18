@@ -16,6 +16,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,024`，保留 `codegraph_explore`、`codegraph_edit` 及全部参数和 Graph/LSP 能力；工具描述不再随仓库规模变化，重复响应尾注与重复的「已展示源码视为已读取」声明同步收敛。
 - P0 公共契约修正：默认表面不再读取仓库规模；显式 `CODEGRAPH_MCP_TOOLS` 严格按白名单返回；`maxFiles` 移除错误的固定默认值；`mode` 明确列出结构化模式；explore 响应只陈述本次调用事实。
+- stale banner、footer 和文本 status 改用稳定状态并按路径排序；结构化 status 只排序、不删除既有时间字段。跨调用源码去重继续默认关闭，并补齐无会话记录、新会话和文件恢复后的边界验证。
 - 首次工具调用的等待时间与检索耗时分开记账：MCP 服务端分别记录 catch-up 门等待（`resource-metrics.json` 的 `catchUp`，`codegraph status` 显示其 p95）和检索耗时，`CODEGRAPH_MCP_TIMINGS=1` 时逐调用在 stderr 输出 `catchUp/retrieval/total/chars`；对账门与超时降级行为不变，本轮不实现窄查询快路径（停机期间删除的文件没有等价的新鲜度检查）。
 - 评估脚本的 explore sufficiency 输出新增回退比例行（explore 返回的文件又被 Read 的比例、未返回文件的 Read、grep/glob），用于判断是否需要加强提示；工具不重命名。
 - 匿名使用统计改为默认关闭：未显式开启时不记录、不落盘也不联网；安装器默认不勾选，仍可用 `codegraph telemetry on` 或 `CODEGRAPH_TELEMETRY=1` 主动开启。旧版自动生成的 `default-notice` 记录不再视为显式同意。

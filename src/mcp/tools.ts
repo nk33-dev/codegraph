@@ -31,7 +31,7 @@ import {
   worktreeMismatchNotice,
   type WorktreeIndexMismatch,
 } from '../sync/worktree';
-import type { PendingFile } from '../sync';
+import { pendingFileState, sortPendingFiles, type PendingFile } from '../sync';
 import { indexedFileFreshness } from '../sync/file-freshness';
 import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';import type { Node, Edge, EdgeKind, SearchResult, Subgraph, NodeKind } from '../types';
 import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
@@ -1060,14 +1060,10 @@ const EPILOGUE_LOST_NOTE = '> Pointer list omitted for size. Shown source is ver
  * without waiting for the debounced sync (issue #403).
  */
 export function formatStaleBanner(stale: PendingFile[]): string {
-  const now = Date.now();
-  const lines = stale.map((p) => {
-    const ageMs = Math.max(0, now - p.lastSeenMs);
-    const label = p.indexing ? 'indexing in progress' : 'pending sync';
-    return `  - ${p.path} (edited ${ageMs}ms ago, ${label})`;
-  });
+  const ordered = sortPendingFiles(stale);
+  const lines = ordered.map((p) => `  - ${p.path} (${pendingFileState(p)})`);
   return (
-    '⚠️ Some files referenced below were edited since the last index sync — ' +
+    `⚠️ ${ordered.length} file(s) below changed since the last index sync; ` +
     'their codegraph entries may be stale:\n' +
     lines.join('\n') +
     '\nFor accurate content of those specific files, Read them directly. ' +
@@ -1082,15 +1078,12 @@ export function formatStaleBanner(stale: PendingFile[]): string {
  */
 export function formatStaleFooter(stale: PendingFile[]): string {
   const MAX = 5;
-  const now = Date.now();
-  const shown = stale.slice(0, MAX);
-  const lines = shown.map((p) => {
-    const ageMs = Math.max(0, now - p.lastSeenMs);
-    return `  - ${p.path} (edited ${ageMs}ms ago)`;
-  });
-  const more = stale.length > MAX ? `\n  - …and ${stale.length - MAX} more` : '';
+  const ordered = sortPendingFiles(stale);
+  const shown = ordered.slice(0, MAX);
+  const lines = shown.map((p) => `  - ${p.path} (${pendingFileState(p)})`);
+  const more = ordered.length > MAX ? `\n  - …and ${ordered.length - MAX} more` : '';
   return (
-    `(Note: ${stale.length} file(s) elsewhere in this project are pending index ` +
+    `(Note: ${ordered.length} file(s) elsewhere in this project are pending index ` +
     `sync but were not referenced above:\n${lines.join('\n')}${more})`
   );
 }
@@ -7165,11 +7158,8 @@ export class ToolHandler {
     const pending = cg.getPendingFiles();
     if (pending.length > 0) {
       lines.push('', '**Pending sync:**');
-      const now = Date.now();
-      for (const p of pending) {
-        const ageMs = Math.max(0, now - p.lastSeenMs);
-        const label = p.indexing ? 'indexing in progress' : 'pending sync';
-        lines.push(`- ${p.path} (edited ${ageMs}ms ago, ${label})`);
+      for (const p of sortPendingFiles(pending)) {
+        lines.push(`- ${p.path} (${pendingFileState(p)})`);
       }
     }
 

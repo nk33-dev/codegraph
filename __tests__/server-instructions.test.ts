@@ -65,8 +65,7 @@ describe('MCP 常驻说明', () => {
   /**
    * P2 问题 11：always-load 的固定上下文成本要可分解、可回归。
    *
-   * 实测（2026-09-17，直接序列化当前构建产物）：常驻说明 2,214、默认 tools/list
-   * 4,977（explore 3,017 / 描述 184，edit 1,957 / 描述 356）。
+   * 最终合并态直接序列化：常驻说明 2,214、默认 tools/list 4,810。
    * always-loaded 与 deferred 的差额就是 tools/list 这部分：Claude Code 的
    * ToolSearch 之前，工具定义本来不进上下文，所以这笔固定成本必须单独有上限。
    * 上限只用来发现「悄悄变胖」，所以留了约 3% 余量，不是精确值断言。
@@ -79,10 +78,10 @@ describe('MCP 常驻说明', () => {
     const toolsList = JSON.stringify(surface).length;
 
     expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(2_300);
-    expect(toolsList).toBeLessThanOrEqual(5_100);
+    expect(toolsList).toBeLessThanOrEqual(4_850);
     expect(JSON.stringify(explore).length).toBeLessThanOrEqual(3_150);
     expect(JSON.stringify(edit).length).toBeLessThanOrEqual(2_050);
-    expect(SERVER_INSTRUCTIONS.length + toolsList).toBeLessThanOrEqual(7_400);
+    expect(SERVER_INSTRUCTIONS.length + toolsList).toBeLessThanOrEqual(7_100);
   });
 
   /**

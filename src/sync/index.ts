@@ -14,6 +14,11 @@
  */
 
 export { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './watcher';
+export {
+  pendingFileState,
+  sortPendingFiles,
+  type PendingFileStateName,
+} from './watcher';
 export { watchDisabledReason, detectWsl } from './watch-policy';
 export {
   installGitSyncHook,

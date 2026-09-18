@@ -247,6 +247,19 @@ export interface PendingFile {
   indexing: boolean;
 }
 
+/** 模型可见的待同步状态名。 */
+export type PendingFileStateName = 'pending sync' | 'indexing';
+
+/** 把 watcher 内部状态转换为稳定、简短的模型可见状态。 */
+export function pendingFileState(file: Pick<PendingFile, 'indexing'>): PendingFileStateName {
+  return file.indexing ? 'indexing' : 'pending sync';
+}
+
+/** 按路径稳定排序，避免文件事件到达顺序改变模型可见输出。 */
+export function sortPendingFiles<T extends { path: string }>(files: readonly T[]): T[] {
+  return [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
 /**
  * FileWatcher monitors a project directory for changes and triggers
  * debounced sync operations via a provided callback.

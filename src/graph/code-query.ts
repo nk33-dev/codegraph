@@ -1,7 +1,7 @@
 import * as path from 'path';
 import type CodeGraph from '../index';
 import type { Edge, GraphStats, Language, Node } from '../types';
-import type { PendingFile } from '../sync';
+import { sortPendingFiles, type PendingFile } from '../sync';
 import type { LspCapabilities, LspServerState, LspServerStatus } from '../lsp/manager';
 import { indexedFileFreshness, type FileFreshness } from '../sync/file-freshness';
 import { isConfigLeafNode, validatePathWithinRoot } from '../utils';
@@ -416,7 +416,7 @@ export function buildIndexBlock(
   return {
     lastIndexedAt: cg.getLastIndexedAt(), watching: cg.isWatching(),
     degraded: cg.isWatcherDegraded(), degradedReason: cg.getWatcherDegradedReason(),
-    pendingFiles: pending.slice(0, STATE_PATH_LIMIT), pendingFileCount: pending.length,
+    pendingFiles: sortPendingFiles(pending).slice(0, STATE_PATH_LIMIT), pendingFileCount: pending.length,
     pendingReferences: cg.getPendingReferenceCount(),
     changes: changes ? {
       added: changes.added.slice(0, STATE_PATH_LIMIT), modified: changes.modified.slice(0, STATE_PATH_LIMIT),

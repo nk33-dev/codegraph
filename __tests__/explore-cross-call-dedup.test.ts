@@ -307,6 +307,8 @@ describe('a second call against a real index', () => {
         .toBeGreaterThan(20);
     } finally {
       fs.writeFileSync(target, original, 'utf-8');
+      // 还原后立即把索引恢复到同一状态，避免 watcher 的防抖窗口污染后续按字节比较用例。
+      await cg.sync();
     }
   }, 120_000);
 
@@ -400,5 +402,26 @@ describe('a second call against a real index', () => {
     }
     const spentOnFreshSource = two.files.reduce((s: number, f: { emittedChars: number }) => s + f.emittedChars, 0);
     expect(spentOnFreshSource).toBeGreaterThan(0);
+  }, 120_000);
+
+  it('caller 没有会话记录时绝不省略源码', async () => {
+    const previous = process.env.CODEGRAPH_EXPLORE_DEDUP;
+    process.env.CODEGRAPH_EXPLORE_DEDUP = '1';
+    try {
+      const first = await explore(QUERY);
+      const second = await explore(QUERY);
+      expect(second).toBe(first);
+      expect(second).not.toContain(POINTER);
+    } finally {
+      if (previous === undefined) delete process.env.CODEGRAPH_EXPLORE_DEDUP;
+      else process.env.CODEGRAPH_EXPLORE_DEDUP = previous;
+    }
+  }, 120_000);
+
+  it('新会话不复用上一会话的源码记录', async () => {
+    const first = await explore(QUERY, new ExploreSessionState());
+    const reconnected = await explore(QUERY, new ExploreSessionState());
+    expect(reconnected).toBe(first);
+    expect(reconnected).not.toContain(POINTER);
   }, 120_000);
 });

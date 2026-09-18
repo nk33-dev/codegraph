@@ -19,6 +19,7 @@
 | 本地入口、doctor、GitHub 安装、版本切换、daemon 版本切换与索引升级 | [个人使用与安装](personal-usage.md) |
 | 资源档位、查询池自动缩容与 LSP 预算 | [资源档位与自动回收](resource-governance.md) |
 | MCP 固定表面、缓存稳定性与字符开销边界 | [MCP 表面与缓存稳定性](mcp-surface.md) |
+| Explore stale 输出稳定性与跨调用去重边界 | [Explore 响应稳定性](explore-response.md) |
 | 首调用 catch-up 时延、alwaysLoad 固定成本与 explore→Read 回退比例 | [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md) |
 | Steps、Windows 清理、WASM 测试运行与性能修复 | [开发验证记录](test-repairs.md) |
 
@@ -46,6 +47,7 @@ personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、ma
 
 - 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,024`，并移除随项目规模变化的工具描述；默认表面、白名单、`maxFiles` 和结构化模式契约见 [MCP 表面与缓存稳定性](mcp-surface.md)。
 - 首调用时延拆成「catch-up 等待」与「检索」两段分别记账（`CODEGRAPH_MCP_TIMINGS=1` 可逐调用输出，`codegraph status` 显示 p95），并保留对账门与超时降级；alwaysLoad 固定成本与 explore→Read 回退比例的测量口径和决策见 [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md)。
+- stale 文本改为稳定状态并按路径排序，结构化 status 保持原字段兼容；未加入未经模型级 A/B 验证的预算实验逻辑，见 [Explore 响应稳定性](explore-response.md)。
 - 匿名使用统计改为默认关闭；安装器默认不勾选，只有保存选择、`codegraph telemetry on` 或 `CODEGRAPH_TELEMETRY=1` 会开启。
 - 编辑后索引刷新补齐 grammar 预加载与引用解析，新符号和调用边在 `indexSynced:true` 前均可查询；直接 `apply:true` 与可选预览绑定的说明已统一。
 - `status` 区分 live/exited/stale daemon 快照；未知目标的意图词不再参与模糊检索；blast radius 分开统计 callers、importers 和 references。

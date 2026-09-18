@@ -20,12 +20,12 @@
  * left untouched.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import CodeGraph from '../src/index';
-import { ToolHandler } from '../src/mcp/tools';
+import { formatStaleBanner, formatStaleFooter, ToolHandler } from '../src/mcp/tools';
 import { __emitWatchEventForTests, __setFsWatchForTests } from '../src/sync/watcher';
 
 function waitFor(condition: () => boolean, timeoutMs = 2000, intervalMs = 25): Promise<void> {
@@ -71,6 +71,7 @@ describe('MCP staleness banner', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     __setFsWatchForTests(null); // reset the injected fs.watch seam
     try { cg.unwatch(); } catch { /* ignore */ }
     try { cg.close(); } catch { /* ignore */ }
@@ -113,13 +114,55 @@ describe('MCP staleness banner', () => {
     expect(res.isError).toBeFalsy();
     const text = res.content[0].text;
 
-    // Banner shape: warning glyph + filename + actionable instruction.
+    // Banner shape: warning glyph + count + filename + actionable instruction.
     expect(text.startsWith('⚠️')).toBe(true);
     expect(text).toContain('src/alpha-only.ts');
-    expect(text).toMatch(/edited \d+ms ago/);
+    expect(text).toContain('(pending sync)');
+    expect(text).not.toMatch(/edited \d+ms ago/);
     expect(text).toMatch(/Read them directly/);
     // The actual result must still follow the banner.
     expect(text).toMatch(/alphaOnly/);
+  });
+
+  it('相同待同步状态不受时间戳和事件顺序影响', () => {
+    const first = [
+      { path: 'src/bravo-only.ts', firstSeenMs: 100, lastSeenMs: 900, indexing: false },
+      { path: 'src/alpha-only.ts', firstSeenMs: 50, lastSeenMs: 800, indexing: true },
+    ];
+    const second = [
+      { path: 'src/alpha-only.ts', firstSeenMs: 5000, lastSeenMs: 9000, indexing: true },
+      { path: 'src/bravo-only.ts', firstSeenMs: 6000, lastSeenMs: 10000, indexing: false },
+    ];
+
+    expect(formatStaleBanner(second)).toBe(formatStaleBanner(first));
+    expect(formatStaleFooter(second)).toBe(formatStaleFooter(first));
+    expect(formatStaleBanner(first).indexOf('src/alpha-only.ts'))
+      .toBeLessThan(formatStaleBanner(first).indexOf('src/bravo-only.ts'));
+  });
+
+  it('status 按路径稳定排列待同步文件，同时保留结构化时间字段', async () => {
+    vi.spyOn(cg, 'getPendingFiles').mockReturnValue([
+      { path: 'src/charlie-only.ts', firstSeenMs: 30, lastSeenMs: 31, indexing: false },
+      { path: 'src/alpha-only.ts', firstSeenMs: 10, lastSeenMs: 11, indexing: false },
+      { path: 'src/bravo-only.ts', firstSeenMs: 20, lastSeenMs: 21, indexing: true },
+    ]);
+
+    const text = (await handler.execute('codegraph_status', {})).content[0].text;
+    const listed = text.split('\n')
+      .filter((line) => line.startsWith('- src/'))
+      .map((line) => line.slice(2, line.indexOf(' (')));
+    expect(listed).toEqual([
+      'src/alpha-only.ts',
+      'src/bravo-only.ts',
+      'src/charlie-only.ts',
+    ]);
+
+    const structured = await handler.execute('codegraph_explore', {
+      mode: 'status', query: 'status', backend: 'graph',
+    });
+    const pending = (structured.structuredContent as { index: { pendingFiles: Array<{ lastSeenMs: number }> } })
+      .index.pendingFiles;
+    expect(pending.map((item) => item.lastSeenMs)).toEqual([11, 21, 31]);
   });
 
   it('uses the footer (not the banner) when pending files are not referenced', async () => {
