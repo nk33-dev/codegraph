@@ -1,3 +1,9 @@
+/**
+ * MCP 固定表面：初始化说明与默认 tools/list 的字符预算和语义边界。
+ *
+ * 预算固定在当前实测值附近，任何一次「顺手多说一句」都会在这里失败；同时用语义断言保证
+ * 为了压字符不把关键安全约束删掉（P0 问题 2 的验证要求）。
+ */
 import { afterEach, describe, expect, it } from 'vitest';
 import { getStaticTools } from '../src/mcp/tools';
 import {
@@ -23,10 +29,10 @@ describe('MCP 常驻说明', () => {
     expect(SERVER_INSTRUCTIONS).toContain('codegraph_explore');
     expect(SERVER_INSTRUCTIONS).toContain('codegraph_edit');
     expect(SERVER_INSTRUCTIONS).not.toMatch(/single tool|There is a single tool/i);
-    expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(2_500);
-    expect(SERVER_INSTRUCTIONS_NO_ROOT_INDEX.length).toBeLessThanOrEqual(700);
-    expect(serialized.length).toBeLessThanOrEqual(6_500);
-    expect(SERVER_INSTRUCTIONS.length + serialized.length).toBeLessThanOrEqual(9_000);
+    expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(2_300);
+    expect(SERVER_INSTRUCTIONS_NO_ROOT_INDEX.length).toBeLessThanOrEqual(500);
+    expect(serialized.length).toBeLessThanOrEqual(4_850);
+    expect(SERVER_INSTRUCTIONS.length + serialized.length).toBeLessThanOrEqual(7_100);
   });
 
   it('保持单个默认工具描述简洁', () => {
@@ -35,8 +41,25 @@ describe('MCP 常驻说明', () => {
     const explore = surface.find((tool) => tool.name === 'codegraph_explore')!;
     const edit = surface.find((tool) => tool.name === 'codegraph_edit')!;
 
-    expect(explore.description.length).toBeLessThanOrEqual(300);
-    expect(edit.description.length).toBeLessThanOrEqual(400);
+    expect(explore.description.length).toBeLessThanOrEqual(200);
+    expect(edit.description.length).toBeLessThanOrEqual(200);
+    // 单个工具的完整定义（描述 + schema + 注解）也设上限，防止参数说明无限增长。
+    expect(JSON.stringify(explore).length).toBeLessThanOrEqual(3_100);
+    expect(JSON.stringify(edit).length).toBeLessThanOrEqual(1_900);
+  });
+
+  it('压缩后仍保留源码完整性、编辑安全与未索引项目的约束', () => {
+    // 源码完整性边界：缺口意味着省略，编辑前要按名字重新查询。
+    expect(SERVER_INSTRUCTIONS).toMatch(/gap|truncation/i);
+    expect(SERVER_INSTRUCTIONS).toContain('query the missing symbol or range before editing it');
+    expect(SERVER_INSTRUCTIONS).toContain('Treat displayed lines as already read');
+    // 编辑安全：预览默认开启，只有 canApply 为真且 blockers 为空才应用。
+    expect(SERVER_INSTRUCTIONS).toContain('canApply:true');
+    expect(SERVER_INSTRUCTIONS).toMatch(/blockers/);
+    // 未索引项目：改用内置工具，索引是用户的决定。
+    expect(SERVER_INSTRUCTIONS).toMatch(/no \`\.codegraph\/\`/);
+    expect(SERVER_INSTRUCTIONS).toContain('do not run');
+    expect(SERVER_INSTRUCTIONS_NO_ROOT_INDEX).toContain('projectPath');
   });
 
   /**

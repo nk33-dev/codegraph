@@ -44,7 +44,7 @@ personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、ma
 
 以下用户报告问题的实现，**未推送、未发布，也不在 personal.4 安装包里**：
 
-- 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,191`，并移除随项目规模变化的工具描述；契约见 [MCP 表面与缓存稳定性](mcp-surface.md)。
+- 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,024`，并移除随项目规模变化的工具描述；默认表面、白名单、`maxFiles` 和结构化模式契约见 [MCP 表面与缓存稳定性](mcp-surface.md)。
 - 首调用时延拆成「catch-up 等待」与「检索」两段分别记账（`CODEGRAPH_MCP_TIMINGS=1` 可逐调用输出，`codegraph status` 显示 p95），并保留对账门与超时降级；alwaysLoad 固定成本与 explore→Read 回退比例的测量口径和决策见 [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md)。
 - 匿名使用统计改为默认关闭；安装器默认不勾选，只有保存选择、`codegraph telemetry on` 或 `CODEGRAPH_TELEMETRY=1` 会开启。
 - 编辑后索引刷新补齐 grammar 预加载与引用解析，新符号和调用边在 `indexSynced:true` 前均可查询；直接 `apply:true` 与可选预览绑定的说明已统一。

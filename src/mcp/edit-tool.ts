@@ -23,7 +23,10 @@ export const EDIT_TOOL_ANNOTATIONS: ToolAnnotations = {
 export const editTools: ToolDefinition[] = [
   {
     name: 'codegraph_edit',
-    description: 'Edit an indexed symbol: rename, replace its definition, or insert code. Preview is default and reports canApply/blockers. Direct apply:true needs no IDs; it replans, verifies, and writes transactionally. For a reviewed two-step write, pass expectPreviewHash and reuse operationId. Rename uses LSP plus verified Graph references. Unsafe targets are refused.',
+    // 工具描述保持「一句话定位 + 何时使用」（P0 问题 2）：apply/previewHash/operationId 的用法
+    // 属于参数行为，写在 schema 里；「canApply 为真且 blockers 为空才应用」以及重命名只认
+    // 语言服务器 + 已核实 Graph 引用的约束，在初始化说明的 Editing 段声明一次。
+    description: 'Structured write to indexed code: rename a symbol, replace its definition, or insert code. Previews by default; a direct apply replans, verifies, and writes transactionally.',
     inputSchema: {
       type: 'object',
       properties: {

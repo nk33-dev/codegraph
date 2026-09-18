@@ -1384,21 +1384,21 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_explore',
-    // 「已展示源码视为已读取」只在初始化说明里声明一次（P2 问题 12）：工具描述
-    // 保持「一句话定位 + 何时使用」，重复声明既占固定字节，也会让两处措辞漂移。
-    description: 'Primary read tool for indexed code. Ask a question or name symbols/files to get current line-numbered source, flow evidence, and blast radius. Non-default modes return structured JSON.',
+    // 「已展示源码视为已读取」只在初始化说明里声明一次（P0 问题 2）：工具描述保持
+    // 「一句话定位 + 何时使用」，参数行为只写在 schema 里，两处措辞不会再各自漂移。
+    description: 'Primary read tool for indexed code: ask a question or name symbols/files for current line-numbered source, flow evidence, and blast radius. Other modes return structured JSON.',
     inputSchema: {
       type: 'object',
       properties: {
         mode: {
           type: 'string',
-          description: 'explore=source/flow; definitions, references, symbols, diagnostics, impact, tests, and status return structured JSON.',
+          description: 'explore (default) = source/flow; other modes return structured JSON: definitions, references, symbols, diagnostics, impact, tests, status.',
           enum: ['explore', ...CODE_QUERY_MODES],
           default: 'explore',
         },
         backend: {
           type: 'string',
-          description: 'Structured modes only: graph (default), lsp, auto (LSP with graph fallback), or both (merged). diagnostics requires LSP; tests requires graph. LSP must already be configured.',
+          description: 'Structured modes only: graph, lsp, auto (LSP with graph fallback), or both (merged). diagnostics requires LSP; tests requires graph.',
           enum: [...CODE_QUERY_BACKENDS],
           default: 'graph',
         },
@@ -1408,8 +1408,8 @@ export const tools: ToolDefinition[] = [
         },
         files: {
           type: 'array',
-          items: { type: 'string', description: 'Project-relative changed file.' },
-          description: 'tests only: changed files; query may contain the same paths.',
+          items: { type: 'string', description: 'Project-relative path.' },
+          description: 'tests only: project-relative changed files; query may contain the same paths.',
         },
         depth: {
           type: 'number',
@@ -1447,8 +1447,9 @@ export const tools: ToolDefinition[] = [
         },
         maxFiles: {
           type: 'number',
-          description: 'explore only: maximum source files.',
-          default: 12,
+          // 公共契约不再声明固定默认值（P0 问题 4）：未指定时由运行时按项目规模分档决定，
+          // getExploreOutputBudget() 是唯一事实来源。写死 12 与实际的 4/5/8 不符。
+          description: 'explore only: max source files; omit it to use the default for the project-size tier.',
         },
         includeChanges: {
           type: 'boolean',
@@ -1560,13 +1561,11 @@ function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
 }
 
 /**
- * Allowlist-filtered tool definitions WITHOUT an engine — the static surface the
- * proxy answers `tools/list` with before any project is open.
+ * 无引擎时的白名单过滤工具定义 —— 静态代理在任何项目打开前用它回应 `tools/list`。
  *
- * 与已加载项目的表面一致：工具描述是静态的（不含文件数、调用预算或时间），
- * 所以「先回答 tools/list、之后打开项目」不会让已经进过上下文的定义变样。
- * 唯一按状态变化的只有 `projectPath` 是否必填（无默认项目时由
- * {@link withRequiredProjectPath} 标记），这里对应的是「还没有项目」那一支。
+ * 与 {@link ToolHandler.getTools} 的无 CodeGraph 分支完全同形：默认表面只含
+ * explore + edit，描述与 schema 都是静态字面量，不含文件数、调用预算或时间，也不随已索引
+ * 项目规模变化（P0 问题 1）。仓库规模建议只在具体查询响应里按需出现。
  */
 export function getStaticTools(): ToolDefinition[] {
   const raw = process.env.CODEGRAPH_MCP_TOOLS;
@@ -1798,12 +1797,23 @@ export class ToolHandler {
     return !allow || allow.has(name.replace(/^codegraph_/, ''));
   }
 
-  /** Return stable tool definitions after applying the optional allowlist and tiny-repo gate. */
+  /**
+   * 返回本轮 `tools/list` 的工具定义。
+   *
+   * 表面只由 `CODEGRAPH_MCP_TOOLS` 决定：有白名单就严格按白名单返回，否则是
+   * DEFAULT_MCP_TOOLS。两者都与仓库规模、索引状态和时间无关，所以同一配置下序列化字节
+   * 完全一致，工具定义在一个会话里不会变样（P0 问题 1）。
+   *
+   * 历史上这里还会读取 `getStats()` 并按文件数过滤小仓库工具。那个判断对默认路径
+   * （explore + edit，两者都在小仓库核心集里）完全无效，唯一的实际效果是删掉白名单
+   * 显式启用的工具 —— 小仓库里 `callers/node/search` 会被静默移除（P0 问题 5）。
+   * 契约是"显式白名单完全替换默认表面"，规模判断已删除。
+   */
   getTools(): ToolDefinition[] {
     const allow = this.toolAllowlist();
-    // No explicit allowlist → the default surface (see DEFAULT_MCP_TOOLS for the evidence).
-    // An allowlist replaces the default entirely, so any defined tool can be re-enabled.
-    let visible = allow
+    // 无显式白名单 → 默认表面（依据见 DEFAULT_MCP_TOOLS）；有白名单则完全替换默认表面，
+    // 任何已定义的工具都能被重新启用。
+    const visible = allow
       ? allTools.filter(t => allow.has(t.name.replace(/^codegraph_/, '')))
       : allTools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
     // No default project loaded → no-root-index case (#993): a gateway server
@@ -1814,52 +1824,10 @@ export class ToolHandler {
     // wasn't enough (the reporter had to add an AGENTS.md note). `this.cg` is
     // settled by `retryInitIfNeeded()` before `handleToolsList` calls us, so a
     // null here means "genuinely no default", not a startup race. When a default
-    // IS open we leave projectPath optional (below): a bare call falls back to
-    // it, exactly as in the common single-project launch.
+    // IS open we leave projectPath optional: a bare call falls back to it,
+    // exactly as in the common single-project launch.
     if (!this.cg) return withRequiredProjectPath(visible);
-
-    try {
-      const stats = this.cg.getStats();
-      // Tiny-repo tool gating: on projects under TINY_REPO_FILE_THRESHOLD
-      // files, only expose the core trio (search, node, explore) — one
-      // below even the 4-tool default: at this scale callers, too, reduces
-      // to one grep. (Historical note: the audit below ran when context and
-      // trace still existed; its "5 core tools" are today's trio.)
-      //
-      // n=2 audits ruled out cutting below 5 tools:
-      // - 3-tool gate (search + context + trace): cost regressed on
-      //   cobra/ky/sinatra. The agent fell back to raw Reads to cover
-      //   what codegraph_node + codegraph_explore would have answered.
-      // - 1-tool gate (search only): catastrophic regression — express
-      //   went from -43% WIN to +107% LOSS. With only search, the agent
-      //   can't navigate the call graph structurally and reads everything.
-      //
-      // 5 is the empirical lower bound. Tools beyond search/context/
-      // node/explore/trace pay overhead that the agent doesn't recoup
-      // on tiny-repo flow questions.
-      // ITER4: raise threshold 150 → 500 so single-file frameworks
-      // (sinatra at 159, slim_framework around 200) also get the
-      // 5-tool surface. The empirical 5-tool floor was set on <150
-      // probes; iter3 measurement showed sinatra is structurally the
-      // SAME problem as cobra (single-file WITHOUT-arm Read wins),
-      // so it deserves the same gating.
-      const TINY_REPO_FILE_THRESHOLD = 500;
-      const TINY_REPO_CORE_TOOLS = new Set([
-        'codegraph_explore',
-        'codegraph_search',
-        'codegraph_node',
-        // Personal fork: the edit tool stays listed on a small repo too — a write capability that
-        // disappears exactly where it is first tried would be worse than one extra tool definition.
-        'codegraph_edit',
-      ]);
-      if (stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
-        visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name));
-      }
-
-      return visible;
-    } catch {
-      return visible;
-    }
+    return visible;
   }
 
   /**
@@ -4794,8 +4762,8 @@ export class ToolHandler {
     // (SQLInsert/Update/Delete/AggregateCompiler) in 2,266 lines. Such files are
     // huge and read-anyway, so they should STILL skeletonize even when the agent
     // named a method in them: a full one eats ~6.5K of the explore budget (Django
-    // is pinned at the 28K cap, truncating), starving the sibling files the agent
-    // then Reads. This flag OVERRIDES the named-callable spare below — it does NOT
+    // is pinned at the current 24K cap, truncating), starving the sibling files
+    // the agent then Reads. This flag OVERRIDES the named-callable spare below — it does NOT
     // by itself spare a file. (OkHttp's RealCall implements the `Lockable` mixin
     // but defines no ≥3-impl supertype, so the named spare keeps it full.)
     const superMany = new Map<string, boolean>();
@@ -4819,7 +4787,10 @@ export class ToolHandler {
     // Recorded so the drift pass below (#1474) can append a per-file exception
     // to this guarantee after the render loop knows which files drifted.
     const verbatimHeaderIdx = lines.length;
-    lines.push('> Numbered lines are current source excerpts. Gaps mark omitted code; query missing names or ranges before editing.');
+    // 这一行同时是 dedup 回指与 drift 例外的挂载点，所以它必须在，但只陈述本次输出的事实：
+    // 「已展示源码视为已读取」「缺口要看名字再编辑」属于通用契约，已在初始化说明里声明一次
+    // （P0 问题 2），逐次重复只是固定开销。
+    lines.push('> Lines below are verbatim, current source excerpts.');
     lines.push('');
 
     // The response's absolute cap. It MUST stay under the host's inline
@@ -6404,7 +6375,7 @@ export class ToolHandler {
     // State which source ranges were returned; a trimmed excerpt is not a complete file.
     // Small projects omit the routine note, but actual trimming still explains how to fetch the rest.
     const completenessBlock: string[] = budget.includeCompletenessSignal
-      ? ['', '---', `> Shown source spans ${filesIncluded} files. Gaps and "Not shown above" were omitted; explore those names before editing.`]
+      ? ['', '---', `> Shown source spans ${filesIncluded} files; the rest are listed under "Not shown above".`]
       : anyFileTrimmed
         ? ['', '> Some source was trimmed. Gap markers name omitted symbols; explore those names for full bodies.']
         : [];
@@ -6840,9 +6811,13 @@ export class ToolHandler {
 
     // Read-parity windowing: `offset`/`limit` mean exactly what they do on Read
     // (1-based start line; max line count). Default: the whole file, capped like
-    // Read at 2000 lines and bounded by a char budget that tracks explore's
-    // proven-safe ~38k response ceiling. Overflow is stated explicitly (Read
-    // paginates too) — never the silent 15k truncateOutput chop.
+    // Read at 2000 lines and bounded by this mode's own char budget.
+    //
+    // 38,000 是历史值：写它的时候 explore 的上限还是 38K，所以这里跟着取了同一个数。
+    // explore 现在封顶 24K（约 25K 的行内工具结果上限），本模式刻意比 explore 宽，两者
+    // 已经不再共享同一个常量，这里的数字也不再由 explore 推导。改这个值属于检索预算
+    // 变更，必须走 A/B，本轮不动。Overflow is stated explicitly (Read paginates too) —
+    // never the silent 15k truncateOutput chop.
     const CHAR_BUDGET = 38000;
     const DEFAULT_LIMIT = 2000;
     const offset = Math.max(1, opts.offset ?? 1);

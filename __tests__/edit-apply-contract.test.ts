@@ -63,8 +63,11 @@ afterEach(() => {
 describe('codegraph_edit direct apply contract', () => {
   it('describes IDs as optional preview bindings', () => {
     const tool = editTools.find((item) => item.name === 'codegraph_edit')!;
-    expect(tool.description).toMatch(/Direct apply:true needs no IDs/);
-    expect(tool.description).not.toMatch(/with both ids/i);
+    // P0 问题 2：参数绑定语义写在 schema 与初始化说明里，工具描述只保留「一句话定位 +
+    // 何时使用」，所以这里断言它不再复述 apply/previewHash/operationId 的用法。
+    expect(tool.description).not.toMatch(/Direct apply:true needs no IDs|with both ids/i);
+    expect(tool.description).toMatch(/Previews by default/i);
+    expect(tool.inputSchema.properties.apply.description).toMatch(/IDs are optional/i);
     expect(tool.inputSchema.properties.expectPreviewHash.description).toMatch(/optional.*bind/i);
     expect(SERVER_INSTRUCTIONS).toMatch(/Direct .*apply:true.*needs no IDs/);
     expect(SERVER_INSTRUCTIONS).not.toMatch(/with both ids/i);
