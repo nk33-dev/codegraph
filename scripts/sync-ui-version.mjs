@@ -19,10 +19,17 @@
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = fileURLToPath(new URL('../package.json', import.meta.url));
-const ui = fileURLToPath(new URL('../ui/package.json', import.meta.url));
+const args = process.argv.slice(2);
+const rootFlag = args.indexOf('--root');
+const projectRoot = rootFlag >= 0 && args[rootFlag + 1]
+  ? resolve(args[rootFlag + 1])
+  : fileURLToPath(new URL('..', import.meta.url));
+const checkOnly = args.includes('--check');
+const root = resolve(projectRoot, 'package.json');
+const ui = resolve(projectRoot, 'ui', 'package.json');
 
 const engineVersion = JSON.parse(readFileSync(root, 'utf8')).version;
 const raw = readFileSync(ui, 'utf8');
@@ -31,6 +38,14 @@ const manifest = JSON.parse(raw);
 if (manifest.version === engineVersion) {
   console.log(`[sync-ui-version] ui already at ${engineVersion}`);
   process.exit(0);
+}
+
+if (checkOnly) {
+  console.error(
+    `[sync-ui-version] version mismatch: package.json=${engineVersion}, ` +
+    `ui/package.json=${manifest.version}; run \`npm run version:sync\` and commit both manifests`,
+  );
+  process.exit(1);
 }
 
 // A targeted replacement, not a re-serialise: rewriting the whole file would

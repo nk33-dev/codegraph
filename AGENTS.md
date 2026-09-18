@@ -8,6 +8,7 @@ CodeGraph 是本地代码图、CLI 与 MCP 工具的个人 fork。只做用户�
 - `main` 只快进同步 `upstream/main`；`personal` 维护个人功能并作为个人 fork 的 GitHub 默认分支，短期分支从它创建并合回。提交用 `type(scope): 中文说明`。
 - GitHub 操作指定 `--repo nk33-dev/codegraph`。提交、推送、标签和发布按用户授权执行，不沿用上游维护者的远端、机器或发布配置。
 - 修改功能时同步更新[个人文档](docs/person/README.md)，区分计划、实现、验证与发布。
+- 代码、命令、版本或发布状态变化必须在同一提交更新其唯一权威文档；修订时合并重复内容、删除过时现状，只把历史结果留在发行说明或验证记录。版本发布前运行 `npm run version:sync` 与 `npm run check:release-metadata`，不要手工漏改版本镜像。
 
 ## 必守约束
 

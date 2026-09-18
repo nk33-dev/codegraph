@@ -71,7 +71,7 @@ codegraph doctor --json
 
 个人 fork 的 GitHub 默认分支是 `personal`，因此该分支上的 `Personal Release` 可直接从 Actions 页面或 CLI 触发。常规发布不依赖开发机持续开机，也不在本地生成 `.tgz`：
 
-1. 在 `personal` 完成版本号、lockfile、发行说明和分层提交；
+1. 修改根版本后运行 `npm run version:sync`，再运行 `npm run check:release-metadata`；提交根 manifest、lockfile、UI manifest、发行说明和状态文档；
 2. 一次推送 `personal`，等待同一提交的 Windows、Ubuntu、macOS CI 全部成功；
 3. 触发 `Personal Release`（tag 可留空，工作流按 `package.json` 自动推导）；
 4. GitHub runner 重新安装依赖、构建、隔离验证、打包、生成 `SHA256SUMS`，并把精确提交 SHA 标记为 prerelease。
@@ -82,6 +82,8 @@ gh run list --repo nk33-dev/codegraph --workflow "Personal Release" --limit 1
 ```
 
 工作流会拒绝以下情况：同一提交的 CI 尚未成功、输入 tag 与包版本不一致、发行说明缺失，或既有 tag 指向另一个提交。AI 常规发布不得在本地运行 build、全量测试、隔离安装、`npm pack` 或 `gh release create/upload`；本地只保留开发所需的快速检查，发布产物与临时构建由 runner 生命周期自动清理。
+
+版本同步和文档治理的完整清单只维护在[维护流程](maintenance.md#发布前清单)，此处不复制细节。CI 会在构建前检查根包与 UI manifest 的版本一致性，避免等全量测试结束才暴露漏改。
 
 ## 切换已有安装
 

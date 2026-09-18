@@ -26,6 +26,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run check:release-metadata
       - name: Require successful CI for this commit
         env:
           GH_TOKEN: ${{ github.token }}

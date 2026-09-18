@@ -27,7 +27,7 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 
 ## 验证与发布
 
-本轮发行版本为 [v1.6.0-personal.7](releases/v1.6.0-personal.7.md)，修复精确自然语言查询的直接调用方覆盖、旧索引重命名安全门和大型编辑预览的默认上下文开销。最终本地验证边界与远端发行门禁见发行说明。
+当前已发布版本仍为 [v1.6.0-personal.6](releases/v1.6.0-personal.6.md)。[v1.6.0-personal.7](releases/v1.6.0-personal.7.md) 正在准备，修复精确自然语言查询的直接调用方覆盖、旧索引重命名安全门和大型编辑预览的默认上下文开销；最终状态以同一提交的三平台 CI 与 GitHub prerelease 为准。
 
 personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、macOS 重命名路径别名和 Windows 测试超时清理问题；后续补修与本地 31 项定向验证见[开发验证记录](test-repairs.md)。修复位于 personal 分支，不改写既有发行资产。
 

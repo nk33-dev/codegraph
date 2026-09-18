@@ -49,6 +49,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # 发布版本镜像必须在耗时构建前失败，避免全量测试结束才发现 UI 版本遗漏。
+      - run: npm run check:release-metadata
       - run: npm run build
       # 只跑 engine + ui 两个项目；串行严格计时的 perf 项目不在这里。
       - run: npm test -- --maxWorkers=${{ matrix.workers }}

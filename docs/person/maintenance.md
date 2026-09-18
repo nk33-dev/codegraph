@@ -66,6 +66,14 @@ The sync commit description or PR records: the original personal commits, the ve
 
 Long-lived entry points and contracts are written into the corresponding feature documents and updated as the feature changes, and historical entry points are not listed as the current implementation. Navigation does not pile up operation logs, and records contain no credentials or user source code text.
 
+### 文档生命周期
+
+- 每项行为、命令、配置、版本或发布状态变更，都必须在**同一提交**更新其唯一权威文档；不能把“稍后补文档”留给发布阶段。
+- 功能契约放对应专题文档，当前入口与导航放 `docs/person/README.md`，一次运行的证据放 `test-repairs.md`，不可变的版本说明放 `docs/person/releases/`。同一事实不要复制到多个现状文档。
+- 修改已有主题时优先改写原段落：合并重复说明，删除失效命令和旧现状。历史结论需要保留时移入验证记录或版本说明，并注明对应提交、平台和日期。
+- 发布准备要检查文档是否同时存在四类问题：过时、不一致、重复臃肿、缺少必要信息。发现其中任何一项都作为发布 blocker 处理。
+- 文档中的“当前版本”“已发布”“已通过”必须由实际标签、Release 或对应 CI 支撑；待发布版本只能写成“准备中”，不能提前改成已发布状态。
+
 ## 6. Personal release
 
 - The project name stays CodeGraph, without carrying over version suffixes from other projects; the version policy, npm scope and personal release process are settled before the first release, and the version and package name are not changed on our own initiative.
@@ -77,3 +85,12 @@ Long-lived entry points and contracts are written into the corresponding feature
 - 常规个人发布不在开发机生成或上传资产。完成版本与发行说明提交后，只推送 `personal`，等待同一提交的三平台 CI 成功，再触发 `Personal Release`；GitHub runner 负责 build、隔离安装、`npm pack`、`SHA256SUMS`、标签和 prerelease。
 - AI 不得为了发布在本地运行 `npm run build`、`npm test`、`npm run verify:personal-install`、`npm pack` 或 `gh release create/upload`。只有 GitHub Actions 不可用且用户明确要求本地故障回退时，才允许复现远端步骤，并记录原因与清理结果。
 - `Personal Release` 的 tag 输入可留空，由 `package.json` 自动推导；工作流必须用触发时的 `GITHUB_SHA` 创建标签，并拒绝覆盖指向其他提交的既有标签。
+
+### 发布前清单
+
+1. 只修改根 `package.json` 的目标版本，然后运行 `npm run version:sync`；该命令负责同步 `ui/package.json`。同时更新根 `package-lock.json` 的顶层与根包版本。
+2. 运行 `npm run check:release-metadata`。它是只读门禁，版本镜像不一致时立即失败；CI 和 Personal Release 都在耗时构建前执行同一检查。
+3. 新建 `docs/person/releases/v<version>.md`，并把 `docs/person/README.md` 明确写成“当前已发布版本”和“待发布版本”两种状态，不能混为一谈。
+4. 按“文档生命周期”复核安装命令、版本链接、实现状态与验证数字；删除重复现状，只在验证记录保留失败经过。
+5. 提交并推送干净的 `personal`，等待**同一提交**三平台 CI 成功。CI 失败必须把可复用原因写入维护规则或验证记录，而不是只修眼前文件。
+6. 只有用户仍授权发布且上述条件全部满足时，才触发 `Personal Release`；任何新提交都会使旧 CI 结论失效。
