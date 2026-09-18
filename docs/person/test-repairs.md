@@ -7,6 +7,7 @@
 - `npm run check:quick`：类型检查通过；关联测试 877 通过、3 跳过，唯一失败是 CLI 用例读取了构建前的旧 `dist`，源码侧断言与实现一致。
 - `npm run build`：通过；随后 `npm run test:focused -- __tests__/resource-status.test.ts` 为 10/10 通过，确认最终 CLI 产物包含 `failed` 指标。
 - 未运行模型级 A/B；本批不改变默认检索范围或预算，也不声称模型 token、Read/Grep 或墙钟收益。
+- personal.6 发布准备阶段执行 `npm run verify:personal-install` 通过，隔离 tarball 的 doctor、UI/WASM、Python 图查询、事务 apply 与幂等重放均正常。
 
 ## 2026-09-17：MCP 时延、常驻加载与 Read 回退（P2）
 

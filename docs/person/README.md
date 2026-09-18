@@ -27,7 +27,7 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 
 ## 验证与发布
 
-本轮发行版本为 [v1.6.0-personal.5](releases/v1.6.0-personal.5.md)，汇总 personal.4 后续修复及新增升级功能。四并发基线 CI `35217505615` 已三平台通过；随后功能的本地验证仍有一项 daemon 接管偶发失败，具体边界见发行说明。
+本轮发行版本为 [v1.6.0-personal.6](releases/v1.6.0-personal.6.md)，汇总 personal.5 后续正确性修复、MCP 固定表面和状态输出稳定性改进。最终本机构建与受影响测试结果、未执行的 Agent A/B 边界见发行说明。
 
 personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、macOS 重命名路径别名和 Windows 测试超时清理问题；后续补修与本地 31 项定向验证见[开发验证记录](test-repairs.md)。修复位于 personal 分支，不改写既有发行资产。
 
@@ -39,11 +39,11 @@ personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、ma
 
 随后三平台 CI `35214833215` 通过；进一步修复 Windows 索引超时后的连接泄漏、后台任务串扰和数据库线程提前返回，并恢复四并发。本机定向 10 文件、77 项通过；本批远端四并发结果待确认，详见[资源清理记录](test-repairs.md#2026-09-17windows-四并发与资源清理)。
 
-个人扩展通过 `personal` 分支维护；首个 GitHub prerelease 为 `v1.6.0-personal.1`，本批发行版本为 `v1.6.0-personal.4`。向 npm registry 安装上游包不会获得个人改动；个人版按[安装说明](personal-usage.md)从 GitHub Release `.tgz` 或固定标签安装。
+个人扩展通过 `personal` 分支维护；首个 GitHub prerelease 为 `v1.6.0-personal.1`，当前发行版本为 `v1.6.0-personal.6`。向 npm registry 安装上游包不会获得个人改动；个人版按[安装说明](personal-usage.md)从 GitHub Release `.tgz` 或固定标签安装。
 
-## 本批未发布改动（2026-09-17）
+## personal.6 发行内容（2026-09-18）
 
-以下用户报告问题的实现，**未推送、未发布，也不在 personal.4 安装包里**：
+以下用户报告问题纳入 `v1.6.0-personal.6`；实际发布状态以 GitHub Release 页面为准：
 
 - 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,024`，并移除随项目规模变化的工具描述；默认表面、白名单、`maxFiles` 和结构化模式契约见 [MCP 表面与缓存稳定性](mcp-surface.md)。
 - 首调用时延拆成「catch-up 等待」与「检索」两段分别记账（`CODEGRAPH_MCP_TIMINGS=1` 可逐调用输出，`codegraph status` 显示 p95），并保留对账门与超时降级；alwaysLoad 固定成本与 explore→Read 回退比例的测量口径和决策见 [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md)。

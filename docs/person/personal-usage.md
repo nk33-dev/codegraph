@@ -1,6 +1,6 @@
 # 个人使用与安装
 
-本轮面向个人开发和使用，不复制官方的多平台 npm 发行流程。本批个人版使用 `v1.6.0-personal.4` GitHub prerelease 交付 `.tgz`，不会发布到上游 npm scope，也不会自动替换这台机器上的全局 CodeGraph。
+本轮面向个人开发和使用，不复制官方的多平台 npm 发行流程。本批个人版使用 `v1.6.0-personal.6` GitHub prerelease 交付 `.tgz`，不会发布到上游 npm scope，也不会自动替换这台机器上的全局 CodeGraph。
 
 ## 开发时使用哪个入口
 
@@ -47,15 +47,15 @@ codegraph sync --upgrade-index --yes    # 非交互运行（agent/CI/git hook）
 安装机器使用 Node 20 至 24，推荐 Node 24。发布后可直接安装固定 Release 资产：
 
 ```powershell
-npm install -g "https://github.com/nk33-dev/codegraph/releases/download/v1.6.0-personal.4/colbymchenry-codegraph-1.6.0-personal.4.tgz"
+npm install -g "https://github.com/nk33-dev/codegraph/releases/download/v1.6.0-personal.6/colbymchenry-codegraph-1.6.0-personal.6.tgz"
 codegraph doctor --json
 ```
 
 需要从 Git 标签自行打包时，推荐分两步执行：
 
 ```powershell
-npm pack "github:nk33-dev/codegraph#v1.6.0-personal.4"
-npm install -g ".\colbymchenry-codegraph-1.6.0-personal.4.tgz"
+npm pack "github:nk33-dev/codegraph#v1.6.0-personal.6"
+npm install -g ".\colbymchenry-codegraph-1.6.0-personal.6.tgz"
 codegraph doctor --json
 ```
 
@@ -65,7 +65,7 @@ codegraph doctor --json
 
 准备脚本会构建 TypeScript、UI 并复制 SQL/WASM，`dist/` 仍不提交到 Git。源码安装使用本机 Node，普通 Git/npm 包不包含官方捆绑 Node 和 Rust 原生内核；解析使用已有 WASM 回退，不能套用官方原生内核的性能数字。语言服务器单独安装，不随包下载。
 
-`v1.6.0-personal.4` 的个人版 `upgrade` 只解析 `nk33-dev/codegraph` 的 GitHub Release，不会下载官方发行版。它从最近 20 个发布中按语义版本选择最新版本（含 prerelease）的 `.tgz`，也支持 `codegraph upgrade <tag>` / `CODEGRAPH_VERSION` 固定版本、`--check` 只检查和 `--force` 重装。原地升级只接受当前 npm 全局目录里的安装；源码 checkout、项目局部安装、npx 和未知布局不会被替换或悄悄新建另一份全局安装。升级后用 `doctor --json` 校验版本、个人发行身份和包路径，确认 PATH 没有遮蔽才刷新客户端配置。旧版 `v1.6.0-personal.3` 仍使用上述手动安装命令切换到新版。
+`v1.6.0-personal.6` 的个人版 `upgrade` 只解析 `nk33-dev/codegraph` 的 GitHub Release，不会下载官方发行版。它从最近 20 个发布中按语义版本选择最新版本（含 prerelease）的 `.tgz`，也支持 `codegraph upgrade <tag>` / `CODEGRAPH_VERSION` 固定版本、`--check` 只检查和 `--force` 重装。原地升级只接受当前 npm 全局目录里的安装；源码 checkout、项目局部安装、npx 和未知布局不会被替换或悄悄新建另一份全局安装。升级后用 `doctor --json` 校验版本、个人发行身份和包路径，确认 PATH 没有遮蔽才刷新客户端配置。旧版可使用上述固定 Release 安装命令切换到新版。
 
 ## 切换已有安装
 
