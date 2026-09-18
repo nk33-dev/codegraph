@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
-import { CodeGraph } from '../src';
+import { CodeGraph, type CodeEditResult } from '../src';
 import { clearLspConfigCache } from '../src/lsp/config';
 import { normalizeWorkspaceEdit } from '../src/lsp/manager';
 import { __setEditTransactionOperationFaultForTests } from '../src/edits/transaction';
@@ -424,6 +424,26 @@ describe('rename coverage completed from the index', () => {
     const applied = await cg.editCode({ ...request, apply: true, expectPreviewHash: preview.previewHash });
     expect(applied.status, applied.warnings.join('\n')).toBe('applied');
     expect(read('src/consumer.ts')).toContain('up.runUpgradeV2()');
+  }, 30_000);
+
+  it('旧提取版本阻止依赖 Graph 覆盖的跨文件重命名', async () => {
+    (cg as any).queries.setMetadata('indexed_with_extraction_version', '25');
+    expect(cg.isIndexStale()).toBe(true);
+    const request = { operation: 'rename' as const, symbol: 'runUpgrade', file: 'src/upgrade/updater.ts', newName: 'runUpgradeV2' };
+
+    const preview = await cg.editCode(request);
+    expect(preview).toMatchObject({ status: 'preview', canApply: false });
+    expect(preview.blockers).toContain('索引提取版本过旧，无法证明跨文件重命名覆盖完整；请先运行 codegraph sync --upgrade-index');
+
+    const mcp = await handler.execute('codegraph_edit', request);
+    expect(JSON.parse(mcp.content[0]!.text).blockers).toContain('索引提取版本过旧，无法证明跨文件重命名覆盖完整；请先运行 codegraph sync --upgrade-index');
+    expect((mcp.structuredContent as CodeEditResult).blockers).toContain('索引提取版本过旧，无法证明跨文件重命名覆盖完整；请先运行 codegraph sync --upgrade-index');
+
+    const applied = await cg.editCode({ ...request, apply: true });
+    expect(applied).toMatchObject({ status: 'rejected', canApply: false });
+    expect(applied.blockers).toContain('索引提取版本过旧，无法证明跨文件重命名覆盖完整；请先运行 codegraph sync --upgrade-index');
+    expect(read('src/upgrade/updater.ts')).toBe(UPDATER);
+    expect(read('__tests__/updater.test.ts')).toBe(TEST_FILE);
   }, 30_000);
 
   it('通过目录别名打开项目时，Graph 补全沿用该根目录且仍能应用', async () => {

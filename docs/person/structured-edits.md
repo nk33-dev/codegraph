@@ -107,11 +107,16 @@ The full phase-five contract is in [幂等与事务式结构化编辑](edit-tran
 
 JS/TS 的 `const mod = await import('./x')` 现在由 AST 提取 namespace binding，`mod.runUpgrade()` 可沿模块映射解析到导出符号并携带成员的准确位置；这不是正则文本替换。动态解构绑定、计算属性和运行时模块路径仍是不证明就不改的边界。检查只能证明图已知的缺口已覆盖，不能保证任意反射引用完整。
 
+编辑规划会先读取索引提取版本。旧索引仍可预览 `replace-body`、`insert-before`、`insert-after`，并给出升级提醒；当 rename 涉及跨文件覆盖或需要 Graph 补齐 LSP 缺口时，旧索引无法证明引用完整，结果固定返回 `canApply:false`，在 `blockers[]` 与文本摘要中提示运行 `codegraph sync --upgrade-index`。即使请求带 `apply:true`，也会在事务准备和写盘前以 `rejected` 拒绝。
+
+MCP/CLI 的默认文本只返回目标、`canApply`、blockers、文件/编辑统计、每文件最多三个代表编辑、`previewHash` 与 `operationId`；冲突、事务恢复和写后索引状态不会被隐藏。`structuredContent.files[].edits` 始终保留完整数据，`verbosePreview:true` 或 CLI `--verbose` 才让文本层输出完整 JSON。展示选项不参与请求哈希、预览哈希或 operation ID。
+
 ## Code ownership
 
 | Entry point | Responsibility |
 | --- | --- |
 | `src/edits/contract.ts` | request/result contract, statuses, validation, `previewHashOf`, sha256 helper |
+| `src/graph/incoming-relations.ts` | 结构化引用、explore 直接调用方与 rename 覆盖检查共用的 Graph 入边推导 |
 | `src/edits/text-edits.ts` | the single text-edit engine: line/offset arithmetic in UTF-16 units, validation, back-to-front application, preview line construction |
 | `src/edits/target.ts` | target resolution through the index (name or position), freshness gate, node-range → UTF-16 position conversion |
 | `src/edits/graph-edit.ts` | `replace-body` / `insert-before` / `insert-after` planning, declaration-modifier scan, fragment-kind list |

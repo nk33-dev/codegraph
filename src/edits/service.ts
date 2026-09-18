@@ -128,13 +128,23 @@ export async function editCode(
       result.routing.source = 'lsp';
       result.routing.lsp = { requested: true, available: true, family: plan.family, reason: null };
       result.blockers.push(...plan.blockers);
-      result.canApply = plan.blockers.length === 0;
+      const needsCrossFileCoverage = plan.files.length > 1
+        || plan.files.some((file) => file.edits.some((edit) => edit.plannedBy === 'graph'));
+      if (cg.isIndexStale() && needsCrossFileCoverage) {
+        const staleIndexBlocker = '索引提取版本过旧，无法证明跨文件重命名覆盖完整；请先运行 codegraph sync --upgrade-index';
+        result.blockers.push(staleIndexBlocker);
+        result.warnings.push(staleIndexBlocker);
+      }
+      result.canApply = result.blockers.length === 0;
       result.warnings.push(...plan.warnings);
     } else {
       const planned = planGraphEdit(request, target);
       result.files = [planned];
       result.routing.source = 'index';
       result.canApply = true;
+      if (cg.isIndexStale()) {
+        result.warnings.push('索引提取版本过旧；当前操作不依赖全项目引用覆盖，但建议运行 codegraph sync --upgrade-index');
+      }
       if (request.operation === 'replace-body') {
         // The replaced range is the definition's (modifiers included), which can start earlier than
         // the parser's node — report the range that is actually replaced.
@@ -167,6 +177,12 @@ export async function editCode(
   if (!request.apply) {
     result.status = 'preview';
     result.warnings.push('Nothing was written: this is a preview. Pass apply:true to write it; add expectPreviewHash and this operationId to bind the write to this preview (a mismatch then refuses with status="conflict" instead of writing).');
+    return result;
+  }
+
+  if (!result.canApply) {
+    result.status = 'rejected';
+    result.warnings.push('Nothing was written because this rename preview has apply blockers.');
     return result;
   }
 

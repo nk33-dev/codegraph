@@ -8,7 +8,7 @@
  */
 import type { ToolAnnotations, ToolDefinition } from './tools';
 
-const PROJECT_PATH_DESCRIPTION = 'Absolute path to the project to edit (or any directory inside it) — codegraph uses the nearest .codegraph/ index at or above that path. Omit to use this session\'s default project.';
+const PROJECT_PATH_DESCRIPTION = 'Project path; uses the nearest parent .codegraph index.';
 
 /** Editing mutates files, so it deliberately does NOT reuse the read-only annotations. */
 export const EDIT_TOOL_ANNOTATIONS: ToolAnnotations = {
@@ -63,6 +63,10 @@ export const editTools: ToolDefinition[] = [
           type: 'boolean',
           description: 'false previews; true replans, verifies, and writes. IDs are optional.',
           default: false,
+        },
+        verbosePreview: {
+          type: 'boolean',
+          description: 'Show full JSON text.',
         },
         expectPreviewHash: {
           type: 'string',

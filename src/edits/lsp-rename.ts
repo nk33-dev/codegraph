@@ -27,6 +27,7 @@ import { familyForLanguage, type LspFamily } from '../lsp/servers';
 import { uriToNormalizedPath } from '../lsp/uri';
 import { validatePathWithinRoot } from '../utils';
 import { indexedFileFreshness } from '../sync/file-freshness';
+import { collectIncomingRelations } from '../graph/incoming-relations';
 import {
   CodeEditRefusal,
   sha256,
@@ -102,10 +103,8 @@ function graphRenameLocations(
   if (!definition) throw new CodeEditRefusal('Cannot locate the indexed definition name for rename coverage.', 'stale');
   add({ filePath: target.filePath, line: definition.line + 1, column: definition.character, kind: 'definition', confirmed: true });
   let unverified = 0;
-  for (const edge of cg.getIncomingEdges(target.node.id)) {
+  for (const { edge, source } of collectIncomingRelations(cg, [target.node])) {
     if (!RENAME_REFERENCE_KINDS.has(edge.kind) || edge.provenance === 'heuristic' || edge.metadata?.synthesizedBy) continue;
-    const source = cg.getNode(edge.source);
-    if (!source) continue;
     let lines = linesByFile.get(source.filePath);
     if (!lines) {
       const absolute = validatePathWithinRoot(root, source.filePath);

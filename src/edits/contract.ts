@@ -68,6 +68,8 @@ export interface CodeEditRequest {
    * The hash and ID below are optional bindings for a reviewed two-step write.
    */
   apply?: boolean;
+  /** 仅影响 CLI/MCP 文本展示；结构化结果、预览哈希与 operation ID 不变。 */
+  verbosePreview?: boolean;
   /** apply only, optional: bind the write to a previous preview; a mismatch refuses to write. */
   expectPreviewHash?: string;
   /**
@@ -244,6 +246,9 @@ export function validateCodeEditRequest(request: CodeEditRequest): void {
   if (request.apply !== undefined && typeof request.apply !== 'boolean') {
     throw new CodeEditRefusal('apply must be boolean', 'error');
   }
+  if (request.verbosePreview !== undefined && typeof request.verbosePreview !== 'boolean') {
+    throw new CodeEditRefusal('verbosePreview must be boolean', 'error');
+  }
   if (request.operationId !== undefined && (
     typeof request.operationId !== 'string' || !OPERATION_ID_PATTERN.test(request.operationId)
   )) {
@@ -352,4 +357,43 @@ export function summarizeEditFiles(files: EditFilePreview[]): CodeEditSummary {
     deletions: files.reduce((sum, file) => sum + file.deletions, 0),
     previewTruncated: files.some((file) => file.previewTruncated),
   };
+}
+
+/** MCP/CLI 默认文本摘要；完整编辑始终保留在 structuredContent，verbose 时才原样输出。 */
+export function formatCodeEditText(result: CodeEditResult, verbose = false): string {
+  if (verbose) return JSON.stringify(result);
+  const compactText = (text: string): string => text.length <= 240 ? text : `${text.slice(0, 239)}…`;
+  const files = result.files.map((file) => ({
+    filePath: file.filePath,
+    operation: file.operation,
+    edits: file.edits.length,
+    snippets: file.edits.slice(0, 3).map((edit) => ({
+      line: edit.startLine,
+      column: edit.startColumn,
+      oldText: compactText(edit.oldText),
+      newText: compactText(edit.newText),
+      ...(edit.plannedBy ? { plannedBy: edit.plannedBy } : {}),
+    })),
+    previewTruncated: file.previewTruncated || file.edits.length > 3,
+  }));
+  return JSON.stringify({
+    status: result.status,
+    operation: result.operation,
+    applyRequested: result.applyRequested,
+    target: result.target ? {
+      name: result.target.name,
+      qualifiedName: result.target.qualifiedName,
+      filePath: result.target.filePath,
+    } : null,
+    canApply: result.canApply,
+    blockers: result.blockers,
+    summary: result.summary,
+    files,
+    previewHash: result.previewHash,
+    operationId: result.operationId,
+    routing: result.routing,
+    // 冲突、事务恢复和写后索引状态不能被摘要隐藏。
+    applied: result.applied,
+    warnings: result.warnings,
+  });
 }

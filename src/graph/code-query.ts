@@ -7,6 +7,7 @@ import { indexedFileFreshness, type FileFreshness } from '../sync/file-freshness
 import { isConfigLeafNode, validatePathWithinRoot } from '../utils';
 import { lookupSymbolNodes } from './symbol-lookup';
 import { analyzeImpact, findAffectedTests, DEFAULT_IMPACT_DEPTH, DEFAULT_TESTS_DEPTH } from './change-impact';
+import { collectIncomingRelations } from './incoming-relations';
 
 export const CODE_QUERY_MODES = ['definitions', 'references', 'symbols', 'diagnostics', 'status', 'impact', 'tests'] as const;
 export type CodeQueryMode = typeof CODE_QUERY_MODES[number];
@@ -593,22 +594,15 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     }
     result.routing.sources.graph = ordered.length;
   } else if (request.mode === 'references') {
-    const targets = new Map(nodes.map(n => [n.id, n]));
-    const edges = cg.getIncomingEdgesTo(nodes.map(n => n.id)).filter(e => e.kind !== 'contains');
-    const sources = new Map<string, Node>();
-    const references = edges.filter(e => {
-      const source = cg.getNode(e.source);
-      if (!source || isConfigLeafNode(source) || !validatePathWithinRoot(root, source.filePath)) return false;
-      sources.set(source.id, source);
-      return true;
-    }).sort((a, b) => compareNodes(sources.get(a.source)!, sources.get(b.source)!)
-      || (a.line ?? 0) - (b.line ?? 0) || (a.column ?? 0) - (b.column ?? 0)
-      || a.target.localeCompare(b.target) || a.kind.localeCompare(b.kind));
+    const references = collectIncomingRelations(cg, nodes)
+      .filter(({ edge, source }) => edge.kind !== 'contains'
+        && !isConfigLeafNode(source)
+        && Boolean(validatePathWithinRoot(root, source.filePath)));
     result.page.total = references.length;
-    result.items = references.slice(offset, offset + limit).map(edge => ({
-      source: symbol(sources.get(edge.source)!), target: symbol(targets.get(edge.target)!),
+    result.items = references.slice(offset, offset + limit).map(({ edge, source, target }) => ({
+      source: symbol(source), target: symbol(target),
       kind: edge.kind, provenance: edge.provenance ?? 'unknown',
-      site: { filePath: sources.get(edge.source)!.filePath, line: edge.line ?? null, column: edge.column ?? null },
+      site: { filePath: source.filePath, line: edge.line ?? null, column: edge.column ?? null },
     }));
     result.warnings.push('Graph edges are best-effort relationships, not a complete list of LSP reference occurrences.');
     result.routing.sources.graph = references.length;

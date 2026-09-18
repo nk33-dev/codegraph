@@ -34,12 +34,13 @@ import {
 import { pendingFileState, sortPendingFiles, type PendingFile } from '../sync';
 import { indexedFileFreshness } from '../sync/file-freshness';
 import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';import type { Node, Edge, EdgeKind, SearchResult, Subgraph, NodeKind } from '../types';
-import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
+import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, formatCodeEditText, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
 import { editTools } from './edit-tool';
 import { isTestFile, normalizeNameToken } from '../search/query-utils';
 import { groupDefinitions, lastQualifierPart, lookupSymbolNodes, matchesSymbol } from '../graph/symbol-lookup';
 import { extractQueryPaths, queryMightContainPaths } from '../search/query-paths';
 import { parseQueryIntent, removeQueryIntentWords } from '../search/query-intent';
+import { collectIncomingRelations } from '../graph/incoming-relations';
 import {
   existsSync,
   readFileSync,
@@ -3648,6 +3649,8 @@ export class ToolHandler {
     // multi-symbol flows, architecture questions, and explicit paths keep the full exploration path.
     let focusedSymbolQuery = false;
     let focusedNode: Node | null = null;
+    let focusedRelations: ReturnType<typeof collectIncomingRelations> = [];
+    const focusedRelationSources = new Map<string, { source: Node; line: number; origins: Set<'graph' | 'lsp'> }>();
     const queryIntent = parseQueryIntent(query);
     const requestedTests = queryIntent.tests;
     const focusedFilePriority = new Map<string, number>();
@@ -3765,11 +3768,58 @@ export class ToolHandler {
     });
     if (focusedNode) {
       focusedFilePriority.set(focusedNode.filePath, 0);
-      for (const edge of subgraph.edges) {
-        if (edge.target !== focusedNode.id) continue;
-        const caller = subgraph.nodes.get(edge.source);
-        if (!caller || caller.filePath === focusedNode.filePath) continue;
-        focusedFilePriority.set(caller.filePath, isTestFile(caller.filePath) ? 2 : 1);
+      // 精确自然语言查询显式收集目标的直接入边，避免通用 traverse 的节点预算或
+      // 动态 namespace 调用边形态让真实调用方在渲染前丢失。
+      focusedRelations = collectIncomingRelations(cg, [focusedNode])
+        .filter(({ edge }) => ['calls', 'references', 'instantiates'].includes(edge.kind));
+      for (const { edge, source } of focusedRelations) {
+        focusedRelationSources.set(source.id, {
+          source,
+          line: edge.line ?? source.startLine,
+          origins: new Set(['graph']),
+        });
+        if (!subgraph.nodes.has(source.id)) subgraph.nodes.set(source.id, source);
+        if (!subgraph.edges.some((candidate) => candidate.source === edge.source
+          && candidate.target === edge.target && candidate.kind === edge.kind
+          && candidate.line === edge.line && candidate.column === edge.column)) {
+          subgraph.edges.push(edge);
+        }
+        if (source.filePath === focusedNode.filePath) continue;
+        focusedFilePriority.set(source.filePath, isTestFile(source.filePath) ? 2 : 1);
+      }
+
+      const lspAlreadyActive = (queryIntent.callers || queryIntent.references)
+        && cg.getLspManager().status().some((server) =>
+          server.state === 'ready' && server.languages.includes(focusedNode!.language));
+      if ((queryIntent.callers || queryIntent.references) && (args.backend === 'both' || lspAlreadyActive)) {
+        try {
+          const merged = await cg.queryCodeWithBackend({
+            mode: 'references', query: focusedNode.name, file: focusedNode.filePath,
+            backend: 'both', offset: 0, limit: 200,
+          });
+          for (const item of merged.items) {
+            if (!('kind' in item) || item.kind !== 'lsp_usage' || !('site' in item)) continue;
+            const site = item.site;
+            if (site.external || site.filePath === focusedNode.filePath) continue;
+            const candidates = cg.getNodesInFile(site.filePath)
+              .filter((node) => node.kind !== 'file' && node.kind !== 'import' && node.kind !== 'export'
+                && node.startLine <= site.startLine && node.endLine >= site.startLine)
+              .sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine));
+            const source = candidates[0];
+            if (!source) continue;
+            const existing = focusedRelationSources.get(source.id);
+            if (existing) existing.origins.add('lsp');
+            else focusedRelationSources.set(source.id, {
+              source, line: site.startLine, origins: new Set(['lsp']),
+            });
+            if (!subgraph.nodes.has(source.id)) subgraph.nodes.set(source.id, source);
+            if (source.filePath !== focusedNode.filePath) {
+              focusedFilePriority.set(source.filePath, isTestFile(source.filePath) ? 2 : 1);
+            }
+          }
+        } catch {
+          // LSP 不可用时保留完整 Graph 结果；路由层已经负责可用性与超时边界。
+        }
       }
     }
 
@@ -4774,6 +4824,27 @@ export class ToolHandler {
       }
       return false;
     };
+
+    if (focusedNode && (queryIntent.definitions || queryIntent.callers || queryIntent.references || queryIntent.tests)) {
+      const uniqueRelations = [...focusedRelationSources.values()];
+      const callers = uniqueRelations.filter(({ source }) => !isTestFile(source.filePath));
+      const tests = uniqueRelations.filter(({ source }) => isTestFile(source.filePath));
+      lines.push('**Requested View**', '');
+      if (queryIntent.definitions) {
+        lines.push(`- Definition: ${focusedNode.qualifiedName} (${focusedNode.filePath}:${focusedNode.startLine})`);
+      }
+      if (queryIntent.callers || queryIntent.references) {
+        lines.push(`- Direct callers (${callers.length}): ${callers.length > 0
+          ? callers.map(({ source, line, origins }) => `${source.qualifiedName} (${source.filePath}:${line}; ${[...origins].join('+')})`).join(', ')
+          : 'none'}`);
+      }
+      if (queryIntent.tests) {
+        lines.push(`- Related tests (${tests.length}): ${tests.length > 0
+          ? tests.map(({ source, line, origins }) => `${source.qualifiedName} (${source.filePath}:${line}; ${[...origins].join('+')})`).join(', ')
+          : 'none'}`);
+      }
+      lines.push('');
+    }
 
     lines.push('**Source Code**');
     lines.push('');
@@ -7030,7 +7101,7 @@ export class ToolHandler {
     const failed = result.status !== 'preview' && result.status !== 'applied';
     return {
       structuredContent: result,
-      content: [{ type: 'text', text: JSON.stringify(result) }],
+      content: [{ type: 'text', text: formatCodeEditText(result, args.verbosePreview === true) }],
       ...(failed ? { isError: true } : {}),
     };
   }

@@ -56,7 +56,7 @@ personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、ma
 
 - 跨文件重命名由“只报缺口”改为“LSP 优先、索引补全、补不了就拒绝”（AST 确认的位置才补编辑，结果标 `plannedBy`），契约见[结构化编辑](structured-edits.md#rename-completeness-guard)。
 - 唯一精确符号查询的意图词（定义/所有/调用方/相关测试）不再参与模糊匹配，契约见[结构化查询](structured-queries.md#意图词收束explore)。
-- 后续体验补修：动态 namespace import 成为可解析引用，调用/构造边记录准确标识符列；自然语言关系词改为结构化意图，大型精确类查询保留自身定义；编辑预览增加 `canApply/blockers`；MCP 常驻说明去重压缩。以上仍未提交、未发布，验证边界见[开发验证记录](test-repairs.md#2026-09-17mcp-体验复审与补修)。
+- 后续体验补修：动态 namespace import 成为可解析引用，调用/构造边记录准确标识符列；自然语言关系词改为结构化意图并复用统一入边推导，大型精确类查询保留自身定义；旧索引阻止依赖 Graph 覆盖的 rename，编辑预览增加 `canApply/blockers` 并默认输出紧凑摘要；MCP 常驻说明去重压缩。以上仍未提交、未发布，验证边界见[开发验证记录](test-repairs.md#2026-09-17mcp-体验复审与补修)。
 - 升级后旧 daemon 自动切换，并新增 `codegraph daemon --restart`；索引升级新增 `codegraph sync --upgrade-index`（先给估算再确认，范围有登记时才增量迁移），用法与边界见[个人使用与安装](personal-usage.md#升级后的-daemon-版本切换)。
 - 实现范围、验证结果与未验证边界见[开发验证记录](test-repairs.md#2026-09-17跨文件重命名补全意图词收束daemon-版本切换与索引升级)。
 

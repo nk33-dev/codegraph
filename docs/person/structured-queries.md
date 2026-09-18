@@ -52,7 +52,8 @@ Development verification must invoke the local `node dist/bin/codegraph.js`; a g
 - 主题为空或全部未命中时返回 `No relevant code found`，不再用 `callers/related/code` 等意图词片段命中无关符号；
 - 只有索引能**唯一**精确确认一个代码形状标识符（camelCase、PascalCase、snake_case 或限定名）时才会收束；
 - 该符号之外的关系词先解析为 `definitions/callers/callees/references/tests/direct/all/related` 意图；“所有直接调用方和相关测试”不会再把“直接”作为第二个检索主题送进 FTS。剥离后还有真正的检索目标（第二个符号、主题名词、文件名）才保持完整探索路径；
-- 收束后只展开目标符号、它的直接关系和直接测试：`traverse` 深度 1、默认 `maxFiles` 收敛到 4，测试文件仅在查询明确要求测试时参与排序与预算，且只作为直接调用者进入；
+- 收束后只展开目标符号、它的直接关系和直接测试：`traverse` 深度 1、默认 `maxFiles` 收敛到 4，测试文件仅在查询明确要求测试时参与排序与预算，且只作为直接调用者进入；定义、非测试直接调用方和测试会在 `Requested View` 中分类列出；
+- 直接关系不再依赖通用遍历恰好保留该节点，而是与结构化 `references`、rename 覆盖检查共同复用 `src/graph/incoming-relations.ts`。因此动态 namespace import 的成员调用（如 `up.runUpgrade()`）也会稳定进入直接调用方；已有对应 LSP 进程时会合并其引用并标出 `graph` / `lsp` 来源，显式 `backend:"both"` 可要求启动并合并，默认不会仅为自然语言 explore 冷启动语言服务器；
 - 精确目标是覆盖文件大半的大型类/模块时，目标定义自身不再被通用“容器 envelope”过滤；预算不足可以裁剪，但不能只返回调用方而丢掉定义文件；
 - 词表刻意不包含主题名词（缓存、索引、部署、`helper`、`method`、`read`…），因此“Session method helper”“DataService read load”这类多词查询不会被误收束成单符号查询。
 
@@ -69,6 +70,7 @@ Development verification must invoke the local `node dist/bin/codegraph.js`; a g
 | `CodeGraph.queryCode` in `src/index.ts` | Public library entry point; no separate parser/database is built |
 | `src/graph/code-query.ts` | Unified contract and pagination for definitions, references, overview and status; reuses symbol-lookup and the existing graph queries |
 | `src/search/query-intent.ts` | `parseQueryIntent` 的结构化意图、`removeQueryIntentWords` 的检索改写与 `stripQueryIntentWords` 的主题检查 |
+| `src/graph/incoming-relations.ts` | 查询、explore 与 rename 共用的 Graph 入边解析及稳定排序 |
 | `src/sync/file-freshness.ts` | On-disk freshness check for a given file; reuses the existing hash format |
 | `handleCodeQuery` in `src/mcp/tools.ts` | Existing explore mode dispatch, keeping path checks and working-tree hints; the main connection reads watcher state |
 | explore in `src/bin/codegraph.ts` | CLI argument mapping and invocation of the same MCP handler |

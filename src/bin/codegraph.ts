@@ -1658,11 +1658,12 @@ program
   .option('--content <text>', 'replace-body/insert-*: the text to replace the body with, or to insert')
   .option('--content-file <file>', 'replace-body/insert-*: read the text from this file ("-" reads stdin)')
   .option('--apply', 'Write the files (without this flag the command only previews)')
+  .option('-v, --verbose', 'Show the complete per-edit JSON preview')
   .option('--expect-preview-hash <hash>', 'apply only: refuse to write unless the preview hash matches')
   .option('--operation-id <id>', 'Stable idempotency key from preview; reuse it for apply and retries')
   .action(async (symbol: string | undefined, options: {
     path?: string; operation?: string; file?: string; line?: string; column?: string; newName?: string;
-    content?: string; contentFile?: string; apply?: boolean; expectPreviewHash?: string; operationId?: string;
+    content?: string; contentFile?: string; apply?: boolean; verbose?: boolean; expectPreviewHash?: string; operationId?: string;
   }) => {
     const projectPath = resolveProjectPath(options.path);
 
@@ -1686,6 +1687,7 @@ program
       }
       if (content !== undefined) args.content = content;
       if (options.apply) args.apply = true;
+      if (options.verbose) args.verbosePreview = true;
       if (options.expectPreviewHash !== undefined) args.expectPreviewHash = options.expectPreviewHash;
       if (options.operationId !== undefined) args.operationId = options.operationId;
 

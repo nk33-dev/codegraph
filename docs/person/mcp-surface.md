@@ -29,7 +29,7 @@
 
 「本分支」为最终合并态：P0 收敛工具 schema 与描述，P2 再从初始化说明删除一处重复的「不要重新读取」句子。字符数只描述固定表面，不换算或声称模型 token 数。
 
-`codegraph_explore` 仍有 19 个字段，`codegraph_edit` 仍有 11 个字段。字符预算测试固定初始化说明、无根说明、默认 tools/list、合计，以及 explore/edit 单个工具定义的序列化上限；工具注解测试同时固定已索引项目的 explore 描述与静态定义一致。
+`codegraph_explore` 仍有 19 个字段，`codegraph_edit` 现有 12 个字段（新增 `verbosePreview` 只控制文本展示）。字符预算测试固定初始化说明、无根说明、默认 tools/list、合计，以及 explore/edit 单个工具定义的序列化上限；工具注解测试同时固定已索引项目的 explore 描述与静态定义一致。
 
 ## 验证
 

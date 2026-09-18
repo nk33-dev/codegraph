@@ -72,6 +72,14 @@ describe('codegraph_explore — 意图词收束', () => {
       Array.from({ length: 30 }, (_, i) => `  step${i}(): number { return ${i}; }\n`).join('') +
       `}\n`);
 
+    // 动态 namespace import 的成员调用必须作为直接调用方进入精确意图结果。
+    fs.mkdirSync(path.join(testDir, 'src', 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(testDir, 'src', 'bin', 'codegraph.ts'),
+      `export async function upgradeCommand(): Promise<string> {\n` +
+      `  const up = await import('../upgrade/updater');\n` +
+      `  return up.runUpgrade();\n` +
+      `}\n`);
+
     // Direct test that calls runUpgrade.
     fs.mkdirSync(path.join(testDir, '__tests__'), { recursive: true });
     fs.writeFileSync(path.join(testDir, '__tests__', 'updater.test.ts'),
@@ -109,7 +117,10 @@ describe('codegraph_explore — 意图词收束', () => {
   });
 
   it('直接调用方被解析为结构化范围，不作为第二个检索主题', async () => {
-    const files = sourcedFiles(await explore('runUpgrade 的定义、所有直接调用方和相关测试'));
+    const text = await explore('runUpgrade 的定义、所有直接调用方和相关测试');
+    const files = sourcedFiles(text);
+    expect(files.some((f) => f.endsWith('src/bin/codegraph.ts'))).toBe(true);
+    expect(text).toContain('up.runUpgrade()');
     expect(files[0]).toMatch(/updater\.ts$/);
     expect(files.filter((f) => /runner\.ts$|batch\.ts$/.test(f))).toEqual([]);
   });

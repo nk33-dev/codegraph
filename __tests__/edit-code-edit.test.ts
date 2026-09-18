@@ -6,7 +6,7 @@
  * index row or an ambiguous name is refused instead of guessed, and after a write the index is
  * refreshed so the next query sees the new source.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn, spawnSync } from 'child_process';
 import { once } from 'events';
 import { createInterface } from 'readline';
@@ -218,14 +218,25 @@ describe('MCP tool and CLI', () => {
     expect(edit!.inputSchema.required).toContain('operation');
   });
 
-  it('returns the structured result as JSON text and marks a refusal as an error', async () => {
+  it('默认文本使用紧凑摘要，structuredContent 保留完整预览', async () => {
     const preview = await handler.execute('codegraph_edit', {
       operation: 'replace-body', symbol: 'run', file: 'a/service.ts', content: 'export function run() { return 3; }',
     });
     expect(preview.isError).toBeUndefined();
-    const payload = JSON.parse(preview.content[0]!.text) as CodeEditResult;
-    expect(payload).toMatchObject({ status: 'preview', applyRequested: false, operation: 'replace-body' });
-    expect(preview.structuredContent).toEqual(payload);
+    const payload = JSON.parse(preview.content[0]!.text);
+    expect(payload).toMatchObject({ status: 'preview', operation: 'replace-body', canApply: true });
+    expect(payload.files[0].snippets).toHaveLength(1);
+    expect((preview.structuredContent as CodeEditResult).files[0].edits).toHaveLength(1);
+
+    const verbose = await handler.execute('codegraph_edit', {
+      operation: 'replace-body', symbol: 'run', file: 'a/service.ts', content: 'export function run() { return 3; }',
+      verbosePreview: true,
+    });
+    expect(JSON.parse(verbose.content[0]!.text)).toEqual(verbose.structuredContent);
+    expect((verbose.structuredContent as CodeEditResult).previewHash)
+      .toBe((preview.structuredContent as CodeEditResult).previewHash);
+    expect((verbose.structuredContent as CodeEditResult).operationId)
+      .toBe((preview.structuredContent as CodeEditResult).operationId);
 
     const refused = await handler.execute('codegraph_edit', {
       operation: 'replace-body', symbol: 'nope', file: 'a/service.ts', content: 'x',
@@ -233,6 +244,27 @@ describe('MCP tool and CLI', () => {
     expect(refused.isError).toBe(true);
     expect(JSON.parse(refused.content[0]!.text)).toMatchObject({ status: 'not_found' });
     expect(read('a/service.ts')).toBe(SERVICE);
+  });
+
+  it('大型预览默认文本每文件最多展示三个片段，结构化编辑不裁剪', async () => {
+    const full = await cg.editCode({
+      operation: 'replace-body', symbol: 'run', file: 'a/service.ts', content: 'export function run() { return 3; }',
+    });
+    const seed = full.files[0]!.edits[0]!;
+    full.files[0]!.edits = Array.from({ length: 35 }, (_, index) => ({ ...seed, startLine: index + 1 }));
+    full.summary.edits = 35;
+    const previewHash = full.previewHash;
+    const operationId = full.operationId;
+    vi.spyOn(cg, 'editCode').mockResolvedValueOnce(full);
+
+    const response = await handler.execute('codegraph_edit', {
+      operation: 'replace-body', symbol: 'run', file: 'a/service.ts', content: 'ignored',
+    });
+    const text = JSON.parse(response.content[0]!.text);
+    expect(text.summary.edits).toBe(35);
+    expect(text.files[0].snippets).toHaveLength(3);
+    expect(text).toMatchObject({ previewHash, operationId });
+    expect((response.structuredContent as CodeEditResult).files[0].edits).toHaveLength(35);
   });
 
   it('the CLI previews by default and writes only with --apply', () => {
@@ -288,7 +320,10 @@ describe('MCP tool and CLI', () => {
 
       const preview = await request('tools/call', {
         name: 'codegraph_edit',
-        arguments: { operation: 'replace-body', symbol: 'run', file: 'a/service.ts', content: 'export function run() { return 5; }' },
+        arguments: {
+          operation: 'replace-body', symbol: 'run', file: 'a/service.ts',
+          content: 'export function run() { return 5; }', verbosePreview: true,
+        },
       });
       expect(preview.structuredContent).toMatchObject({ schemaVersion: 1, operation: 'replace-body', status: 'preview' });
       expect(JSON.parse(preview.content[0].text)).toEqual(preview.structuredContent);
