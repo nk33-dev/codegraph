@@ -14,7 +14,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
-- 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,284`，保留 `codegraph_explore`、`codegraph_edit` 及全部参数和 Graph/LSP 能力；工具描述不再随仓库规模变化，重复响应尾注同步缩短。
+- 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,191`，保留 `codegraph_explore`、`codegraph_edit` 及全部参数和 Graph/LSP 能力；工具描述不再随仓库规模变化，重复响应尾注与重复的「已展示源码视为已读取」声明同步收敛。
+- 首次工具调用的等待时间与检索耗时分开记账：MCP 服务端分别记录 catch-up 门等待（`resource-metrics.json` 的 `catchUp`，`codegraph status` 显示其 p95）和检索耗时，`CODEGRAPH_MCP_TIMINGS=1` 时逐调用在 stderr 输出 `catchUp/retrieval/total/chars`；对账门与超时降级行为不变，本轮不实现窄查询快路径（停机期间删除的文件没有等价的新鲜度检查）。
+- 评估脚本的 explore sufficiency 输出新增回退比例行（explore 返回的文件又被 Read 的比例、未返回文件的 Read、grep/glob），用于判断是否需要加强提示；工具不重命名。
 - 匿名使用统计改为默认关闭：未显式开启时不记录、不落盘也不联网；安装器默认不勾选，仍可用 `codegraph telemetry on` 或 `CODEGRAPH_TELEMETRY=1` 主动开启。旧版自动生成的 `default-notice` 记录不再视为显式同意。
 - `v1.6.0-personal.5` 交付 personal.4 后续修复、重命名补全、检索意图收束、索引升级计划和共享服务版本切换。
 - 跨文件重命名改为“LSP 优先、索引补全、补不了就拒绝”：AST 逐字符确认过的位置由索引补成编辑（结果里标为 `plannedBy: "graph"`），只有行没有列、含别名以及动态导入行上未覆盖的出现仍然拒绝写盘，不再只报缺口。

@@ -921,7 +921,16 @@ export function classifySufficiency(events) {
   return { calls, counts, errors, concurrent, answered: calls.length };
 }
 
-/** The sufficiency block, as printed under a run and reused by aggregators. */
+/**
+ * The sufficiency block, as printed under a run and reused by aggregators.
+ *
+ * The headline number is the READ FALLBACK RATIO (P2 问题 12): of the answered
+ * explore calls, how many were followed by the agent fetching file bytes anyway.
+ * `re-read a returned file` is the "explore 返回的文件又被 Read" share the plan
+ * asks for — the tool delivered the file and the agent still went to disk;
+ * `never returned` is the recall half. The per-bucket rows below stay, because
+ * the fix each one points at is different.
+ */
 export function formatSufficiency(s, indent = '  ') {
   const f = s.sufficiency;
   if (!f.answered) {
@@ -930,6 +939,10 @@ export function formatSufficiency(s, indent = '  ') {
   }
   const pct = (n) => ((n / f.answered) * 100).toFixed(0) + '%';
   const out = [`${indent}Explore sufficiency — what the agent did NEXT (${f.answered} answered call${f.answered === 1 ? '' : 's'}):`];
+  out.push(
+    `${indent}  Fallback after explore: ${f.counts.read_returned}/${f.answered} re-read a returned file (${pct(f.counts.read_returned)}), `
+    + `${f.counts.read_missed} read a file we never returned, ${f.counts.search} grep/glob`
+  );
   for (const [key, label, meaning] of SUFFICIENCY) {
     out.push(`${indent}  ${String(f.counts[key]).padStart(3)} ${pct(f.counts[key]).padStart(4)}  ${label.padEnd(31)}${meaning}`);
   }
@@ -1089,6 +1102,9 @@ function selftest() {
   check('two answered explore calls', sf.answered, 2, 0);
   checkIs('explore → explore = insufficient', sf.calls[0].bucket, 'explore_again');
   checkIs('explore → Read of a returned file (abs path)', sf.calls[1].bucket, 'read_returned');
+  // The headline ratio (P2 问题 12): 1 of 2 answered calls re-read a returned file.
+  checkIs('fallback ratio line reports the re-read share',
+    formatSufficiency({ sufficiency: sf }).includes('Fallback after explore: 1/2 re-read a returned file (50%)'), true);
 
   // A file the response NAMED but did not return is still a recall miss — and
   // is flagged as named, since pointing without delivering is its own failure.

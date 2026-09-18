@@ -830,6 +830,28 @@ function resolveCatchUpGateTimeoutMs(): number {
 }
 
 /**
+ * 一次工具调用在 catch-up 门上的等待结果。`waitedMs` 只包含门内等待，
+ * 不含之后的检索耗时 —— 两者分开才能判断 P2 关心的「首调用时延」到底来自
+ * 打开后的对账，还是来自检索本身。
+ */
+export interface CatchUpWait {
+  /** `ready`：对账完成；`timeout`：后台继续；`failed`：对账失败后按既有降级语义继续。 */
+  outcome: 'ready' | 'timeout' | 'failed';
+  waitedMs: number;
+}
+
+/**
+ * 可选的每次工具调用时延日志开关（`CODEGRAPH_MCP_TIMINGS=1`）。
+ *
+ * 默认关闭：关闭时正常路径不产生任何 stderr 输出，也不写磁盘。打开后每个工具
+ * 调用追加一行 `[CodeGraph MCP timing]`，把 catch-up 等待与检索耗时拆成两个字段，
+ * 供 A/B 直接解析。
+ */
+function mcpTimingsEnabled(): boolean {
+  return process.env.CODEGRAPH_MCP_TIMINGS === '1';
+}
+
+/**
  * Prefix each line of a source slice with its 1-based line number, matching
  * the Read tool's `cat -n` convention (number + tab) so the agent treats it
  * the same way it treats Read output.
@@ -1362,7 +1384,9 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_explore',
-    description: 'Primary read tool for indexed code. Ask a question or name symbols/files to get current line-numbered source, flow evidence, and blast radius. Treat shown lines as read; query named omissions again. Non-default modes return structured JSON.',
+    // 「已展示源码视为已读取」只在初始化说明里声明一次（P2 问题 12）：工具描述
+    // 保持「一句话定位 + 何时使用」，重复声明既占固定字节，也会让两处措辞漂移。
+    description: 'Primary read tool for indexed code. Ask a question or name symbols/files to get current line-numbered source, flow evidence, and blast radius. Non-default modes return structured JSON.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1537,9 +1561,12 @@ function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
 
 /**
  * Allowlist-filtered tool definitions WITHOUT an engine — the static surface the
- * proxy answers `tools/list` with before any project is open. Mirrors
- * `ToolHandler.getTools()` in the no-CodeGraph case (the dynamic per-repo budget
- * note in a description only adds once `cg` is loaded; the schemas are static).
+ * proxy answers `tools/list` with before any project is open.
+ *
+ * 与已加载项目的表面一致：工具描述是静态的（不含文件数、调用预算或时间），
+ * 所以「先回答 tools/list、之后打开项目」不会让已经进过上下文的定义变样。
+ * 唯一按状态变化的只有 `projectPath` 是否必填（无默认项目时由
+ * {@link withRequiredProjectPath} 标记），这里对应的是「还没有项目」那一支。
  */
 export function getStaticTools(): ToolDefinition[] {
   const raw = process.env.CODEGRAPH_MCP_TOOLS;
@@ -1669,13 +1696,27 @@ export class ToolHandler {
    * so a concurrent read still runs against the same connection. Never throws:
    * a failed reconcile is logged by the engine, and we serve best-effort over
    * the same potentially-stale data the un-gated path would have.
+   *
+   * Returns the wait it actually paid, and records it in the resource metrics so
+   * the first call's latency can be split into "waiting on the reconcile" and
+   * "retrieval" (P2). The behavior itself is unchanged.
    */
-  private async awaitCatchUpGate(gate: Promise<void>): Promise<void> {
+  private async awaitCatchUpGate(gate: Promise<void>): Promise<CatchUpWait> {
     const timeoutMs = resolveCatchUpGateTimeoutMs();
+    const started = Date.now();
+    const record = (outcome: CatchUpWait['outcome']): CatchUpWait => {
+      const waitedMs = Math.max(0, Date.now() - started);
+      resourceMetrics().recordCatchUpWait(waitedMs, outcome);
+      return { outcome, waitedMs };
+    };
     if (timeoutMs <= 0) {
       // 0 = opt back into the original unbounded wait.
-      try { await gate; } catch { /* engine already logged */ }
-      return;
+      try {
+        await gate;
+        return record('ready');
+      } catch {
+        return record('failed'); // engine already logged
+      }
     }
     let timer: NodeJS.Timeout | undefined;
     const timedOut = new Promise<'timeout'>((resolve) => {
@@ -1684,7 +1725,7 @@ export class ToolHandler {
     });
     try {
       const outcome = await Promise.race([
-        gate.then(() => 'done' as const, () => 'done' as const),
+        gate.then(() => 'ready' as const, () => 'failed' as const),
         timedOut,
       ]);
       if (outcome === 'timeout') {
@@ -1693,6 +1734,7 @@ export class ToolHandler {
           `Set CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS=0 to always wait for it.\n`
         );
       }
+      return record(outcome);
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -2210,6 +2252,14 @@ export class ToolHandler {
     args: Record<string, unknown>,
     sessionState?: ExploreSessionState,
   ): Promise<ToolResult> {
+    const startedAt = Date.now();
+    // 本次调用在 catch-up 门上的等待；null = 没有门（非首个调用）。
+    let catchUp: CatchUpWait | null = null;
+    // 唯一收尾点：只写可选的时延日志，不改动结果本身。
+    const finish = (result: ToolResult): ToolResult => {
+      this.logToolTiming(toolName, startedAt, catchUp, result);
+      return result;
+    };
     try {
       // Block the first tool call on the engine's post-open reconcile so we
       // never serve rows for files deleted/edited while no MCP server was
@@ -2222,12 +2272,12 @@ export class ToolHandler {
       if (this.catchUpGate) {
         const gate = this.catchUpGate;
         this.catchUpGate = null;
-        await this.awaitCatchUpGate(gate);
+        catchUp = await this.awaitCatchUpGate(gate);
       }
       // Honor the optional tool allowlist (CODEGRAPH_MCP_TOOLS): a trimmed
       // surface rejects ablated tools defensively even if a client cached them.
       if (!this.isToolAllowed(toolName)) {
-        return this.errorResult(`Tool ${toolName} is disabled via CODEGRAPH_MCP_TOOLS`);
+        return finish(this.errorResult(`Tool ${toolName} is disabled via CODEGRAPH_MCP_TOOLS`));
       }
       // Cross-cutting input validation. All tools accept an optional
       // `projectPath` and most accept either `query`, `task`, or
@@ -2235,17 +2285,17 @@ export class ToolHandler {
       // can stay focused on tool-specific logic.
       const pathCheck = this.validateOptionalPath(args.projectPath, 'projectPath');
       if (typeof pathCheck === 'object' && pathCheck !== undefined) {
-        return pathCheck;
+        return finish(pathCheck);
       }
       // The `path` and `pattern` properties used by codegraph_files are
       // also path-shaped — apply the same cap.
       if (args.path !== undefined) {
         const check = this.validateOptionalPath(args.path, 'path');
-        if (typeof check === 'object' && check !== undefined) return check;
+        if (typeof check === 'object' && check !== undefined) return finish(check);
       }
       if (args.pattern !== undefined) {
         const check = this.validateOptionalPath(args.pattern, 'pattern');
-        if (typeof check === 'object' && check !== undefined) return check;
+        if (typeof check === 'object' && check !== undefined) return finish(check);
       }
 
       // codegraph_status reports watcher state (pending files, degraded mode,
@@ -2254,20 +2304,20 @@ export class ToolHandler {
       // a worker (whose read connection has no watcher). It also skips the
       // auto-banner wrapper to avoid duplicating its own pending-files section.
       if (toolName === 'codegraph_status') {
-        return await this.handleStatus(args);
+        return finish(await this.handleStatus(args));
       }
 
       // Structured queries read watcher status on the main connection and do not wrap
       // the JSON in a text notice banner.
       if (toolName === 'codegraph_explore' && args.mode !== undefined && args.mode !== 'explore') {
-        return this.handleCodeQuery(args);
+        return finish(await this.handleCodeQuery(args));
       }
 
       // Structured edits write to disk and may start a language server, so they always run
       // here on the main thread (never in a query-pool worker) and skip the staleness banner:
       // the JSON result carries its own status, preview and warnings.
       if (toolName === 'codegraph_edit') {
-        return await this.handleCodeEdit(args);
+        return finish(await this.handleCodeEdit(args));
       }
 
       // Read tools: off-load the CPU-heavy dispatch to the worker pool when one
@@ -2299,24 +2349,48 @@ export class ToolHandler {
       // caller passed session state.
       const result = this.takeExploreEmission(raw, sessionState);
       const withWorktree = this.withWorktreeNotice(result, args.projectPath as string | undefined);
-      return this.withStalenessNotice(withWorktree, args.projectPath as string | undefined);
+      return finish(this.withStalenessNotice(withWorktree, args.projectPath as string | undefined));
     } catch (err) {
       // Expected condition, not a malfunction: answer as a SUCCESS so the
       // agent keeps trusting the toolset for projects that ARE indexed.
       // (An isError here teaches session-long abandonment — see NotIndexedError.)
       if (err instanceof NotIndexedError) {
-        return this.textResult(err.message);
+        return finish(this.textResult(err.message));
       }
       // Security refusal: a clean error, no retry encouragement.
       if (err instanceof PathRefusalError) {
-        return this.errorResult(err.message);
+        return finish(this.errorResult(err.message));
       }
-      return this.errorResult(
+      return finish(this.errorResult(
         `Tool execution failed: ${err instanceof Error ? err.message : String(err)}. ` +
         'This is an internal codegraph error — retry the call once; if it persists, ' +
         'continue without codegraph for this task.'
-      );
+      ));
     }
+  }
+
+  /**
+   * 可选的每次调用时延日志（`CODEGRAPH_MCP_TIMINGS=1`）。
+   *
+   * 把一次调用拆成 `catchUp`（门内等待）与 `retrieval`（其余耗时，含校验与检索）
+   * 两段并写到 stderr，供 A/B 解析；`chars` 是返回给模型的文本长度，用来观察
+   * 「等得久」是否伴随「返回得多」。默认关闭时不写任何东西。
+   */
+  private logToolTiming(
+    toolName: string,
+    startedAt: number,
+    catchUp: CatchUpWait | null,
+    result: ToolResult,
+  ): void {
+    if (!mcpTimingsEnabled()) return;
+    const totalMs = Math.max(0, Date.now() - startedAt);
+    const catchUpMs = catchUp?.waitedMs ?? 0;
+    const chars = result.content?.[0]?.text?.length ?? 0;
+    process.stderr.write(
+      `[CodeGraph MCP timing] tool=${toolName} catchUp=${catchUpMs}ms(${catchUp?.outcome ?? 'none'}) ` +
+      `retrieval=${Math.max(0, totalMs - catchUpMs)}ms total=${totalMs}ms chars=${chars}` +
+      `${result.isError ? ' error' : ''}\n`
+    );
   }
 
   /**

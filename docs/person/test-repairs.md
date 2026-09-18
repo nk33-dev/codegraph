@@ -1,5 +1,40 @@
 # 个人版开发验证记录
 
+## 2026-09-17：MCP 时延、常驻加载与 Read 回退（P2）
+
+P2 阶段「先测量再设计」：只补测量能力与决策，不改默认检索行为，也不实现窄查询快路径（理由与前置条件见 [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md)）。**当前未推送、未发布、未安装。**
+
+### 实现
+
+- `src/resource-metrics.ts`：新增 `catchUp`（`count/ready/timeout/failed/wait`），与检索耗时 `query.run` 各自独立计量；作为追加字段写进快照，旧 daemon 写的文件仍能读回。
+- `src/mcp/tools.ts`：`awaitCatchUpGate` 返回实际等待并记入指标；`execute` 在唯一收尾点写可选日志（`CODEGRAPH_MCP_TIMINGS=1` → `catchUp/retrieval/total/chars`），默认关闭时零输出。对账门与 #905 超时降级的行为不变。
+- `src/bin/codegraph.ts`：daemon 快照里有门等待时，`status` 多一行 `Catch-up:`（p95/max/timeout），旧快照无此字段则不打这一行。
+- 固定表面（P2 问题 12）：「已展示源码视为已读取」只保留在初始化说明一次，explore 描述回到纯定位；`getStaticTools()` 的注释改写，不再声称 `getTools()` 会按仓库规模生成动态描述。
+- `scripts/agent-eval/parse-run.mjs`：sufficiency 块新增 `Fallback after explore` 行（re-read returned / never returned / grep-glob），并在 selftest 里加一条断言。
+- 新增 `scripts/measure-mcp-handshake.mjs`：从 `serve --mcp` 到 `tools/list` 应答的耗时与固定表面字符/字节数，供 always-load 与 deferred 的启动耗时对比（本机读数见 [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md#本机实测的启动耗时2026-09-17windowsnode-24160)）。
+- 文档：新增 [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md)；`docs/retrieval.md` 的 explore 预算表更正为当前 13K/18K/24K 档位（旧值 28K/35K/38K 标注为历史）；`docs/person/mcp-surface.md` 表面数字更新为 2,214/4,977/7,191，并修正“尚未提交”的过期表述。
+
+### 验证
+
+环境：Windows、Node 24.16.0。`dist/` 已用 `tsc` 重新生成，CLI 用例跑的是新产物。
+
+```text
+node node_modules/typescript/bin/tsc --noEmit                     # 通过
+node node_modules/vitest/vitest.mjs run --project engine <10 个直接相关文件>   # 10 files / 83 passed, 1 skipped
+node node_modules/vitest/vitest.mjs run --project engine \
+  __tests__/resource-status.test.ts __tests__/status-daemon-snapshot.test.ts  # 2 files / 14 passed（含新 Catch-up 行与旧快照降级）
+node scripts/agent-eval/parse-run.mjs --selftest                   # 69/69 checks passed
+node scripts/measure-mcp-handshake.mjs --path <repo> --runs 2       # 默认路径：init 392/409ms，tools/list 同毫秒应答
+node scripts/measure-mcp-handshake.mjs --path <临时项目> --runs 2 --no-daemon  # in-process 冷启动：init 535/546ms，tools/list 955/1017ms
+node scripts/test-changed.mjs                                      # 68 files / 852 passed, 3 skipped, 0 failed（第二次运行）
+```
+
+两次握手术语测量都用 `tsc` 生成的最新 `dist/`，返回的静态表面都是 2 个工具、4,977 字符 / 4,983 字节（差额来自 3 个非 ASCII 字符），读数为 P2 问题 11 的启动耗时依据。
+
+`scripts/test-changed.mjs` 的第一次运行有 1 项失败：`explore-cross-call-dedup.test.ts > leaves the first call of a session untouched`，差异是该响应里 `internal/usecase/payroll/payslip_builder.go` 被标为“changed on disk after the last index sync”并省略源码。该文件在同一测试文件的前一个用例里被改写又还原（`re-emits in full when the file changed between the two calls`），还原后磁盘 mtime 新于索引，watcher 的防抖同步在满负载下没能在下一个用例前清掉 pending 状态，于是两个相邻调用产生了不同响应。三条证据：单独运行通过；与 5 个重负载文件并发通过；第二次全量运行零失败。P2 改动不触及 watcher、pending 文件或 staleness 分支，**因此如实记为满负载下未复现的偶发项，不当作已知通过，也没有为该失败放宽断言。**
+
+未运行完整 `npm test`（`--project ui` 未跑）、隔离安装和远端 CI；真实宿主的 agent A/B（首次采用率、工具调用/token、p50/p95、Read/Grep 是否增加）不在本机范围内。
+
 ## 2026-09-17：MCP 表面、遥测与五项体验缺陷合并
 
 本批把两个未提交 worktree 的有效实现择优合入 `personal`，并保留此前的动态 namespace import、准确调用列、结构化中文意图和编辑安全修复。**当前未推送、未发布、未安装。**

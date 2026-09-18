@@ -192,4 +192,34 @@ describe('codegraph status 展示资源治理', () => {
     // 没有 daemon 快照时必须诚实降级，而不是编造数字。
     expect(text).toMatch(/no metrics reported/);
   });
+
+  /**
+   * P2 问题 10：首个调用的 catch-up 门等待要和检索 p95 分开显示，否则看不出
+   * 冷启动对账吃了多少时延。旧快照没有 `catchUp` 字段时这一行不出现（见下一个用例）。
+   */
+  it('快照里有门等待时输出独立的 Catch-up 行', async () => {
+    const { ResourceMetrics, writeResourceMetricsSnapshot } = await import('../src/resource-metrics');
+    const metrics = new ResourceMetrics();
+    metrics.recordCatchUpWait(120, 'ready');
+    metrics.recordCatchUpWait(3000, 'timeout');
+    expect(writeResourceMetricsSnapshot(tempDir, metrics.snapshot())).toBe(true);
+
+    const text = runStatusText(tempDir);
+    expect(text).toContain('Catch-up:  2 gate waits (p95 3000ms, max 3000ms, timeout 1, failed 0)');
+    // 与检索耗时是两行，不混在一起。
+    expect(text).not.toMatch(/Catch-up:.*queries/);
+  });
+
+  it('旧版 daemon 快照（没有 catchUp 字段）不显示这一行，也不报错', () => {
+    const file = path.join(tempDir, '.codegraph', 'resource-metrics.json');
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1, updatedAt: Date.now(), pid: 999_999,
+      profile: 'balanced', governanceEnabled: true,
+      query: { started: 0, completed: 0, busy: 0, failed: 0, crashedWorkers: 0, queueDepth: 0, liveWorkers: 0, idleWorkers: 0, poolMax: 0, wait: {}, run: { p95Ms: 5 }, cacheHits: 0, cacheMisses: 0 },
+      index: {}, lsp: { liveServers: 0, starts: 0, stops: 0, idleStops: 0, budgetStops: 0, startDuration: {}, globalLeases: 0 },
+    }));
+    const text = runStatusText(tempDir);
+    expect(text).not.toContain('Catch-up:');
+    expect(text).toContain('Resource Governance:');
+  });
 });

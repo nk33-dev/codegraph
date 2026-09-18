@@ -1399,6 +1399,16 @@ program
           `  LSP usage: ${lsp.liveServers} live, ${lsp.starts} starts/${lsp.stops} stops (idle ${lsp.idleStops}, budget ${lsp.budgetStops}), ` +
           (live ? `reported ${age}s ago by pid ${reported.pid}` : `last reported ${age}s ago by pid ${reported.pid}`)
         );
+        // 首个调用的 catch-up 门等待：与 queries 的 p95（检索耗时）分开显示，
+        // 否则分不清冷启动对账和检索本身谁在吃时延。旧快照没有这个字段。
+        const catchUp = reported.catchUp;
+        if (catchUp && catchUp.count > 0) {
+          console.log(
+            `  Catch-up:  ${catchUp.count} gate wait${catchUp.count === 1 ? '' : 's'} ` +
+            `(p95 ${catchUp.wait.p95Ms}ms, max ${catchUp.wait.maxMs}ms, ` +
+            `timeout ${catchUp.timeout}, failed ${catchUp.failed ?? 0})`
+          );
+        }
       }
       console.log();
 

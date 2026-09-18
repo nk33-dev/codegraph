@@ -14,7 +14,7 @@ Codegraph reads an indexed local code graph. Its default MCP surface has two too
 - Call \`codegraph_explore\` first for indexed source, architecture, flows, bugs, review impact, or symbols you may edit. Ask a natural-language question or name symbols/files; for a flow, name its endpoints.
 - Default explore returns relevant current, line-numbered source plus flow evidence and blast radius. Treat displayed lines as already read. Gap/truncation markers mean omitted code; query the missing symbol or range before editing it.
 - Structured modes return versioned JSON for definitions, references, file symbols, diagnostics, impact, tests, and status. Graph is the default backend; LSP backends require a language server already configured by the user.
-- If an answer is incomplete, call explore again with the uncovered exact names. Do not re-read source already shown.
+- If an answer is incomplete, call explore again with the uncovered exact names.
 
 ## Editing
 

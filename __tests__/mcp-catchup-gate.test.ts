@@ -15,12 +15,13 @@
  * the engine-driven path (proves the engine actually pokes the gate).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import CodeGraph from '../src/index';
 import { ToolHandler } from '../src/mcp/tools';
+import { resetResourceMetrics, resourceMetrics } from '../src/resource-metrics';
 import { expectWithinBudget } from './perf-utils';
 
 describe('MCP catch-up gate', () => {
@@ -43,12 +44,14 @@ describe('MCP catch-up gate', () => {
     cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
     await cg.indexAll();
     handler = new ToolHandler(cg);
+    resetResourceMetrics();
   });
 
   afterEach(() => {
     try { cg.unwatch(); } catch { /* ignore */ }
     try { cg.close(); } catch { /* ignore */ }
     if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });
+    resetResourceMetrics();
   });
 
   it('awaits the gate before serving the first tool call', async () => {
@@ -170,5 +173,128 @@ describe('MCP catch-up gate', () => {
     const res = await handler.execute('codegraph_search', { query: 'survivor' });
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toMatch(/survivor/);
+  });
+
+  /**
+   * P2 问题 10：首调用时延必须能拆成「等对账」与「检索」两段。
+   *
+   * 只断言语义（等待被单独记下、并且只记一次、明确区分 ready/timeout），
+   * 不断言具体毫秒，避免在慢机器上变成 flaky；失败也必须与 ready 分开。
+   */
+  describe('时延分开记录（P2 问题 10）', () => {
+    it('等到的门记为 ready，等待时长只算门内时间', async () => {
+      let gateResolved = false;
+      const gate = new Promise<void>((resolve) => {
+        setTimeout(() => { gateResolved = true; resolve(); }, 60);
+      });
+      handler.setCatchUpGate(gate);
+
+      await handler.execute('codegraph_search', { query: 'survivor' });
+
+      expect(gateResolved).toBe(true);
+      const snap = resourceMetrics().snapshot();
+      expect(snap.catchUp.count).toBe(1);
+      expect(snap.catchUp.ready).toBe(1);
+      expect(snap.catchUp.timeout).toBe(0);
+      expect(snap.catchUp.failed).toBe(0);
+      expect(snap.catchUp.wait.lastMs).toBeGreaterThanOrEqual(50);
+      // 检索耗时另记一条：两个序列各自都有样本，说明没有被合并成一个数字。
+      expect(snap.query.run.count).toBe(1);
+    });
+
+    it('超时降级的门记为 timeout，且等待不超过超时上限', async () => {
+      const prev = process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS;
+      process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS = '50';
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const gate = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 5000);
+        });
+        handler.setCatchUpGate(gate);
+
+        await handler.execute('codegraph_search', { query: 'survivor' });
+
+        const catchUp = resourceMetrics().snapshot().catchUp;
+        expect(catchUp.count).toBe(1);
+        expect(catchUp.timeout).toBe(1);
+        expect(catchUp.ready).toBe(0);
+        expect(catchUp.failed).toBe(0);
+        expect(catchUp.wait.lastMs).toBeLessThan(1000);
+      } finally {
+        if (timer) clearTimeout(timer);
+        if (prev === undefined) delete process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS;
+        else process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS = prev;
+      }
+    });
+
+    it('只有首个调用付门等待：第二个调用不再记一笔', async () => {
+      handler.setCatchUpGate(new Promise<void>((resolve) => setTimeout(resolve, 20)));
+
+      await handler.execute('codegraph_search', { query: 'survivor' });
+      await handler.execute('codegraph_search', { query: 'survivor' });
+
+      const snap = resourceMetrics().snapshot();
+      expect(snap.catchUp.count).toBe(1);
+      expect(snap.query.run.count).toBe(2);
+    });
+
+    it('对账失败单独记为 failed，不误报为 ready', async () => {
+      handler.setCatchUpGate(Promise.reject(new Error('simulated sync failure')));
+
+      const result = await handler.execute('codegraph_search', { query: 'survivor' });
+
+      expect(result.isError).toBeFalsy();
+      const catchUp = resourceMetrics().snapshot().catchUp;
+      expect(catchUp.count).toBe(1);
+      expect(catchUp.ready).toBe(0);
+      expect(catchUp.timeout).toBe(0);
+      expect(catchUp.failed).toBe(1);
+    });
+
+    it('CODEGRAPH_MCP_TIMINGS=1 时打出一行 catch-up 与检索耗时；默认不打', async () => {
+      const lines: string[] = [];
+      const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+        lines.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write);
+      const prev = process.env.CODEGRAPH_MCP_TIMINGS;
+      try {
+        handler.setCatchUpGate(new Promise<void>((resolve) => setTimeout(resolve, 30)));
+        await handler.execute('codegraph_search', { query: 'survivor' });
+        expect(lines.filter((l) => l.includes('[CodeGraph MCP timing]'))).toEqual([]);
+
+        process.env.CODEGRAPH_MCP_TIMINGS = '1';
+        await handler.execute('codegraph_search', { query: 'survivor' });
+
+        const timing = lines.filter((l) => l.includes('[CodeGraph MCP timing]'));
+        expect(timing).toHaveLength(1);
+        expect(timing[0]).toMatch(/tool=codegraph_search catchUp=\d+ms\(none\) retrieval=\d+ms total=\d+ms chars=\d+/);
+      } finally {
+        spy.mockRestore();
+        if (prev === undefined) delete process.env.CODEGRAPH_MCP_TIMINGS;
+        else process.env.CODEGRAPH_MCP_TIMINGS = prev;
+      }
+    });
+
+    it('首调用那一行的 catchUp 是实际结果而不是 none', async () => {
+      const lines: string[] = [];
+      const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+        lines.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write);
+      const prev = process.env.CODEGRAPH_MCP_TIMINGS;
+      process.env.CODEGRAPH_MCP_TIMINGS = '1';
+      try {
+        handler.setCatchUpGate(new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        await handler.execute('codegraph_search', { query: 'survivor' });
+
+        const line = lines.find((l) => l.includes('[CodeGraph MCP timing]'))!;
+        expect(line).toMatch(/catchUp=\d+ms\((?:ready|timeout)\)/);
+      } finally {
+        spy.mockRestore();
+        if (prev === undefined) delete process.env.CODEGRAPH_MCP_TIMINGS;
+        else process.env.CODEGRAPH_MCP_TIMINGS = prev;
+      }
+    });
   });
 });

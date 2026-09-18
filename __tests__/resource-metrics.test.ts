@@ -150,6 +150,57 @@ describe('resourceMetrics 单例', () => {
   });
 });
 
+/**
+ * catch-up 门等待（P2 问题 10）。
+ *
+ * 只断言语义：门等待单独计数、单独计量，并且**不混进** `query.run`
+ * （检索耗时）。两个数字混在一起就没法判断首调用时延该优化哪一段。
+ */
+describe('catch-up 门等待指标', () => {
+  it('按时长与结果分开记录，不混入 query.run', () => {
+    const m = new ResourceMetrics();
+    m.recordQueryEnd(0, 40, 'ok');
+    m.recordCatchUpWait(120, 'ready');
+    m.recordCatchUpWait(3000, 'timeout');
+
+    const snap = m.snapshot();
+    expect(snap.catchUp.count).toBe(2);
+    expect(snap.catchUp.ready).toBe(1);
+    expect(snap.catchUp.timeout).toBe(1);
+    expect(snap.catchUp.failed).toBe(0);
+    expect(snap.catchUp.wait).toEqual({
+      count: 2, totalMs: 3120, lastMs: 3000, maxMs: 3000, p50Ms: 120, p95Ms: 3000,
+    });
+    // 检索序列只看到那次查询的 40ms，没有被门等待污染。
+    expect(snap.query.run.lastMs).toBe(40);
+  });
+
+  it('空指标是零值，reset 之后回到零值', () => {
+    const m = new ResourceMetrics();
+    expect(m.snapshot().catchUp).toEqual({
+      count: 0, ready: 0, timeout: 0, failed: 0,
+      wait: { count: 0, totalMs: 0, lastMs: 0, maxMs: 0, p50Ms: 0, p95Ms: 0 },
+    });
+    m.recordCatchUpWait(50, 'timeout');
+    m.reset();
+    expect(m.snapshot().catchUp.count).toBe(0);
+    expect(m.snapshot().catchUp.wait.lastMs).toBe(0);
+  });
+
+  it('旧版 daemon 写的快照（没有 catchUp 字段）仍可读回', () => {
+    // status 只有在字段存在时才显示这一行，所以旧文件不能读成 null。
+    const file = getResourceMetricsPath(dir);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1, updatedAt: Date.now(), pid: 1,
+      query: { run: { p95Ms: 5 } }, index: {}, lsp: {},
+    }));
+    const read = readResourceMetricsSnapshot(dir);
+    expect(read?.schemaVersion).toBe(1);
+    expect(read?.catchUp).toBeUndefined();
+  });
+});
+
 describe('快照落盘与降级读取', () => {
   it('写入后可原样读回，且不留下临时文件', () => {
     const m = new ResourceMetrics();

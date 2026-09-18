@@ -105,6 +105,25 @@ export interface QueryMetrics {
   cacheMisses: number;
 }
 
+/**
+ * catch-up 门（首个工具调用等待打开后的文件系统对账）的等待统计。
+ *
+ * 单独计数、单独计量，是为了让「首个调用的时延」可以被拆成两段：等对账的时间
+ * 与真实检索的时间。两者混在一个数字里就没法判断该优化哪一段。
+ */
+export interface CatchUpMetrics {
+  /** 被 gate 拦住并且真正计过时的工具调用次数。 */
+  count: number;
+  /** 在超时时间内等到对账完成的次数（拿到了完整对账结果）。 */
+  ready: number;
+  /** 超过超时上限、先返回结果的次数（对账在后台继续）。 */
+  timeout: number;
+  /** 对账 promise 失败后按既有降级语义继续提供结果的次数。 */
+  failed: number;
+  /** 门等待时长；与 `query.run`（检索时长）刻意分开。 */
+  wait: DurationStats;
+}
+
 export interface IndexMetrics {
   fullRuns: number;
   fullLastMs: number;
@@ -136,6 +155,8 @@ export interface ResourceMetricsSnapshot {
   profile: ResourceProfileName;
   governanceEnabled: boolean;
   query: QueryMetrics;
+  /** 首个调用的 catch-up 门等待；与 `query.run` 分开，见 {@link CatchUpMetrics}。 */
+  catchUp: CatchUpMetrics;
   index: IndexMetrics;
   lsp: LspMetrics;
 }
@@ -154,11 +175,16 @@ export interface PoolGauges {
 export class ResourceMetrics {
   private readonly wait = new DurationSeries();
   private readonly run = new DurationSeries();
+  private readonly catchUp = new DurationSeries();
   private readonly lspStart = new DurationSeries();
   private queryStarted = 0;
   private queryCompleted = 0;
   private queryBusy = 0;
   private queryFailed = 0;
+  private catchUpCount = 0;
+  private catchUpReady = 0;
+  private catchUpTimeout = 0;
+  private catchUpFailed = 0;
   private crashedWorkers = 0;
   private cacheHits = 0;
   private cacheMisses = 0;
@@ -196,6 +222,19 @@ export class ResourceMetrics {
 
   recordWorkerCrash(): void {
     this.crashedWorkers += 1;
+  }
+
+  /**
+   * 记录一次 catch-up 门等待。`waitedMs` 只算门内的时间，检索耗时由
+   * `recordQueryEnd` 的 `runMs` 单独记录；`timeout` 表示按 #905 的降级路径
+   * 先返回了结果。
+   */
+  recordCatchUpWait(waitedMs: number, outcome: 'ready' | 'timeout' | 'failed'): void {
+    this.catchUpCount += 1;
+    if (outcome === 'timeout') this.catchUpTimeout += 1;
+    else if (outcome === 'failed') this.catchUpFailed += 1;
+    else this.catchUpReady += 1;
+    this.catchUp.record(waitedMs);
   }
 
   setPoolGauges(gauges: PoolGauges): void {
@@ -261,6 +300,13 @@ export class ResourceMetrics {
         cacheHits: this.cacheHits,
         cacheMisses: this.cacheMisses,
       },
+      catchUp: {
+        count: this.catchUpCount,
+        ready: this.catchUpReady,
+        timeout: this.catchUpTimeout,
+        failed: this.catchUpFailed,
+        wait: this.catchUp.stats(),
+      },
       index: { ...this.index },
       lsp: {
         starts: this.lspStarts,
@@ -277,11 +323,16 @@ export class ResourceMetrics {
   reset(): void {
     this.wait.reset();
     this.run.reset();
+    this.catchUp.reset();
     this.lspStart.reset();
     this.queryStarted = 0;
     this.queryCompleted = 0;
     this.queryBusy = 0;
     this.queryFailed = 0;
+    this.catchUpCount = 0;
+    this.catchUpReady = 0;
+    this.catchUpTimeout = 0;
+    this.catchUpFailed = 0;
     this.crashedWorkers = 0;
     this.cacheHits = 0;
     this.cacheMisses = 0;
