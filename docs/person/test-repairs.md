@@ -199,6 +199,7 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - rename 在旧提取版本且需要跨文件 Graph 覆盖时返回 `canApply:false`，`apply:true` 也在写盘前拒绝；非全局引用编辑只提示升级。
 - 大型编辑预览的默认文本按文件汇总且每文件最多三个片段，完整 edits 仅保留在 structuredContent；verbose 展示不改变哈希或 operation ID。
 - **本轮验证（2026-09-18）**：`npm run typecheck` 通过；意图/工具表面定向 3 文件 16 项通过；旧索引、动态调用与预览摘要定向 2 文件 4 项通过；`check:quick` 的类型检查通过，受影响测试中 802 项通过、8 项跳过，53 项失败均来自仓库未生成 `dist/bin/codegraph.js` 的 CLI/真实 MCP 子进程（含等待该子进程的超时）。遵循个人版约束未在本地执行完整 build，CLI `--verbose` 的产物级验证留给 CI。
+- **personal.7 首次 CI**：运行 `35299864287` 的 Windows、Ubuntu、macOS 构建均通过；三个平台的测试都为 4,784 项通过、200 项跳过、1 项失败，唯一失败是 UI manifest 仍为 `1.6.0-personal.6`、与引擎 `1.6.0-personal.7` 不一致。已同步 `ui/package.json`，后续提交重新走三平台门禁。
 - `instantiates` 和成员调用边原先常记录表达式起点，导致 Graph 知道引用却无法按列补编辑；现在记录构造类型或成员标识符的 AST 字节列。
 - JS/TS `const mod = await import('./x')` 现在产生 AST 证明的 namespace mapping，`mod.member()` 可解析到模块导出并参与重命名；动态解构与计算属性仍拒绝猜测。
 - 编辑结果增加 `canApply` 与 `blockers`；无 watcher 的只读连接不再每次产生误导性 warning，真实 degraded 状态仍告警。
