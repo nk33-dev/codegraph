@@ -15,6 +15,8 @@
 - **本机（Windows、Node 24.16.0）**：`npx tsc --noEmit` 通过；`explore-blast-radius`、`explore-test-summary`、`explore-intent-query-focus`、`explore-output-budget` 共 39 项通过；`server-instructions`、`mcp-fixed-surface`、`mcp-tool-annotations` 加入后 7 文件 61 项通过；另跑 explore 分配、诊断、跨调用去重等 10 个套件 149 项通过。仓库未生成本地 `dist/`，依赖预构建 CLI 或真实 MCP 子进程的用例在本地失败/超时，按个人发行边界未在本地执行完整 build 与全量测试。
 - **CI `35321228674`（提交 `ff8efc6`）**：三平台都只有 1 个测试文件失败——`__tests__/server-instructions.test.ts` 的 3 项字符预算断言（Windows 为 1 failed / 285 passed / 21 skipped，macOS 为 1 failed / 289 passed / 17 skipped）。逐条核对日志确认所有失败都是固定表面超限，检索与图查询用例全绿；原因是新参数让 tools/list 从 4,810 涨到 5,092，而旧上限只剩约 40 字符余量。
 - **CI `35322005586`（提交 `8ba856a`）**：三平台全绿，Ubuntu 4,798 项通过、200 项跳过，本版从该提交发布。
+- **发布提交 CI `35323096393`（`d0bca8e`）**：Windows 首次运行失败于 `mcp-initialize.test.ts` 清理阶段的 `EBUSY: rmdir` 临时目录占用（同一 job 重跑通过），macOS/Ubuntu 首次即通过；重跑后三平台全绿。该失败属 Windows runner 既有的偶发资源清理问题，本批提交只改版本号与文档，因此未把它当作代码回归。
+- **Personal Release `35324726104`**：通过版本门禁与同提交 CI 校验，完成隔离安装、打包、`SHA256SUMS`、标签与 prerelease；`v1.6.0-personal.8` 指向 `d0bca8e`，资产为 `colbymchenry-codegraph-1.6.0-personal.8.tgz` 与 `SHA256SUMS`。
 - 未做：模型级 Agent A/B；本批不改变默认检索范围、预算或图推导，只改输出分类与测试文件的渲染形态。
 
 ## 2026-09-18：MCP 上下文优化最终复核
