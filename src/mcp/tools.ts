@@ -967,10 +967,7 @@ export function symbolsBetweenRanges(
  * (test files are ordinary indexed files), and `includeTestSource: true` renders
  * this whole file as source in the current call.
  *
- * @param nodes  the file's indexed symbols (test declarations included)
- * @param lines  the file's current source, one entry per line
- * @param withLineNumbers  number the emitted lines like every other source section
- * @param callSites  every `line → symbol` edge leaving this file, targets resolved
+ * `callSites` is every `line → symbol` edge leaving this file, targets resolved.
  */
 export function buildTestFileSummary(
   nodes: readonly Node[],
@@ -1585,7 +1582,11 @@ export const tools: ToolDefinition[] = [
         },
         includeTestSource: {
           type: 'boolean',
-          description: 'explore only: when the query asks for related tests, render those test files as full source instead of the default compact summary (test declarations, what each exercises, sampled bodies). Omit it — a later explore of a test NAME returns that test\'s exact body.',
+          // Kept terse on purpose: the default tool surface has a byte budget
+          // (`__tests__/server-instructions.test.ts`), and the fallback — a
+          // follow-up explore of the test NAME — is already discoverable from
+          // the summary section's own header.
+          description: 'explore only: render requested test files as full source instead of the default compact test summary.',
           default: false,
         },
         baseRef: {

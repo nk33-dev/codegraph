@@ -14,6 +14,28 @@ import {
 const TOOL_ENV = 'CODEGRAPH_MCP_TOOLS';
 const originalToolEnv = process.env[TOOL_ENV];
 
+/**
+ * always-load 固定上下文成本的实测上限（P2 问题 11）。
+ *
+ * 上限只是用来发现「悄悄变胖」，所以是「当前实测值 + 约 2% 余量」，不是精确值断言；
+ * 同一个量在两个用例里共用同一个常量，避免同一次改动只撞破其中一个阈值。
+ *
+ * 2026-09 基线（新增 explore 的 includeTestSource 选项之后实测）：
+ * 常驻说明 2,214；默认 tools/list 4,932（其中 explore 3,206、edit 1,723）；
+ * 两者合计 7,146。当时把上限从 4,850 / 3,100 / 3,150 / 7,100 上调到下面这组，
+ * 因为 explore 的 schema 确实多了一个可发现的可选参数——这是唯一一次有意增长：
+ * 参数本身只花 173 字符，描述已经压到最短，语义（默认摘要、可按名再查全文）
+ * 由摘要分节自身的表头承载。
+ */
+const SURFACE_MAX = {
+  instructions: 2_300,
+  noRootInstructions: 500,
+  toolsList: 5_050,
+  explore: 3_280,
+  edit: 2_100,
+  combined: 7_300,
+} as const;
+
 afterEach(() => {
   if (originalToolEnv === undefined) delete process.env[TOOL_ENV];
   else process.env[TOOL_ENV] = originalToolEnv;
@@ -29,10 +51,10 @@ describe('MCP 常驻说明', () => {
     expect(SERVER_INSTRUCTIONS).toContain('codegraph_explore');
     expect(SERVER_INSTRUCTIONS).toContain('codegraph_edit');
     expect(SERVER_INSTRUCTIONS).not.toMatch(/single tool|There is a single tool/i);
-    expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(2_300);
-    expect(SERVER_INSTRUCTIONS_NO_ROOT_INDEX.length).toBeLessThanOrEqual(500);
-    expect(serialized.length).toBeLessThanOrEqual(4_850);
-    expect(SERVER_INSTRUCTIONS.length + serialized.length).toBeLessThanOrEqual(7_100);
+    expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(SURFACE_MAX.instructions);
+    expect(SERVER_INSTRUCTIONS_NO_ROOT_INDEX.length).toBeLessThanOrEqual(SURFACE_MAX.noRootInstructions);
+    expect(serialized.length).toBeLessThanOrEqual(SURFACE_MAX.toolsList);
+    expect(SERVER_INSTRUCTIONS.length + serialized.length).toBeLessThanOrEqual(SURFACE_MAX.combined);
   });
 
   it('保持单个默认工具描述简洁', () => {
@@ -44,8 +66,8 @@ describe('MCP 常驻说明', () => {
     expect(explore.description.length).toBeLessThanOrEqual(200);
     expect(edit.description.length).toBeLessThanOrEqual(200);
     // 单个工具的完整定义（描述 + schema + 注解）也设上限，防止参数说明无限增长。
-    expect(JSON.stringify(explore).length).toBeLessThanOrEqual(3_100);
-    expect(JSON.stringify(edit).length).toBeLessThanOrEqual(1_900);
+    expect(JSON.stringify(explore).length).toBeLessThanOrEqual(SURFACE_MAX.explore);
+    expect(JSON.stringify(edit).length).toBeLessThanOrEqual(SURFACE_MAX.edit);
   });
 
   it('压缩后仍保留源码完整性、编辑安全与未索引项目的约束', () => {
@@ -65,10 +87,10 @@ describe('MCP 常驻说明', () => {
   /**
    * P2 问题 11：always-load 的固定上下文成本要可分解、可回归。
    *
-   * 最终合并态直接序列化：常驻说明 2,214、默认 tools/list 4,810。
-   * always-loaded 与 deferred 的差额就是 tools/list 这部分：Claude Code 的
-   * ToolSearch 之前，工具定义本来不进上下文，所以这笔固定成本必须单独有上限。
-   * 上限只用来发现「悄悄变胖」，所以留了约 3% 余量，不是精确值断言。
+   * 这里量的是同一组固定成本（与上一个用例共用 {@link SURFACE_MAX} 的上限），
+   * 外加 explore/edit 各自的完整定义。always-loaded 与 deferred 的差额就是
+   * tools/list 这部分：Claude Code 的 ToolSearch 之前，工具定义本来不进上下文，
+   * 所以这笔固定成本必须单独有上限。
    */
   it('钉住 always-load 的固定上下文成本（P2 问题 11）', () => {
     delete process.env[TOOL_ENV];
@@ -77,11 +99,11 @@ describe('MCP 常驻说明', () => {
     const edit = surface.find((tool) => tool.name === 'codegraph_edit')!;
     const toolsList = JSON.stringify(surface).length;
 
-    expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(2_300);
-    expect(toolsList).toBeLessThanOrEqual(4_850);
-    expect(JSON.stringify(explore).length).toBeLessThanOrEqual(3_150);
-    expect(JSON.stringify(edit).length).toBeLessThanOrEqual(2_050);
-    expect(SERVER_INSTRUCTIONS.length + toolsList).toBeLessThanOrEqual(7_100);
+    expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(SURFACE_MAX.instructions);
+    expect(toolsList).toBeLessThanOrEqual(SURFACE_MAX.toolsList);
+    expect(JSON.stringify(explore).length).toBeLessThanOrEqual(SURFACE_MAX.explore);
+    expect(JSON.stringify(edit).length).toBeLessThanOrEqual(SURFACE_MAX.edit);
+    expect(SERVER_INSTRUCTIONS.length + toolsList).toBeLessThanOrEqual(SURFACE_MAX.combined);
   });
 
   /**

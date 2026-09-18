@@ -41,19 +41,21 @@ server 级 `alwaysLoad`（安装器写入，Claude Code 用它免除 ToolSearch 
 | --- | ---: | --- |
 | MCP 初始化说明（`SERVER_INSTRUCTIONS`） | 2,214 | 总是 |
 | 无默认项目变体（`SERVER_INSTRUCTIONS_NO_ROOT_INDEX`） | 468 | 只在没有默认索引项目时替换上面那条 |
-| 默认 tools/list（含注解、`_meta`、schema） | 4,810 | always-load 时总是；deferred 时按需载入 |
-| 合计（always-load 默认表面） | 7,024 | — |
+| 默认 tools/list（含注解、`_meta`、schema） | 4,932 | always-load 时总是；deferred 时按需载入 |
+| 合计（always-load 默认表面） | 7,146 | — |
+
+tools/list 的当前值比本页最初记录的 4,810 多 122 个字符，来自 `codegraph_explore` 的 `includeTestSource` 选项；拆分与理由见 [MCP 表面与缓存稳定性](mcp-surface.md#固定表面测量)。
 
 由此得到分宿主的固定成本口径：
 
 | 宿主 | 工具定义是否常驻 | 每会话固定表面 |
 | --- | --- | ---: |
-| Claude Code，server `alwaysLoad`（安装器默认） | 是 | 7,024 |
+| Claude Code，server `alwaysLoad`（安装器默认） | 是 | 7,146 |
 | Claude Code，deferred（无 alwaysLoad） | 否，ToolSearch 载入后才进上下文 | 2,214 |
-| Copilot CLI（同一豁免机制） | 是 | 7,024 |
-| 无该机制的宿主（Codex / Cursor / Gemini / OpenCode） | 是 | 7,024（部分宿主另有 AGENTS.md 段落，不计入此处） |
+| Copilot CLI（同一豁免机制） | 是 | 7,146 |
+| 无该机制的宿主（Codex / Cursor / Gemini / OpenCode） | 是 | 7,146（部分宿主另有 AGENTS.md 段落，不计入此处） |
 
-字符预算测试钉住了这些上限（初始化说明 2,300、默认 tools/list 4,850、合计 7,100，并限制单工具完整定义），所以任何一侧悄悄变胖都会失败。
+字符预算测试钉住了这些上限（初始化说明 2,300、默认 tools/list 5,050、合计 7,300，并限制单工具完整定义），所以任何一侧悄悄变胖都会失败。
 
 ### 本机实测的启动耗时（2026-09-17，Windows、Node 24.16.0）
 
@@ -66,13 +68,13 @@ server 级 `alwaysLoad`（安装器写入，Claude Code 用它免除 ToolSearch 
 
 两点结论：
 
-- `tools/list` 与「有没有打开项目、项目多大」无关：两条路径返回的都是同一份静态表面。上表测量时是 4,977 字符，最终 P0 合并态进一步缩为 4,810；所以 always-load 与 deferred 的差别不在「工具列表要等多久」，而在这份定义是否从首轮就在上下文里。
+- `tools/list` 与「有没有打开项目、项目多大」无关：两条路径返回的都是同一份静态表面。上表测量时是 4,977 字符，P0 合并态缩为 4,810，当前基线 4,932（见上）；所以 always-load 与 deferred 的差别不在「工具列表要等多久」，而在这份定义是否从首轮就在上下文里。
 - 代理路径上 `tools/list` 紧跟着 `initialize` 应答（同毫秒），说明静态表面没有等 daemon 的工具列表；in-process 冷启动那约 0.45s 是打开项目/启动 watcher 的代价，不是枚举工具定义的代价。
 
 ### 待补测量（需要宿主，不在本机范围内）
 
 - 首次采用率：always-loaded 与 deferred 各跑一遍同一批任务，统计首个工具调用前是否有 ToolSearch 步进、首个 explore 何时发生；冷启动里 `init` 报 `connected` 且 tools > 0 的次数也算（不要用单次 `pending` 快照下结论）。现有 harness 参考 `scripts/agent-eval/ab-new-vs-baseline.sh`、`run-all.sh` 与 `parse-run.mjs` 的 `codegraph tools exposed` 行，procedure 见[采用问题文档的验证章节](../design/agent-codegraph-adoption.md#how-to-validate-anything-here)（该文的 P2 指「启动时服务器还没连上」，与本方案的 P2 编号无关）。
-- 固定上下文的实际影响：deferred 宿主的 ToolSearch 是否真的抵消了 4,810 字符的节省。
+- 固定上下文的实际影响：deferred 宿主的 ToolSearch 是否真的抵消了 4,932 字符的节省。
 - 真实冷启动（没有 daemon 时走默认路径，需要现拉起共享 daemon）的启动耗时。
 
 变更判据：只有当分宿主数据显示 deferred 的首次采用率与首调用时延都不劣于 always-load，才会考虑去掉 server 级 `alwaysLoad`；在此之前保留。
