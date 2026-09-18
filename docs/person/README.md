@@ -27,7 +27,7 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 
 ## 验证与发布
 
-当前已发布版本仍为 [v1.6.0-personal.6](releases/v1.6.0-personal.6.md)。[v1.6.0-personal.7](releases/v1.6.0-personal.7.md) 正在准备，修复精确自然语言查询的直接调用方覆盖、旧索引重命名安全门和大型编辑预览的默认上下文开销；最终状态以同一提交的三平台 CI 与 GitHub prerelease 为准。
+当前已发布版本为 [v1.6.0-personal.7](releases/v1.6.0-personal.7.md)，修复精确自然语言查询的直接调用方覆盖、旧索引重命名安全门和大型编辑预览的默认上下文开销。三平台 CI、隔离安装、归档与校验和均由 GitHub 工作流完成。
 
 personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、macOS 重命名路径别名和 Windows 测试超时清理问题；后续补修与本地 31 项定向验证见[开发验证记录](test-repairs.md)。修复位于 personal 分支，不改写既有发行资产。
 
@@ -41,7 +41,7 @@ personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、ma
 
 随后三平台 CI `35214833215` 通过；进一步修复 Windows 索引超时后的连接泄漏、后台任务串扰和数据库线程提前返回，并恢复四并发。本机定向 10 文件、77 项通过；本批远端四并发结果待确认，详见[资源清理记录](test-repairs.md#2026-09-17windows-四并发与资源清理)。
 
-个人扩展通过 `personal` 分支维护；首个 GitHub prerelease 为 `v1.6.0-personal.1`，当前发行版本为 `v1.6.0-personal.6`。向 npm registry 安装上游包不会获得个人改动；个人版按[安装说明](personal-usage.md)从 GitHub Release `.tgz` 或固定标签安装。
+个人扩展通过 `personal` 分支维护；首个 GitHub prerelease 为 `v1.6.0-personal.1`，当前发行版本为 `v1.6.0-personal.7`。向 npm registry 安装上游包不会获得个人改动；个人版按[安装说明](personal-usage.md)从 GitHub Release `.tgz` 或固定标签安装。
 
 ## personal.6 发行内容（2026-09-18）
 

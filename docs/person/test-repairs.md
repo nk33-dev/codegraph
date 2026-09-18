@@ -203,6 +203,7 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - **防重复措施**：`sync-ui-version.mjs` 新增只读检查模式；CI 与 Personal Release 在构建前运行 `npm run check:release-metadata`，版本准备统一用 `npm run version:sync`。维护流程同时规定文档的唯一归属、同提交更新、历史归档和过时/重复清理，避免只记录一次失败却继续依赖人工记忆。
 - **personal.7 首次发行工作流**：运行 `35301287802` 已通过版本门禁和同提交 CI 校验，但隔离安装脚本把 `npm pack --json` 的 stdout 直接交给 `JSON.parse`；npm 的 `prepare`/Vite 日志带 ANSI 控制码并先于 JSON 输出，导致解析失败，未创建标签或 Release。现从混合 stdout 尾部提取并校验包元数据 JSON，并加入含 ANSI 构建日志的契约测试。
 - **personal.7 第二次发行工作流**：运行 `35302056157` 的隔离安装已通过，随后工作流自身仍用命令替换接收 `npm pack --silent`，同一批生命周期日志被当成归档文件名，`sha256sum` 以“文件名过长”失败，仍未创建标签或 Release。现改为打包到 runner 独立目录，按 manifest 的包名与版本计算唯一归档路径，并检查文件实际存在；发行流程不再解析 `npm pack` 的人类日志。
+- **personal.7 最终发行**：提交 `006a3ec` 的三平台 CI `35302308070` 全绿；Personal Release `35302838636` 完成隔离安装、归档、`SHA256SUMS`、标签和 prerelease，标签与资产均指向该提交。
 - `instantiates` 和成员调用边原先常记录表达式起点，导致 Graph 知道引用却无法按列补编辑；现在记录构造类型或成员标识符的 AST 字节列。
 - JS/TS `const mod = await import('./x')` 现在产生 AST 证明的 namespace mapping，`mod.member()` 可解析到模块导出并参与重命名；动态解构与计算属性仍拒绝猜测。
 - 编辑结果增加 `canApply` 与 `blockers`；无 watcher 的只读连接不再每次产生误导性 warning，真实 degraded 状态仍告警。
