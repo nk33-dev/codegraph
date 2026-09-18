@@ -51,7 +51,12 @@ jobs:
           [ "$TAG" = "v$VERSION" ] || { echo "::error::tag $TAG does not match package version v$VERSION"; exit 1; }
           NOTES="docs/person/releases/$TAG.md"
           [ -f "$NOTES" ] || { echo "::error::missing release notes: $NOTES"; exit 1; }
-          ARCHIVE="$(npm pack --ignore-scripts --silent)"
+          PACKAGE_BASENAME="$(node -p 'const p=require("./package.json"); p.name.replace(/^@/, "").replace("/", "-") + "-" + p.version + ".tgz"')"
+          PACK_DIR="$RUNNER_TEMP/codegraph-personal-pack"
+          mkdir -p "$PACK_DIR"
+          npm pack --ignore-scripts --silent --pack-destination "$PACK_DIR" >/dev/null
+          ARCHIVE="$PACK_DIR/$PACKAGE_BASENAME"
+          [ -f "$ARCHIVE" ] || { echo "::error::npm pack did not create $ARCHIVE"; exit 1; }
           sha256sum "$ARCHIVE" > SHA256SUMS
           echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
           echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
