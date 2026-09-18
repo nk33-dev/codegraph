@@ -14,6 +14,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- `v1.6.0-personal.8` 修复 explore 的两处输出不一致：blast radius 的调用方数量与所列文件现在同源（测试节点只计为测试文件，同一文件的模块 import 依赖与文件内符号不再重复计数）；自然语言要求“相关测试”时测试文件默认只输出测试摘要（测试声明、行号、它实际调用的生产符号，长测试体抽样），`includeTestSource: true` 才按普通源码渲染。同时把 `includeTestSource` 的描述压到最短，并让字符预算测试共用一组上限常量，修正上一版引入的固定表面超限。
 - `v1.6.0-personal.6` 收敛 MCP 固定表面与重复说明，稳定 stale/status 输出，补充首调用时延观测，并交付 personal.5 后续的遥测、编辑索引刷新和跨平台修复。
 - 个人发布改由 GitHub Actions 完整构建、验证和上传：`personal` 作为 fork 默认分支注册发布工作流，标签从包版本自动推导并绑定精确提交，开发机不再生成或上传发布资产。
 - 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,024`，保留 `codegraph_explore`、`codegraph_edit` 及全部参数和 Graph/LSP 能力；工具描述不再随仓库规模变化，重复响应尾注与重复的「已展示源码视为已读取」声明同步收敛。

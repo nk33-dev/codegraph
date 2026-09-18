@@ -1,5 +1,22 @@
 # 个人版开发验证记录
 
+## 2026-09-18：explore 依赖分类、测试摘要与固定表面预算
+
+用户报告两项 explore 输出问题；本批同时修掉它引入的固定表面超限。契约见[结构化查询](structured-queries.md#blast-radius-依赖分类)与 [MCP 表面与缓存稳定性](mcp-surface.md#固定表面测量)。
+
+### 实现
+
+- **依赖分类计数同源**：每个类别先切分测试/非测试，数量和文件位置都只从同一份切片计算，测试不进入生产调用方计数；同一文件经模块 `imports` 边与文件内具体符号各计一次的问题一并修掉（有具体符号时只保留具体符号，纯导入文件仍单独归类）；行首给出生产依赖符号数与测试文件数两个不重叠的数字。
+- **测试摘要**：查询明确要求测试时，测试文件默认渲染测试声明、行号与 `// exercises …`（取自该声明范围内的调用边），长测试体抽样并注明省略；`includeTestSource: true` 或再次 explore 测试名可取全文。未请求测试的查询与 80 行以下的测试文件不受影响。
+- **固定表面预算**：`includeTestSource` 描述压到 101 字符（整项 173 字符）；`server-instructions.test.ts` 的上限改为共用一组 `SURFACE_MAX` 常量，修掉同一个量在两个用例里各写一个阈值（explore 3,100 / 3,150）导致只撞破其中一个的问题；`docs/person/mcp-surface.md` 与 `mcp-latency-and-load.md` 补上当前基线。
+
+### 验证
+
+- **本机（Windows、Node 24.16.0）**：`npx tsc --noEmit` 通过；`explore-blast-radius`、`explore-test-summary`、`explore-intent-query-focus`、`explore-output-budget` 共 39 项通过；`server-instructions`、`mcp-fixed-surface`、`mcp-tool-annotations` 加入后 7 文件 61 项通过；另跑 explore 分配、诊断、跨调用去重等 10 个套件 149 项通过。仓库未生成本地 `dist/`，依赖预构建 CLI 或真实 MCP 子进程的用例在本地失败/超时，按个人发行边界未在本地执行完整 build 与全量测试。
+- **CI `35321228674`（提交 `ff8efc6`）**：三平台都只有 1 个测试文件失败——`__tests__/server-instructions.test.ts` 的 3 项字符预算断言（Windows 为 1 failed / 285 passed / 21 skipped，macOS 为 1 failed / 289 passed / 17 skipped）。逐条核对日志确认所有失败都是固定表面超限，检索与图查询用例全绿；原因是新参数让 tools/list 从 4,810 涨到 5,092，而旧上限只剩约 40 字符余量。
+- **CI `35322005586`（提交 `8ba856a`）**：三平台全绿，Ubuntu 4,798 项通过、200 项跳过，本版从该提交发布。
+- 未做：模型级 Agent A/B；本批不改变默认检索范围、预算或图推导，只改输出分类与测试文件的渲染形态。
+
 ## 2026-09-18：MCP 上下文优化最终复核
 
 - 合并 P0 固定表面与 P2 观测能力；P1 只保留 stable stale 输出、确定性排序、去重会话边界和测试隔离修复，未合入未经模型级 A/B 验证的预算/关系裁剪开关。
