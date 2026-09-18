@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { parseNpmPackOutput } from './lib/npm-pack-output.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npm = process.env.npm_execpath;
@@ -15,7 +16,7 @@ const run = (args, cwd = root) => execFileSync(process.execPath, args, {
 
 try {
   // 先构建，再把真实 tarball 装进独立 prefix，避免从工作区借用依赖或产物。
-  const packed = JSON.parse(run([npm, 'pack', '--ignore-scripts', '--json', '--pack-destination', temporary]));
+  const packed = parseNpmPackOutput(run([npm, 'pack', '--ignore-scripts', '--json', '--pack-destination', temporary]));
   const archive = path.join(temporary, packed[0].filename);
   const prefix = path.join(temporary, 'installed');
   run([npm, 'install', '--global', '--prefix', prefix, archive, '--no-audit', '--no-fund']);
