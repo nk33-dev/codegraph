@@ -43,4 +43,20 @@ describe('apiCorrelation project configuration', () => {
     expect(raw.extensions).toEqual({ '.foo': 'typescript' });
     expect(loadApiCorrelationConfig(root).enabled).toBe(false);
   });
+
+  it('uses the same schema for a local overlay and lets it override shared settings', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-api-config-'));
+    roots.push(root);
+    writeApiCorrelationConfig(root, {
+      enabled: true,
+      clientPaths: ['web'],
+      serverPaths: ['api'],
+    }, 'shared');
+    writeApiCorrelationConfig(root, {
+      enabled: false,
+    }, 'local');
+
+    expect(fs.existsSync(path.join(root, '.codegraph', 'codegraph.json'))).toBe(true);
+    expect(loadApiCorrelationConfig(root)).toEqual({ enabled: false, clientPaths: [], serverPaths: [] });
+  });
 });

@@ -718,37 +718,50 @@ async function runInit(
     const cg = await CodeGraph.init(projectPath, { index: false });
     clack.log.success(`Initialized in ${projectPath}`);
 
-    // 跨层 HTTP 关联是可选的。把选择写入项目根的 codegraph.json，后续可
-    // 直接编辑该文件，不把交互状态藏在用户目录或索引数据库里。
+    // 跨层 HTTP 关联是可选的。两种位置使用同一份 schema：本地覆盖写入
+    // .codegraph/codegraph.json，团队共享写入项目根 codegraph.json。
     if (!options.yes && process.stdin.isTTY && process.stdout.isTTY) {
       const enabled = await clack.confirm({
         message: '启用前后端 HTTP 接口关联（Axios/fetch ↔ Spring/Express 等路由）？',
         initialValue: true,
       });
       if (!clack.isCancel(enabled)) {
-        const guess = (names: string[]): string[] => names.filter((name) => fs.existsSync(path.join(projectPath, name)));
-        const clientDefaults = guess(['web', 'frontend', 'client', 'src']);
-        const serverDefaults = guess(['server', 'backend', 'api', 'services']);
-        const text = async (message: string, initialValue: string): Promise<string> => {
-          const value = await clack.text({ message, initialValue, placeholder: '留空表示不限制路径' });
-          return clack.isCancel(value) ? initialValue : value;
-        };
-        const clientText = enabled
-          ? await text('客户端路径（逗号分隔，可留空）', clientDefaults.join(', '))
-          : '';
-        const serverText = enabled
-          ? await text('服务端路径（逗号分隔，可留空）', serverDefaults.join(', '))
-          : '';
-        const split = (value: string): string[] => value.split(',').map((item) => item.trim()).filter(Boolean);
-        try {
-          writeApiCorrelationConfig(projectPath, {
-            enabled: enabled === true,
-            clientPaths: split(clientText),
-            serverPaths: split(serverText),
-          });
-          clack.log.info('已写入 codegraph.json；以后可直接修改 apiCorrelation.enabled/clientPaths/serverPaths。');
-        } catch (err) {
-          clack.log.warn(`无法写入 apiCorrelation 配置：${err instanceof Error ? err.message : String(err)}`);
+        const location = await clack.select({
+          message: '配置保存到哪里？',
+          initialValue: 'local',
+          options: [
+            { value: 'local', label: '本地配置', hint: '.codegraph/codegraph.json，不提交 Git' },
+            { value: 'shared', label: '团队共享', hint: '项目根 codegraph.json，可提交 Git' },
+          ],
+        });
+        if (clack.isCancel(location)) {
+          clack.log.info('已取消配置保存，使用默认 HTTP 关联行为。');
+        } else {
+          const guess = (names: string[]): string[] => names.filter((name) => fs.existsSync(path.join(projectPath, name)));
+          const clientDefaults = guess(['web', 'frontend', 'client', 'src']);
+          const serverDefaults = guess(['server', 'backend', 'api', 'services']);
+          const text = async (message: string, initialValue: string): Promise<string> => {
+            const value = await clack.text({ message, initialValue, placeholder: '留空表示不限制路径' });
+            return clack.isCancel(value) ? initialValue : value;
+          };
+          const clientText = enabled
+            ? await text('客户端路径（逗号分隔，可留空）', clientDefaults.join(', '))
+            : '';
+          const serverText = enabled
+            ? await text('服务端路径（逗号分隔，可留空）', serverDefaults.join(', '))
+            : '';
+          const split = (value: string): string[] => value.split(',').map((item) => item.trim()).filter(Boolean);
+          try {
+            writeApiCorrelationConfig(projectPath, {
+              enabled: enabled === true,
+              clientPaths: split(clientText),
+              serverPaths: split(serverText),
+            }, location === 'local' ? 'local' : 'shared');
+            const configPath = location === 'local' ? '.codegraph/codegraph.json' : 'codegraph.json';
+            clack.log.info(`已写入 ${configPath}；以后可直接修改 apiCorrelation.enabled/clientPaths/serverPaths。`);
+          } catch (err) {
+            clack.log.warn(`无法写入 apiCorrelation 配置：${err instanceof Error ? err.message : String(err)}`);
+          }
         }
       }
     }

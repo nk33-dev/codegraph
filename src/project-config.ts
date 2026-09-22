@@ -1,6 +1,6 @@
 /**
- * Project-scoped configuration: a committed `codegraph.json` at the project
- * root that a team shares through version control.
+ * Project-scoped configuration: a shared `codegraph.json` at the project root
+ * plus an optional local `.codegraph/codegraph.json` overlay.
  *
  * Today it carries one thing — `extensions`, an opt-in map from a custom file
  * extension to one of CodeGraph's supported languages. The built-in
@@ -28,8 +28,10 @@ import { Language } from './types';
 import { isLanguageSupported } from './extraction/grammars';
 import { logWarn } from './errors';
 
-/** Filename of the project-scoped config, resolved relative to the project root. */
+/** Filename shared by the committed project config and the local overlay. */
 export const PROJECT_CONFIG_FILENAME = 'codegraph.json';
+/** Local overlay is kept beside the index and is not intended for Git. */
+export const LOCAL_PROJECT_CONFIG_PATH = `.codegraph/${PROJECT_CONFIG_FILENAME}`;
 
 export interface ProjectConfig {
   /** Map of custom file extension (`.foo`) to a supported language id. */
@@ -105,18 +107,19 @@ interface ParsedConfig {
     clientPaths: string[];
     serverPaths: string[];
   };
+  /** Top-level keys explicitly present in this file, for overlay merging. */
+  present: ReadonlySet<string>;
 }
 
 interface CacheEntry {
-  mtimeMs: number;
+  signature: string;
   config: ParsedConfig;
 }
 
 /**
  * Cache keyed by project root. The loader is called once per indexing/scan/sync
- * operation (and per watch event), so the mtime guard keeps repeat calls to one
- * `stat` while a single `codegraph.json` is in force. Keying by root keeps two
- * projects in the same process (the daemon / multi-project MCP server) isolated.
+ * operation (and per watch event), so the two-file mtime signature keeps repeat
+ * calls cheap while both config layers are in force.
  */
 const cache = new Map<string, CacheEntry>();
 
@@ -133,6 +136,7 @@ const EMPTY_CONFIG: ParsedConfig = Object.freeze({
     clientPaths: Object.freeze([]) as unknown as string[],
     serverPaths: Object.freeze([]) as unknown as string[],
   }),
+  present: new Set<string>(),
 });
 
 /**
@@ -156,7 +160,7 @@ function normalizeExtKey(raw: string): string | null {
 }
 
 /**
- * Read + JSON-parse a `codegraph.json` once and return its validated view.
+ * Read + JSON-parse one config layer and return its validated view.
  * Every failure mode degrades to the zero-config default — a missing file, bad
  * JSON, or a typo'd value never throws.
  */
@@ -180,6 +184,7 @@ function parseConfig(file: string): ParsedConfig {
   }
 
   if (!parsed || typeof parsed !== 'object') return EMPTY_CONFIG;
+  const present = new Set(Object.keys(parsed));
 
   const extensions = extractExtensions(parsed, file);
   const includeIgnored = extractIncludeIgnored(parsed, file);
@@ -196,10 +201,25 @@ function parseConfig(file: string): ParsedConfig {
     && apiCorrelation.enabled === true
     && apiCorrelation.clientPaths.length === 0
     && apiCorrelation.serverPaths.length === 0
+    && present.size === 0
   ) {
     return EMPTY_CONFIG;
   }
-  return { extensions, includeIgnored, exclude, include, deprioritize, apiCorrelation };
+  return { extensions, includeIgnored, exclude, include, deprioritize, apiCorrelation, present };
+}
+
+/** Merge a local overlay without letting absent keys erase shared settings. */
+function mergeConfig(base: ParsedConfig, overlay: ParsedConfig): ParsedConfig {
+  const pick = <T>(key: string, shared: T, local: T): T => overlay.present.has(key) ? local : shared;
+  return {
+    extensions: pick('extensions', base.extensions, overlay.extensions),
+    includeIgnored: pick('includeIgnored', base.includeIgnored, overlay.includeIgnored),
+    exclude: pick('exclude', base.exclude, overlay.exclude),
+    include: pick('include', base.include, overlay.include),
+    deprioritize: pick('deprioritize', base.deprioritize, overlay.deprioritize),
+    apiCorrelation: pick('apiCorrelation', base.apiCorrelation, overlay.apiCorrelation),
+    present: new Set([...base.present, ...overlay.present]),
+  };
 }
 
 function extractApiCorrelation(parsed: object, file: string): ParsedConfig['apiCorrelation'] {
@@ -356,22 +376,18 @@ function extractInclude(parsed: object, file: string): string[] {
  * read/parse) while a single config file is in force, shared across every field.
  */
 function loadParsedConfig(rootDir: string): ParsedConfig {
-  const file = path.join(rootDir, PROJECT_CONFIG_FILENAME);
-
-  let mtimeMs: number;
-  try {
-    mtimeMs = fs.statSync(file).mtimeMs;
-  } catch {
-    // No config file — drop any stale cache entry and return the default.
-    cache.delete(rootDir);
-    return EMPTY_CONFIG;
-  }
+  const sharedFile = path.join(rootDir, PROJECT_CONFIG_FILENAME);
+  const localFile = path.join(rootDir, LOCAL_PROJECT_CONFIG_PATH);
+  const mtime = (file: string): number => {
+    try { return fs.statSync(file).mtimeMs; } catch { return 0; }
+  };
+  const signature = `${mtime(sharedFile)}:${mtime(localFile)}`;
 
   const entry = cache.get(rootDir);
-  if (entry && entry.mtimeMs === mtimeMs) return entry.config;
+  if (entry && entry.signature === signature) return entry.config;
 
-  const config = parseConfig(file);
-  cache.set(rootDir, { mtimeMs, config });
+  const config = mergeConfig(parseConfig(sharedFile), parseConfig(localFile));
+  cache.set(rootDir, { signature, config });
   return config;
 }
 
@@ -501,8 +517,11 @@ export function addIncludeIgnoredPatterns(rootDir: string, patterns: string[]): 
 export function writeApiCorrelationConfig(
   rootDir: string,
   value: ProjectConfig['apiCorrelation'],
+  location: 'local' | 'shared' = 'shared',
 ): void {
-  const file = path.join(rootDir, PROJECT_CONFIG_FILENAME);
+  const file = location === 'local'
+    ? path.join(rootDir, LOCAL_PROJECT_CONFIG_PATH)
+    : path.join(rootDir, PROJECT_CONFIG_FILENAME);
   let config: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf-8'));
@@ -515,6 +534,7 @@ export function writeApiCorrelationConfig(
     ...(value?.clientPaths?.length ? { clientPaths: value.clientPaths } : {}),
     ...(value?.serverPaths?.length ? { serverPaths: value.serverPaths } : {}),
   };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n');
   clearProjectConfigCache();
 }
