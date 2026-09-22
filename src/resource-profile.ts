@@ -16,6 +16,9 @@ import { logWarn } from './errors';
 
 export type ResourceProfileName = 'battery' | 'balanced' | 'performance';
 
+/** 索引任务等级：普通保存、接口/导出/路由等结构变更、全局配置变更。 */
+export type IndexTaskLevel = 'ordinary' | 'interface' | 'global';
+
 /** 深度双索引（阶段四）的档位策略；阶段一只解析与展示，不改变现有行为。 */
 export type DeepDualIndexPolicy = 'explicit' | 'onDemand' | 'prewarm';
 
@@ -44,6 +47,8 @@ export interface ResourceProfileSettings {
   sessionCacheMb: number;
   /** 深度双索引策略。 */
   deepDualIndex: DeepDualIndexPolicy;
+  /** 各任务等级允许使用的解析 worker 上限；普通保存不会默认打满机器。 */
+  indexWorkers: Record<IndexTaskLevel, number>;
 }
 
 /** 查询 worker 的硬上限，任何配置都不能超过。 */
@@ -65,6 +70,7 @@ const PROFILE_TABLE: Record<ResourceProfileName, Omit<ResourceProfileSettings, '
     lspIdleTimeoutMs: 90_000,
     sessionCacheMb: 64,
     deepDualIndex: 'explicit',
+    indexWorkers: { ordinary: 1, interface: 2, global: 2 },
   },
   balanced: {
     queryWorkersInitial: 1,
@@ -78,6 +84,7 @@ const PROFILE_TABLE: Record<ResourceProfileName, Omit<ResourceProfileSettings, '
     lspIdleTimeoutMs: 300_000,
     sessionCacheMb: 128,
     deepDualIndex: 'onDemand',
+    indexWorkers: { ordinary: 1, interface: 3, global: 5 },
   },
   performance: {
     queryWorkersInitial: 2,
@@ -90,6 +97,7 @@ const PROFILE_TABLE: Record<ResourceProfileName, Omit<ResourceProfileSettings, '
     lspIdleTimeoutMs: 600_000,
     sessionCacheMb: 256,
     deepDualIndex: 'prewarm',
+    indexWorkers: { ordinary: 2, interface: 5, global: 8 },
   },
 };
 
@@ -198,6 +206,15 @@ export function describeResourceProfile(settings: ResourceProfileSettings): stri
     `resolveWorkers<=${settings.resolveWorkersMax}`,
     `lsp=${settings.lspPerProjectSoftMax}/project, ${settings.lspGlobalMax}/global (idle exit ${Math.round(settings.lspIdleTimeoutMs / 1000)}s)`,
   ].join(', ');
+}
+
+/** 返回当前档位对指定索引任务的解析 worker 上限。 */
+export function resolveIndexWorkerLimit(
+  level: IndexTaskLevel = 'ordinary',
+  settings: ResourceProfileSettings = resolveResourceProfile(),
+): number {
+  const configured = settings.indexWorkers[level] ?? settings.indexWorkers.ordinary;
+  return Math.max(1, Math.min(configured, settings.resolveWorkersMax, MAX_QUERY_WORKERS));
 }
 
 /** 查询池的生效尺寸；`max = 0` 表示池被显式关闭。 */

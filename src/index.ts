@@ -6,6 +6,7 @@
  */
 
 import * as path from 'path';
+import { randomUUID } from 'node:crypto';
 import { queryCode, type CodeQueryRequest, type CodeQueryResult } from './graph/code-query';
 import { queryCodeRouted, type LspAvailability } from './graph/code-query-route';
 import { editCode, type CodeEditRequest, type CodeEditResult } from './edits';
@@ -13,7 +14,7 @@ import { completeEditTransaction, recoverPendingEditTransactions } from './edits
 import { queryCodeLsp, LspManager } from './lsp';
 import { familyForLanguage } from './lsp/servers';
 import { resourceMetrics, readResourceMetricsSnapshot, type ResourceMetricsSnapshot } from './resource-metrics';
-import { describeResourceProfile, resolveResourceProfile } from './resource-profile';
+import { describeResourceProfile, resolveResourceProfile, type IndexTaskLevel } from './resource-profile';
 export type {
   CodeQueryRequest, CodeQueryResult, CodeQueryMode, CodeQueryBackend, CodeQuerySource,
   CodeQueryItem, CodeSymbol, CodeReference, ImpactItem, ImpactVia, AffectedTestItem,
@@ -69,7 +70,7 @@ import {
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
-import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
+import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError, planRefresh, type RefreshPlan } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
@@ -112,7 +113,10 @@ export {
   defaultLogger,
 } from './errors';
 export { Mutex, FileLock, processInBatches, debounce, throttle, MemoryMonitor } from './utils';
+export type { IndexTaskLevel } from './resource-profile';
 export { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
+export { planRefresh } from './sync';
+export type { RefreshPlan, RefreshScope } from './sync';
 export { MCPServer } from './mcp';
 export {
   buildFlowEvidenceReport,
@@ -190,6 +194,23 @@ export interface IndexOptions {
   verbose?: boolean;
   /** Watcher fast path: reconcile ONLY these project-relative paths (see ExtractionOrchestrator.sync). */
   paths?: string[];
+  /** 资源调度等级；普通保存、接口结构变化或全局配置变化。 */
+  taskLevel?: IndexTaskLevel;
+}
+
+export interface IndexStatus {
+  version: string | null;
+  state: 'indexing' | 'complete' | 'partial' | 'failed' | null;
+  lastUpdatedAt: number | null;
+  laggingFileCount: number;
+  phase: string | null;
+  failureReason: string | null;
+  taskLevel: IndexTaskLevel | null;
+}
+
+export interface RefreshResult extends SyncResult {
+  plan: RefreshPlan;
+  version: string | null;
 }
 
 /**
@@ -542,6 +563,37 @@ export class CodeGraph {
   // Indexing
   // ===========================================================================
 
+  private beginIndexGeneration(taskLevel: IndexTaskLevel, paths?: string[]): string {
+    const version = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+    try {
+      this.queries.setMetadata('index_generation', version);
+      this.queries.setMetadata('index_state', 'indexing');
+      this.queries.setMetadata('index_phase', 'scanning');
+      this.queries.setMetadata('index_task_level', taskLevel);
+      this.queries.setMetadata('index_failure_reason', '');
+      this.queries.setMetadata('index_started_at', String(Date.now()));
+      this.queries.setMetadata('index_pending_files', String(paths?.length ?? 0));
+    } catch { /* 状态元数据是辅助信息，不阻断索引 */ }
+    return version;
+  }
+
+  private updateIndexProgress(progress: IndexProgress): void {
+    try {
+      this.queries.setMetadata('index_phase', progress.phase);
+      this.queries.setMetadata('index_progress', JSON.stringify({ current: progress.current, total: progress.total, currentFile: progress.currentFile ?? null }));
+    } catch { /* best effort */ }
+  }
+
+  private finishIndexGeneration(state: 'complete' | 'partial' | 'failed', reason?: string): void {
+    try {
+      this.queries.setMetadata('index_state', state);
+      this.queries.setMetadata('index_phase', state === 'failed' ? 'failed' : state === 'partial' ? 'partial' : 'complete');
+      this.queries.setMetadata('index_failure_reason', reason ?? '');
+      this.queries.setMetadata('index_finished_at', String(Date.now()));
+      this.queries.setMetadata('index_pending_files', '0');
+    } catch { /* best effort */ }
+  }
+
   /**
    * Index all files in the project
    *
@@ -551,7 +603,22 @@ export class CodeGraph {
    * 与后续阶段的「索引时间相对阶段一基线增长」比较；记录本身不参与索引逻辑。
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
-    const result = await this.runIndexAll(options);
+    const wrapped: IndexOptions = {
+      ...options,
+      onProgress: (progress) => { this.updateIndexProgress(progress); options.onProgress?.(progress); },
+    };
+    let result: IndexResult;
+    try {
+      result = await this.runIndexAll(wrapped);
+    } catch (error) {
+      this.finishIndexGeneration('failed', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    const failure = result.errors.find((entry) => entry.severity === 'error')?.message;
+    const state = !result.success
+      ? 'failed'
+      : this.getIndexState() === 'partial' ? 'partial' : 'complete';
+    this.finishIndexGeneration(state, failure);
     if (result.durationMs > 0) {
       resourceMetrics().recordIndexRun('full', result.durationMs, result.filesIndexed);
     }
@@ -565,6 +632,7 @@ export class CodeGraph {
       } catch {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
+      this.beginIndexGeneration(options.taskLevel ?? 'global');
       // Defer WAL auto-checkpointing for the whole bulk run (#1231): the
       // default 1000-page interval re-writes hot pages into the main DB file
       // over and over — ~95% of all disk I/O during a bulk index, and a
@@ -635,7 +703,8 @@ export class CodeGraph {
             // Store-writer offload is fresh-DB-only: with any pre-existing
             // data the store path must read (existing-file checks, cross-file
             // edge snapshots) and delete, which belongs on one thread.
-            freshDb ? { dbPath: this.db.getPath(), fastInit } : null
+            freshDb ? { dbPath: this.db.getPath(), fastInit } : null,
+            options.taskLevel ?? 'global'
           );
         } finally {
           if (freshDb) {
@@ -844,19 +913,44 @@ export class CodeGraph {
    *
    * Uses a mutex to prevent concurrent indexing operations.
    */
-  async indexFiles(filePaths: string[]): Promise<IndexResult> {
+  async indexFiles(filePaths: string[], taskLevel: IndexTaskLevel = 'interface'): Promise<IndexResult> {
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
       } catch {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
+      this.beginIndexGeneration(taskLevel, filePaths);
       try {
-        return this.orchestrator.indexFiles(filePaths);
+        const result = await this.orchestrator.indexFiles(filePaths);
+        this.finishIndexGeneration(result.success ? 'complete' : 'failed', result.errors.find((entry) => entry.severity === 'error')?.message);
+        return result;
+      } catch (error) {
+        this.finishIndexGeneration('failed', error instanceof Error ? error.message : String(error));
+        throw error;
       } finally {
         this.fileLock.release();
       }
     });
+  }
+
+  /**
+   * 按文件执行一次显式局部刷新。普通正文修改只触碰该文件；接口、导出和
+   * 路由变化扩大到关联同步；项目配置变化走全项目 reconcile。
+   */
+  async refresh(filePath: string): Promise<RefreshResult> {
+    const absolute = path.resolve(this.projectRoot, filePath);
+    const relative = path.relative(this.projectRoot, absolute);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('refresh file must stay within the project root');
+    }
+    const plan = planRefresh(this.projectRoot, relative);
+    const normalized = plan.filePath.replace(/\\/g, '/');
+    const result = await this.sync({
+      paths: plan.scope === 'file' ? [normalized] : undefined,
+      taskLevel: plan.taskLevel,
+    });
+    return { ...result, plan, version: this.getIndexVersion() };
   }
 
   /**
@@ -889,7 +983,18 @@ export class CodeGraph {
    * （durationMs 为 0）不计入基线，避免把「被别的进程挡住」误当成一次增量。
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
-    const result = await this.runSync(options);
+    const wrapped: IndexOptions = {
+      ...options,
+      onProgress: (progress) => { this.updateIndexProgress(progress); options.onProgress?.(progress); },
+    };
+    let result: SyncResult;
+    try {
+      result = await this.runSync(wrapped);
+    } catch (error) {
+      this.finishIndexGeneration('failed', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    this.finishIndexGeneration(result.lockUnavailable ? 'failed' : 'complete', result.lockUnavailable ? 'index writer lock unavailable' : undefined);
     if (result.durationMs > 0) {
       const changed = result.filesAdded + result.filesModified + result.filesRemoved;
       resourceMetrics().recordIndexRun('incremental', result.durationMs, changed);
@@ -916,6 +1021,7 @@ export class CodeGraph {
           lockUnavailable: true,
         };
       }
+      this.beginIndexGeneration(options.taskLevel ?? (options.paths?.length ? 'ordinary' : 'global'), options.paths);
       // Defer WAL auto-checkpointing for the whole incremental run, exactly
       // as indexAll does for the bulk path (#1231): sync's store loop and its
       // resolution passes churn the same FTS + secondary-index hot pages, and
@@ -1203,7 +1309,15 @@ export class CodeGraph {
     this.watcher = new FileWatcher(
       this.projectRoot,
       async (paths?: string[]) => {
-        const result = await this.sync({ paths });
+        const plans = paths?.map((filePath) => planRefresh(this.projectRoot, filePath)) ?? [];
+        const broad = plans.some((plan) => plan.scope !== 'file');
+        const taskLevel: IndexTaskLevel = plans.some((plan) => plan.taskLevel === 'global')
+          ? 'global'
+          : plans.some((plan) => plan.taskLevel === 'interface') ? 'interface' : 'ordinary';
+        const result = await this.sync({
+          paths: broad ? undefined : paths,
+          taskLevel,
+        });
         // sync() returns this exact zero-shape iff it failed to acquire the
         // file lock (a real empty sync always has filesChecked > 0 because
         // scanDirectory ran). Surface that to the watcher as a typed error
@@ -1347,6 +1461,29 @@ export class CodeGraph {
     return raw === 'indexing' || raw === 'complete' || raw === 'partial' || raw === 'failed'
       ? raw
       : null;
+  }
+
+  /** 当前索引生成版本；所有带行号的查询结果都应引用同一版本。 */
+  getIndexVersion(): string | null {
+    return this.queries.getMetadata('index_generation');
+  }
+
+  /** 统一索引状态快照，供 CLI、MCP 和 UI 共享。 */
+  getIndexStatus(checkFiles = true): IndexStatus {
+    const changes = checkFiles ? this.getChangedFiles() : { added: [], modified: [], removed: [] };
+    const pending = this.getPendingFiles();
+    const rawLevel = this.queries.getMetadata('index_task_level');
+    const taskLevel = rawLevel === 'ordinary' || rawLevel === 'interface' || rawLevel === 'global' ? rawLevel : null;
+    const lastUpdatedAt = this.getLastIndexedAt();
+    return {
+      version: this.getIndexVersion(),
+      state: this.getIndexState(),
+      lastUpdatedAt,
+      laggingFileCount: new Set([...pending.map((file) => file.path), ...changes.added, ...changes.modified, ...changes.removed]).size,
+      phase: this.queries.getMetadata('index_phase'),
+      failureReason: this.queries.getMetadata('index_failure_reason') || null,
+      taskLevel,
+    };
   }
 
   /**

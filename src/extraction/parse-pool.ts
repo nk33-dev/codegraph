@@ -29,6 +29,7 @@
 
 import { Worker } from 'worker_threads';
 import type { Language, ExtractionResult } from '../types';
+import { resolveIndexWorkerLimit, type IndexTaskLevel } from '../resource-profile';
 
 /**
  * Minimal worker surface the pool drives — satisfied by a real `worker_threads`
@@ -122,7 +123,11 @@ export function resolveParseBudgetMs(baseMs: number, contentLength: number): num
   return Math.min(scaled, Math.max(baseMs, MAX_SCALED_PARSE_TIMEOUT_MS));
 }
 
-export function resolveParsePoolSize(envVal: string | undefined, cpuCount: number): number {
+export function resolveParsePoolSize(
+  envVal: string | undefined,
+  cpuCount: number,
+  taskLevel?: IndexTaskLevel,
+): number {
   if (envVal !== undefined && envVal !== '') {
     const n = Number(envVal);
     if (Number.isFinite(n) && n >= 0) {
@@ -130,7 +135,11 @@ export function resolveParsePoolSize(envVal: string | undefined, cpuCount: numbe
     }
     // non-numeric / negative → fall through to the default
   }
-  return Math.max(1, Math.min(cpuCount - 1, DEFAULT_PARSE_POOL_CAP));
+  // 默认遵循显式资源档位和任务等级；普通保存只使用一个 worker，避免
+  // 一次小改动把整台机器推到满载。显式 CODEGRAPH_PARSE_WORKERS 仍是最终覆盖。
+  return taskLevel === undefined
+    ? Math.max(1, Math.min(cpuCount - 1, DEFAULT_PARSE_POOL_CAP))
+    : Math.max(1, Math.min(cpuCount - 1, DEFAULT_PARSE_POOL_CAP, resolveIndexWorkerLimit(taskLevel)));
 }
 
 interface ParseJob {
