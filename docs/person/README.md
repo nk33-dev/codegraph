@@ -20,6 +20,7 @@
 | 资源档位、查询池自动缩容与 LSP 预算 | [资源档位与自动回收](resource-governance.md) |
 | MCP 固定表面、缓存稳定性与字符开销边界 | [MCP 表面与缓存稳定性](mcp-surface.md) |
 | Explore stale 输出稳定性与跨调用去重边界 | [Explore 响应稳定性](explore-response.md) |
+| 查询输出折叠、过滤、新文件状态与失败分类 | [查询输出、过滤与索引状态](query-output-indexing.md) |
 | 首调用 catch-up 时延、alwaysLoad 固定成本与 explore→Read 回退比例 | [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md) |
 | Steps、Windows 清理、WASM 测试运行与性能修复 | [开发验证记录](test-repairs.md) |
 

@@ -5,6 +5,7 @@ import { validatePathWithinRoot } from '../utils';
 import type { NodeBoundary } from './dynamic-boundary-report';
 import type { NamedSymbolFlow } from './named-symbol-flow';
 import { countImplementers } from './type-hierarchy';
+import { isSourceFile } from '../extraction/grammars';
 
 export const FLOW_EVIDENCE_SCHEMA_VERSION = 1 as const;
 
@@ -13,6 +14,7 @@ export type FlowConfidence = 'confirmed' | 'corroborated' | 'heuristic' | 'unkno
 export type FlowEvidenceSource = 'syntax' | 'graph' | 'lsp' | 'synthesizer' | 'boundary';
 export type FlowBreakReason =
   | 'unindexed'
+  | 'unsupported'
   | 'no_syntax_edge'
   | 'dynamic_key'
   | 'ambiguous_candidates'
@@ -522,11 +524,16 @@ export function buildFlowEvidenceReport(
       truncated = true;
       break;
     }
-    const detail = `索引中没有名为 ${token} 的符号`;
-    const item = breakEvidence('unindexed', detail, token);
+    const unsupported = /\.[A-Za-z0-9_-]+$/.test(token)
+      && !isSourceFile(token.replace(/\\/g, '/'));
+    const reason: FlowBreakReason = unsupported ? 'unsupported' : 'unindexed';
+    const detail = unsupported
+      ? `${token} 的文件类型不在当前索引支持范围内`
+      : `索引中没有名为 ${token} 的符号`;
+    const item = breakEvidence(reason, detail, token);
     addEvidence(item);
     allBreaks.push({
-      reason: 'unindexed',
+      reason,
       at: null,
       symbol: token,
       detail,

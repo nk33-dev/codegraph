@@ -1066,9 +1066,10 @@ program
   .command('sync [path]')
   .description('Sync changes since last index')
   .option('-q, --quiet', 'Suppress output (for git hooks)')
+  .option('-f, --file <file>', 'Refresh one project-relative file without scanning the rest of the project')
   .option('--upgrade-index', 'Upgrade the index to the current extraction version (prints a time/disk estimate and asks first)')
   .option('-y, --yes', 'With --upgrade-index: run the upgrade without asking (required when not interactive)')
-  .action(async (pathArg: string | undefined, options: { quiet?: boolean; upgradeIndex?: boolean; yes?: boolean }) => {
+  .action(async (pathArg: string | undefined, options: { quiet?: boolean; file?: string; upgradeIndex?: boolean; yes?: boolean }) => {
     const projectPath = resolveProjectPath(pathArg);
 
     try {
@@ -1083,13 +1084,29 @@ program
       const cg = await CodeGraph.open(projectPath);
 
       if (options.upgradeIndex) {
+        if (options.file) {
+          error('--file cannot be combined with --upgrade-index');
+          process.exit(1);
+        }
         await runIndexUpgrade(projectPath, cg, options);
         cg.destroy();
         return;
       }
 
+      let syncPaths: string[] | undefined;
+      if (options.file) {
+        const candidate = path.resolve(projectPath, options.file);
+        const rel = path.relative(projectPath, candidate).replace(/\\/g, '/');
+        if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+          error(`File must stay within the project root: ${options.file}`);
+          cg.destroy();
+          process.exit(1);
+        }
+        syncPaths = [rel];
+      }
+
       if (options.quiet) {
-        const result = await cg.sync();
+        const result = await cg.sync({ paths: syncPaths });
         if (result.lockUnavailable) process.exitCode = 1;
         persistResourceBaseline(projectPath);
         cg.destroy();
@@ -1104,6 +1121,7 @@ program
 
       const result = await cg.sync({
         onProgress: progress.onProgress,
+        paths: syncPaths,
       });
 
       await progress.stop();
@@ -1563,6 +1581,11 @@ program
   .description('Explore an area: relevant symbols\' source + call paths in one shot (same output as the codegraph_explore MCP tool)')
   .option('-p, --path <path>', 'Project path')
   .option('--max-files <number>', 'Maximum number of files to include source from')
+  .option('--directory <directory>', 'Limit primary source files to a project-relative directory')
+  .option('--language <language...>', 'Prefer one or more source languages while retaining connected cross-language nodes')
+  .option('--framework <framework...>', 'Require one or more detected project frameworks')
+  .option('--symbol-type <kind...>', 'Include these symbol kinds in source excerpts')
+  .option('--exclude-type <kind...>', 'Fold these symbol kinds out of source excerpts')
   .option('--mode <mode>', 'explore, definitions, references, symbols, diagnostics, impact, tests, or status; structured modes return JSON (tests takes the changed files as the query)', 'explore')
   .option('--backend <backend>', 'Structured query backend: graph (index, default), lsp (language server), auto (pick one), or both (merge)', 'graph')
   .option('--file <file>', 'Exact project-relative file for structured queries')
@@ -1578,7 +1601,7 @@ program
   .option('--changes', 'Attach Git changed symbols, semantic edge deltas, affected entries, and related tests')
   .option('--base <ref>', 'Git commit/ref used as the change-analysis baseline (default: HEAD)')
   .option('--deep-changes', 'Build an isolated temporary baseline index for resolved semantic edge comparison')
-  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; mode?: string; backend?: string; file?: string; line?: string; column?: string; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean }) => {
+  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; directory?: string; language?: string[]; framework?: string[]; symbolType?: string[]; excludeType?: string[]; mode?: string; backend?: string; file?: string; line?: string; column?: string; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
 
     try {
@@ -1589,6 +1612,11 @@ program
 
       const args: Record<string, unknown> = { query: queryParts.join(' ') };
       if (options.maxFiles) args.maxFiles = parseInt(options.maxFiles, 10);
+      if (options.directory) args.directory = options.directory;
+      if (options.language) args.languages = options.language;
+      if (options.framework) args.frameworks = options.framework;
+      if (options.symbolType) args.symbolTypes = options.symbolType;
+      if (options.excludeType) args.excludeTypes = options.excludeType;
       args.mode = options.mode;
       args.backend = options.backend;
       if (options.file !== undefined) args.file = options.file;
