@@ -983,6 +983,11 @@ export class CodeGraph {
    * （durationMs 为 0）不计入基线，避免把「被别的进程挡住」误当成一次增量。
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
+    // 进程被中断后，局部同步只修复指定文件，不能宣称整个索引已恢复完整；
+    // 保留 indexing 标记，等下一次全量 reconcile 再关闭它（#1556）。
+    const recoveringPartialIndex = options.paths !== undefined
+      && options.paths.length > 0
+      && this.getIndexState() === 'indexing';
     const wrapped: IndexOptions = {
       ...options,
       onProgress: (progress) => { this.updateIndexProgress(progress); options.onProgress?.(progress); },
@@ -995,6 +1000,11 @@ export class CodeGraph {
       throw error;
     }
     this.finishIndexGeneration(result.lockUnavailable ? 'failed' : 'complete', result.lockUnavailable ? 'index writer lock unavailable' : undefined);
+    if (recoveringPartialIndex && !result.lockUnavailable) {
+      try {
+        this.queries.setMetadata('index_state', 'indexing');
+      } catch { /* 状态元数据是辅助信息，不阻断同步 */ }
+    }
     if (result.durationMs > 0) {
       const changed = result.filesAdded + result.filesModified + result.filesRemoved;
       resourceMetrics().recordIndexRun('incremental', result.durationMs, changed);
