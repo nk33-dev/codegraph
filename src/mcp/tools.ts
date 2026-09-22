@@ -5,6 +5,7 @@
  */
 
 import type CodeGraph from '../index';
+import type { RefreshResult } from '../index';
 import type { QueryPool } from './query-pool';
 import { resourceMetrics } from '../resource-metrics';
 import { describeResourceProfile, resolveResourceProfile } from '../resource-profile';
@@ -1297,7 +1298,7 @@ interface PropertySchema {
  */
 export interface ToolResult {
   /** Structured queries, edits, and default explore all expose stable machine-readable results. */
-  structuredContent?: CodeQueryResult | CodeEditResult | ExploreStructuredContent;
+  structuredContent?: CodeQueryResult | CodeEditResult | ExploreStructuredContent | RefreshResult;
   content: Array<{
     type: 'text';
     text: string;
@@ -1352,6 +1353,7 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
   idempotentHint: true,
   openWorldHint: false,
 };
+
 
 /**
  * All CodeGraph MCP tools
@@ -1712,16 +1714,16 @@ export function getStaticTools(): ToolDefinition[] {
 /**
  * The MCP tools served by DEFAULT (short names). Pared to `codegraph_explore` — the single tool that
  * reliably earns its place: one capped call returns the verbatim source of the relevant symbols
- * grouped by file — plus this fork's `codegraph_edit` (phase 4), which is the one capability explore
- * cannot cover: a structured write. Every other tool is a narrower slice of what explore already
+ * grouped by file — plus this fork's `codegraph_edit`, the explicit write-side operation explore
+ * cannot cover. Every other tool is a narrower slice of what explore already
  * does, and presence itself steers mis-picks, so they are no longer LISTED to agents.
  *
  * The other defined tools (`node`, `search`, `callers`, plus callees/impact/files/
  * status) remain fully functional — handlers stay, the library API and CLI are
  * untouched, and `CODEGRAPH_MCP_TOOLS=explore,node,...` re-enables any of them.
  *
- * Personal-fork deviation: upstream lists `explore` alone. `edit` is added here because a write
- * capability that is never advertised cannot be used at all; the tool still previews by default.
+ * Personal-fork deviation: upstream lists `explore` alone. `edit` is added because a write
+ * capability that is never advertised cannot be used at all.
  */
 const DEFAULT_MCP_TOOLS = new Set(['explore', 'edit']);
 
@@ -2420,6 +2422,9 @@ export class ToolHandler {
       if (toolName === 'codegraph_edit') {
         return finish(await this.handleCodeEdit(args));
       }
+      if (toolName === 'codegraph_refresh') {
+        return finish(await this.handleRefresh(args));
+      }
 
       // Read tools: off-load the CPU-heavy dispatch to the worker pool when one
       // is attached, healthy, AND has finished its first cold start (daemon
@@ -2611,6 +2616,7 @@ export class ToolHandler {
       case 'codegraph_explore': return await this.handleExplore(args);
       case 'codegraph_node': return await this.handleNode(args);
       case 'codegraph_files': return await this.handleFiles(args);
+      case 'codegraph_refresh': return await this.handleRefresh(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
     }
   }
@@ -4844,6 +4850,7 @@ export class ToolHandler {
     // Step 3: Build relationship map
     const lines: string[] = [
       `**Exploration: ${query}**`,
+      `**Index generation:** ${cg.getIndexVersion() ?? 'unknown'} (all symbols, line numbers, source slices, and trail edges below use this generation)`,
       '',
       // Curated summary — filled in after the source loop (see below). We do NOT
       // report `subgraph.nodes.size` / `fileGroups.size` here: that's the raw
@@ -7132,7 +7139,7 @@ export class ToolHandler {
     }
     const maxLines = Math.max(1, opts.limit ?? DEFAULT_LIMIT);
     const start = offset - 1; // 0-based
-    const header = `**${filePath}** — ${total} lines, ${nodes.length} symbol${nodes.length === 1 ? '' : 's'} · ${depSummary}`;
+    const header = `**${filePath}** — ${total} lines, ${nodes.length} symbol${nodes.length === 1 ? '' : 's'} · ${depSummary} · index ${cg.getIndexVersion() ?? 'unknown'}`;
 
     // Numbered lines, byte-for-byte Read's shape: `<n>\t<line>`, no left-pad.
     const numbered: string[] = [];
@@ -7182,7 +7189,7 @@ export class ToolHandler {
         code = await cg.getCode(node.id);
       }
     }
-    return this.formatNodeDetails(node, code, outline) + this.formatTrail(cg, node);
+    return this.formatNodeDetails(node, code, outline, cg.getIndexVersion()) + this.formatTrail(cg, node);
   }
 
   // Whole-file fallback caps for a drifted file (#1474): small enough to fit
@@ -7206,6 +7213,7 @@ export class ToolHandler {
     const lines: string[] = [
       `**${node.name}** (${node.kind})`,
       '',
+      `**Index generation:** ${cg.getIndexVersion() ?? 'unknown'}`,
       `**Location:** ${node.filePath}${node.startLine ? `:${node.startLine}` : ''} — ⚠ as of the last index sync; the file has changed on disk since, so this line may be shifted`,
     ];
     if (node.signature) {
@@ -7274,7 +7282,7 @@ export class ToolHandler {
     const callees = collect(cg.getCallees(node.id));
     const callers = collect(cg.getCallers(node.id));
     if (callees.length === 0 && callers.length === 0) return '';
-    const lines: string[] = ['', '**Trail — codegraph_node any of these to follow it (no Read needed)**'];
+    const lines: string[] = ['', `**Trail — codegraph_node any of these to follow it (no Read needed; index ${cg.getIndexVersion() ?? 'unknown'})**`];
     if (callees.length > 0) {
       lines.push(`**Calls →** ${callees.slice(0, TRAIL_CAP).map(fmt).join(', ')}${callees.length > TRAIL_CAP ? `, +${callees.length - TRAIL_CAP} more` : ''}`);
     }
@@ -7348,6 +7356,21 @@ export class ToolHandler {
     };
   }
 
+  private async handleRefresh(args: Record<string, unknown>): Promise<ToolResult> {
+    const file = this.validateString(args.file, 'file');
+    if (typeof file !== 'string') return file;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const result = await cg.refresh(file);
+    return {
+      structuredContent: result,
+      content: [{
+        type: 'text',
+        text: `Refreshed ${result.plan.filePath} (${result.plan.scope}, ${result.plan.taskLevel})\n` +
+          `${result.plan.reason}\nIndex generation: ${result.version ?? 'unknown'}`,
+      }],
+    };
+  }
+
   private async handleStatus(args: Record<string, unknown>): Promise<ToolResult> {    let cg = this.getCodeGraph(args.projectPath as string | undefined);
     // Same trick as withStalenessNotice — when an explicit projectPath
     // resolves to the same project as the default session cg, prefer the
@@ -7361,6 +7384,7 @@ export class ToolHandler {
       } catch { /* closed instance — leave as is */ }
     }
     const stats = cg.getStats();
+    const indexStatus = cg.getIndexStatus();
 
     // Warn when this index actually belongs to a different git working tree
     // (e.g. the server resolved up from a nested worktree to the main checkout).
@@ -7377,6 +7401,11 @@ export class ToolHandler {
       lines.push(`> ⚠ ${worktreeMismatchWarning(mismatch).replace(/\n/g, '\n> ')}`, '');
     }
     lines.push(
+      `**Index generation:** ${indexStatus.version ?? 'unknown'}`,
+      `**Last updated:** ${indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never'}`,
+      `**Lagging files:** ${indexStatus.laggingFileCount}`,
+      `**Index phase:** ${indexStatus.phase ?? 'unknown'} (${indexStatus.taskLevel ?? 'unknown'} task)`,
+      ...(indexStatus.failureReason ? [`**Failure reason:** ${indexStatus.failureReason}`] : []),
       `**Files indexed:** ${stats.fileCount}`,
       `**Total nodes:** ${stats.nodeCount}`,
       `**Total edges:** ${stats.edgeCount}`,
@@ -7875,11 +7904,12 @@ export class ToolHandler {
     return lines.join('\n');
   }
 
-  private formatNodeDetails(node: Node, code: string | null, outline?: string | null): string {
+  private formatNodeDetails(node: Node, code: string | null, outline?: string | null, indexVersion?: string | null): string {
     const location = node.startLine ? `:${node.startLine}` : '';
     const lines: string[] = [
       `**${node.name}** (${node.kind})`,
       '',
+      `**Index generation:** ${indexVersion ?? 'unknown'}`,
       `**Location:** ${node.filePath}${location}`,
     ];
 

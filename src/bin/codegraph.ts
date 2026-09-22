@@ -12,6 +12,7 @@
  *   codegraph uninit [path]      Remove CodeGraph from a project
  *   codegraph index [path]       Index all files in the project
  *   codegraph sync [path]        Sync changes since last index
+ *   codegraph refresh <file>     Refresh one file with structural scope planning
  *   codegraph status [path]      Show index status
  *   codegraph query <search>     Search for symbols
  *   codegraph explore <query>    Structured queries: definitions, references, symbols, diagnostics, impact, tests, status
@@ -1060,6 +1061,37 @@ async function runIndexUpgrade(
 }
 
 /**
+ * codegraph refresh <file> [path]
+ */
+program
+  .command('refresh <file> [path]')
+  .description('Refresh one file; structural changes expand to related files')
+  .option('-j, --json', 'Output the refresh plan and result as JSON')
+  .action(async (fileArg: string, pathArg: string | undefined, options: { json?: boolean }) => {
+    const projectPath = resolveProjectPath(pathArg);
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+      const result = await cg.refresh(fileArg);
+      if (options.json) {
+        console.log(JSON.stringify(result));
+      } else {
+        success(`Refreshed ${result.plan.filePath} (${result.plan.scope}, ${result.plan.taskLevel})`);
+        info(result.plan.reason);
+        info(`Index generation: ${result.version ?? 'unknown'}`);
+      }
+      cg.destroy();
+    } catch (err) {
+      error(`Failed to refresh: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
  * codegraph sync [path]
  */
 program
@@ -1239,6 +1271,7 @@ program
       const buildInfo = cg.getIndexBuildInfo();
       const reindexRecommended = cg.isIndexStale();
       const indexState = cg.getIndexState();
+      const indexStatus = cg.getIndexStatus();
       // Zero on a healthy index; non-zero at rest means a resolution pass was
       // interrupted, so some files' call edges are missing (#1187).
       const pendingRefs = cg.getPendingReferenceCount();
@@ -1272,6 +1305,12 @@ program
             ? { worktreeRoot: worktreeMismatch.worktreeRoot, indexRoot: worktreeMismatch.indexRoot }
             : null,
           index: {
+            version: indexStatus.version,
+            lastUpdatedAt: indexStatus.lastUpdatedAt,
+            laggingFileCount: indexStatus.laggingFileCount,
+            phase: indexStatus.phase,
+            failureReason: indexStatus.failureReason,
+            taskLevel: indexStatus.taskLevel,
             builtWithVersion: buildInfo.version,
             builtWithExtractionVersion: buildInfo.extractionVersion,
             currentExtractionVersion: EXTRACTION_VERSION,
@@ -1305,6 +1344,12 @@ program
 
       // Project info
       console.log(chalk.cyan('Project:'), projectPath);
+      console.log(chalk.cyan('Index generation:'), indexStatus.version ?? 'unknown');
+      console.log(chalk.cyan('Last updated:'), indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never');
+      console.log(chalk.cyan('Lagging files:'), formatNumber(indexStatus.laggingFileCount));
+      console.log(chalk.cyan('Phase:'), indexStatus.phase ?? 'unknown');
+      console.log(chalk.cyan('Task level:'), indexStatus.taskLevel ?? 'unknown');
+      if (indexStatus.failureReason) console.log(chalk.cyan('Failure reason:'), indexStatus.failureReason);
       if (worktreeMismatch) {
         warn(worktreeMismatchWarning(worktreeMismatch));
       }

@@ -6,6 +6,8 @@
 
 显式配置 `CODEGRAPH_RESOURCE_PROFILE=battery|balanced|performance`（默认 `balanced`），不使用不可靠的跨平台电池检测。
 
+索引任务另分为 `ordinary`（普通正文保存）、`interface`（接口/导出/路由结构变化）和 `global`（项目配置变化）。普通任务默认只启用一个解析 worker，接口任务和全局任务才按档位逐级放宽；不会检测充电状态或默认满载。
+
 | 项目 | battery | balanced | performance |
 | --- | ---: | ---: | ---: |
 | 查询 worker 初始值 | 1 | 1 | 2 |

@@ -73,6 +73,8 @@ export interface CodeSymbol {
   endColumn: number;
   parentId: string | null;
   freshness: FileFreshness;
+  /** 该符号与行号所属的索引生成版本。 */
+  indexVersion?: string | null;
 }
 
 export interface CodeReference {
@@ -82,6 +84,7 @@ export interface CodeReference {
   provenance: Edge['provenance'] | 'unknown';
   /** Stays null when there is no call-site coordinate; it must not impersonate the source function's definition position. */
   site: { filePath: string; line: number | null; column: number | null };
+  indexVersion?: string | null;
 }
 
 /**
@@ -196,6 +199,13 @@ export type CodeQueryItem =
 export type MergedCodeQueryItem = CodeQueryItem & { origin: CodeQuerySource; corroborated: boolean };
 
 export interface IndexBlock {
+  version: string | null;
+  state: ReturnType<CodeGraph['getIndexStatus']>['state'];
+  phase: string | null;
+  lastUpdatedAt: number | null;
+  laggingFileCount: number;
+  failureReason: string | null;
+  taskLevel: ReturnType<CodeGraph['getIndexStatus']>['taskLevel'];
   lastIndexedAt: number | null;
   watching: boolean;
   degraded: boolean;
@@ -413,8 +423,16 @@ export function buildIndexBlock(
   options: { checkFiles: boolean; includeStats: boolean },
 ): IndexBlock {
   const pending = cg.getPendingFiles();
+  const status = cg.getIndexStatus(options.checkFiles || options.includeStats);
   const changes = options.checkFiles ? cg.getChangedFiles() : null;
   return {
+    version: status.version,
+    state: status.state,
+    phase: status.phase,
+    lastUpdatedAt: status.lastUpdatedAt,
+    laggingFileCount: status.laggingFileCount,
+    failureReason: status.failureReason,
+    taskLevel: status.taskLevel,
     lastIndexedAt: cg.getLastIndexedAt(), watching: cg.isWatching(),
     degraded: cg.isWatcherDegraded(), degradedReason: cg.getWatcherDegradedReason(),
     pendingFiles: sortPendingFiles(pending).slice(0, STATE_PATH_LIMIT), pendingFileCount: pending.length,
@@ -599,11 +617,14 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
         && !isConfigLeafNode(source)
         && Boolean(validatePathWithinRoot(root, source.filePath)));
     result.page.total = references.length;
-    result.items = references.slice(offset, offset + limit).map(({ edge, source, target }) => ({
-      source: symbol(source), target: symbol(target),
-      kind: edge.kind, provenance: edge.provenance ?? 'unknown',
-      site: { filePath: source.filePath, line: edge.line ?? null, column: edge.column ?? null },
-    }));
+    result.items = references.slice(offset, offset + limit).map(({ edge, source, target }) => {
+      const reference = {
+        source: symbol(source), target: symbol(target),
+        kind: edge.kind, provenance: edge.provenance ?? 'unknown',
+        site: { filePath: source.filePath, line: edge.line ?? null, column: edge.column ?? null },
+      } satisfies CodeReference;
+      return reference;
+    });
     result.warnings.push('Graph edges are best-effort relationships, not a complete list of LSP reference occurrences.');
     result.routing.sources.graph = references.length;
   } else {

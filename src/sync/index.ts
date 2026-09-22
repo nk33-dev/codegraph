@@ -14,6 +14,7 @@
  */
 
 export { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './watcher';
+export { planRefresh, type RefreshPlan, type RefreshScope } from './refresh-plan';
 export {
   pendingFileState,
   sortPendingFiles,

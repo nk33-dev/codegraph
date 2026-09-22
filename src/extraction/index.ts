@@ -35,6 +35,7 @@ import ignore, { Ignore } from 'ignore';
 import { detectFrameworks } from '../resolution/frameworks';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
+import type { IndexTaskLevel } from '../resource-profile';
 
 /**
  * Number of files to read in parallel during indexing.
@@ -1807,7 +1808,8 @@ export class ExtractionOrchestrator {
     // passed for a COMPLETELY fresh database, where the main thread performs
     // no reads/writes during the parse loop, so one writer applying bundles
     // in file order preserves the #1015 determinism exactly.
-    storeWriterOpts?: { dbPath: string; fastInit: boolean } | null
+    storeWriterOpts?: { dbPath: string; fastInit: boolean } | null,
+    taskLevel: IndexTaskLevel = 'global'
   ): Promise<IndexResult> {
     const tGrammar = Date.now();
     await initGrammars();
@@ -1925,7 +1927,11 @@ export class ExtractionOrchestrator {
       // parse is worker-side CPU, and 1 worker measured 34% slower than the
       // old oversubscribed pool on the kernel-scale 2-cpuset envelope
       // (493s vs 369s) — main + store-worker don't fill the second core.
-      const poolSize = resolveParsePoolSize(process.env.CODEGRAPH_PARSE_WORKERS, Math.max(3, os.availableParallelism()));
+      const poolSize = resolveParsePoolSize(
+        process.env.CODEGRAPH_PARSE_WORKERS,
+        Math.max(3, os.availableParallelism()),
+        taskLevel,
+      );
       // Read each needed grammar's WASM ONCE here and hand the bytes to every
       // worker, so spawns/respawns load grammars from memory instead of
       // re-reading them from disk (#1231: on an HDD, respawn re-reads amplify
