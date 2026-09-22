@@ -34,7 +34,8 @@ import {
 } from '../sync/worktree';
 import { pendingFileState, sortPendingFiles, type PendingFile } from '../sync';
 import { indexedFileFreshness } from '../sync/file-freshness';
-import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';import type { Node, Edge, EdgeKind, SearchResult, Subgraph, NodeKind } from '../types';
+import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
+import { NODE_KINDS, LANGUAGES, type Node, type Edge, type EdgeKind, type SearchResult, type Subgraph, type NodeKind, type Language } from '../types';
 import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, formatCodeEditText, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
 import { editTools } from './edit-tool';
 import { isTestFile, normalizeNameToken } from '../search/query-utils';
@@ -48,6 +49,7 @@ import {
   statSync,
 } from 'fs';
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
+import { isSourceFile } from '../extraction/grammars';
 import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranchGuardGrammars } from '../graph/branch-guards';
 import { findDynamicBoundaries, type BoundarySite, type NodeBoundary } from '../graph/dynamic-boundary-report';
 import { countImplementers } from '../graph/type-hierarchy';
@@ -132,6 +134,65 @@ const MAX_INPUT_LENGTH = 10_000;
  * never legitimate and signal abuse or a bug upstream.
  */
 const MAX_PATH_LENGTH = 4_096;
+
+const LOW_VALUE_MEMBER_KINDS = new Set<NodeKind>([
+  'property', 'field', 'parameter', 'variable', 'constant', 'enum_member',
+]);
+
+/** 展示过滤只裁剪源码候选，不裁剪图本身；这样跨语言边仍可用于主路径和证据。 */
+interface ExploreDisplayFilters {
+  directory?: string;
+  languages: Set<Language>;
+  frameworks: Set<string>;
+  symbolTypes: Set<NodeKind>;
+  excludeTypes: Set<NodeKind>;
+  depth: number;
+}
+
+function normalizeExploreDirectory(value: string): string {
+  return value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '').toLowerCase();
+}
+
+function parseExploreKindList(value: unknown, name: string): Set<NodeKind> | ToolResult {
+  if (value === undefined) return new Set();
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    return { content: [{ type: 'text', text: `${name} must be an array of symbol kinds` }] };
+  }
+  const aliases: Record<string, NodeKind> = { type: 'type_alias', callable: 'function' };
+  const out = new Set<NodeKind>();
+  for (const raw of value) {
+    const kind = aliases[raw] ?? raw;
+    if (!(NODE_KINDS as readonly string[]).includes(kind)) {
+      return { content: [{ type: 'text', text: `${name} contains unsupported symbol kind "${raw}"` }] };
+    }
+    out.add(kind as NodeKind);
+  }
+  return out;
+}
+
+function parseExploreLanguageList(value: unknown, name: string): Set<Language> | ToolResult {
+  if (value === undefined) return new Set();
+  const values = Array.isArray(value) ? value : [value];
+  if (values.some((item) => typeof item !== 'string')) {
+    return { content: [{ type: 'text', text: `${name} must be a language or array of languages` }] };
+  }
+  const out = new Set<Language>();
+  for (const raw of values) {
+    if (!(LANGUAGES as readonly string[]).includes(raw)) {
+      return { content: [{ type: 'text', text: `${name} contains unsupported language "${raw}"` }] };
+    }
+    out.add(raw as Language);
+  }
+  return out;
+}
+
+function isFoldableExploreNode(node: Node): boolean {
+  if (LOW_VALUE_MEMBER_KINDS.has(node.kind)) return true;
+  if (node.kind !== 'method' && node.kind !== 'function') return false;
+  const short = node.name.replace(/^this\./, '');
+  return /^(?:get|set|is|has|with)[A-Z_]/.test(short)
+    && (node.endLine - node.startLine) <= 8;
+}
 
 
 /**
@@ -1333,7 +1394,7 @@ export interface ExploreStructuredContent {
  */
 const projectPathProperty: PropertySchema = {
   type: 'string',
-  description: 'Absolute project path (or a child path). Omit for the session default; required when no default index is loaded.',
+  description: 'Project path; omit for the session default.',
 };
 
 /**
@@ -1518,13 +1579,13 @@ export const tools: ToolDefinition[] = [
       properties: {
         mode: {
           type: 'string',
-          description: 'explore (default) = source/flow; other modes return structured JSON: definitions, references, symbols, diagnostics, impact, tests, status.',
+          description: 'explore source/flow; structured: definitions, references, symbols, diagnostics, impact, tests, status.',
           enum: ['explore', ...CODE_QUERY_MODES],
           default: 'explore',
         },
         backend: {
           type: 'string',
-          description: 'Structured modes only: graph, lsp, auto (LSP with graph fallback), or both (merged). diagnostics requires LSP; tests requires graph.',
+          description: 'Structured backend: graph, lsp, auto, or both.',
           enum: [...CODE_QUERY_BACKENDS],
           default: 'graph',
         },
@@ -1539,7 +1600,7 @@ export const tools: ToolDefinition[] = [
         },
         depth: {
           type: 'number',
-          description: 'impact/tests only: propagation depth 1–10 (defaults: impact 2, tests 5).',
+          description: 'explore: graph/flow depth 1–10 (default 3); impact/tests: propagation depth (defaults: impact 2, tests 5).',
         },
         includeIndirect: {
           type: 'boolean',
@@ -1569,13 +1630,33 @@ export const tools: ToolDefinition[] = [
         checkFiles: { type: 'boolean', description: 'Graph status only: scan disk changes without syncing.', default: false },
         query: {
           type: 'string',
-          description: 'Question, symbol names, or file names. For a flow, name its endpoints.',
+          description: 'Question, symbol names, or file names.',
         },
         maxFiles: {
           type: 'number',
           // 公共契约不再声明固定默认值（P0 问题 4）：未指定时由运行时按项目规模分档决定，
           // getExploreOutputBudget() 是唯一事实来源。写死 12 与实际的 4/5/8 不符。
           description: 'explore only: max source files; omit it to use the default for the project-size tier.',
+        },
+        directory: {
+          type: 'string',
+          description: '',
+        },
+        languages: {
+          type: 'array',
+          description: '',
+        },
+        frameworks: {
+          type: 'array',
+          description: '',
+        },
+        symbolTypes: {
+          type: 'array',
+          description: '',
+        },
+        excludeTypes: {
+          type: 'array',
+          description: '',
         },
         includeChanges: {
           type: 'boolean',
@@ -3064,6 +3145,7 @@ export class ToolHandler {
     cg: CodeGraph,
     query: string,
     priorEvidenceKeys: ReadonlySet<string> = new Set(),
+    maxHops?: number,
   ): {
     text: string;
     pathNodeIds: Set<string>;
@@ -3091,7 +3173,7 @@ export class ToolHandler {
       // Token resolution — parsing, overload disambiguation, the CONSTANT/
       // VARIABLE synth endpoints — is shared with `/api/flow`, so a name written
       // in the viewer's search box resolves to the same nodes it does here.
-      const flow = resolveNamedSymbolFlow(cg, query);
+      const flow = resolveNamedSymbolFlow(cg, query, maxHops ? { maxHops } : undefined);
       const { named, dynNamed, tokenNodes, tokenFamily, uniqueNamedNodeIds, preciseNamedIds } =
         flow;
       if (flow.tokens.length < 1) return EMPTY;
@@ -3364,7 +3446,7 @@ export class ToolHandler {
       '',
       ...notes,
       '',
-      '> These sites choose their call target at runtime (registry / bus / reflection) — the site shown IS where the flow continues. To follow it, run codegraph_explore or codegraph_node on a candidate; source for the sites above is included below.',
+      '> These sites choose their call target at runtime (registry / bus / reflection) — the site shown IS where the flow continues. To follow it, run codegraph_explore or codegraph_node on a candidate; configure the framework/LSP resolver when the runtime value is not statically visible. Source for the sites above is included below.',
       '',
     ].join('\n');
   }
@@ -3401,7 +3483,20 @@ export class ToolHandler {
       for (const item of plainBreaks) {
         const at = item.at ? ` (${item.at.filePath}:${item.at.line})` : '';
         const symbol = item.symbol ? ` \`${item.symbol}\`` : '';
-        lines.push(`- [${item.reason}]${symbol}${at}: ${item.detail}`);
+        const action = item.reason === 'unindexed'
+          ? ' — refresh with `codegraph sync --file <path>` (or initialize the project)'
+          : item.reason === 'unsupported'
+            ? ' — add an extension mapping in `codegraph.json`, then run `codegraph sync --file <path>`'
+            : item.reason === 'dynamic_key'
+              ? ' — configure the framework/LSP resolver or inspect the runtime value at this site'
+              : item.reason === 'ambiguous_candidates'
+                ? ' — narrow the query with `file`/`line` or configure the relevant resolver'
+                : item.reason === 'lsp_unavailable'
+                  ? ' — configure the language server in `.codegraph/lsp.json`'
+                  : item.reason === 'language_boundary'
+                    ? ' — query the backend file explicitly and ensure both projects are indexed'
+                    : ' — no confirmed graph relation; verify the call site or refresh the changed file';
+        lines.push(`- [${item.reason}]${symbol}${at}: ${item.detail}${action}`);
       }
       lines.push('');
     }
@@ -3778,12 +3873,52 @@ export class ToolHandler {
     }
     const rawQuery = this.validateString(args.query, 'query');
     if (typeof rawQuery !== 'string') return rawQuery;
+    const languageFilter = parseExploreLanguageList(args.languages ?? args.language, 'languages');
+    if (!(languageFilter instanceof Set)) return languageFilter;
+    const symbolTypes = parseExploreKindList(args.symbolTypes ?? args.symbolType, 'symbolTypes');
+    if (!(symbolTypes instanceof Set)) return symbolTypes;
+    const excludeTypes = parseExploreKindList(args.excludeTypes ?? args.excludeType, 'excludeTypes');
+    if (!(excludeTypes instanceof Set)) return excludeTypes;
+    const frameworkValues = args.frameworks ?? args.framework;
+    const frameworkList = frameworkValues === undefined
+      ? []
+      : Array.isArray(frameworkValues) ? frameworkValues : [frameworkValues];
+    if (frameworkList.some((item) => typeof item !== 'string')) {
+      return this.errorResult('frameworks must be a framework name or array of names');
+    }
+    const requestedDepth = args.depth === undefined ? 3 : args.depth;
+    if (typeof requestedDepth !== 'number' || !Number.isSafeInteger(requestedDepth) || requestedDepth < 1 || requestedDepth > 10) {
+      return this.errorResult('depth must be an integer between 1 and 10 for explore mode');
+    }
+    const directory = typeof args.directory === 'string' ? normalizeExploreDirectory(args.directory) : undefined;
+    if (args.directory !== undefined && (!directory || directory.includes('..'))) {
+      return this.errorResult('directory must be a non-empty project-relative directory');
+    }
+    const displayFilters: ExploreDisplayFilters = {
+      directory,
+      languages: languageFilter,
+      frameworks: new Set(frameworkList.map((item) => String(item).toLowerCase())),
+      symbolTypes,
+      excludeTypes,
+      depth: requestedDepth,
+    };
     // One normalization point so the flow-builder, relevance search, and
     // ranking all see the same canonical spelling (Erlang `mod:fn/arity`).
     const query = normalizeQuerySpelling(rawQuery);
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const projectRoot = cg.getProjectRoot();
+    if (displayFilters.frameworks.size > 0) {
+      const detected = new Set(cg.getDetectedFrameworks().map((name) => name.toLowerCase()));
+      const missing = [...displayFilters.frameworks].filter((name) => !detected.has(name));
+      if (missing.length > 0) {
+        return this.textResult(
+          `No indexed source matches framework filter ${missing.map((name) => `\`${name}\``).join(', ')}. ` +
+          `Detected frameworks: ${[...detected].join(', ') || 'none'}. ` +
+          'Configure the project dependencies/framework resolver, then run `codegraph sync --file <path>` or `codegraph index`.'
+        );
+      }
+    }
     const explicitChangeContext = args.includeChanges === true
       || typeof args.baseRef === 'string'
       || args.deepChanges === true;
@@ -3955,13 +4090,13 @@ export class ToolHandler {
     // Matching runs on the path-stripped query; `query` stays for display.
     // Exact single-symbol queries use graph traversal so FTS fragments such as Upgrade cannot pull in unrelated modules.
     const subgraph = focusedNode ? cg.traverse(focusedNode.id, {
-      maxDepth: 1,
+      maxDepth: displayFilters.depth,
       direction: 'both',
       edgeKinds: ['calls', 'references', 'imports', 'exports', 'extends', 'implements', 'overrides', 'instantiates'],
       limit: 80,
     }) : await cg.findRelevantContext(matchQuery, {
       searchLimit: 8,
-      traversalDepth: 3,
+      traversalDepth: displayFilters.depth,
       maxNodes: 200,
       minScore: 0.2,
     });
@@ -4061,6 +4196,16 @@ export class ToolHandler {
 
     if (subgraph.nodes.size === 0) {
       diag?.finishEmpty('no relevant code found — empty subgraph');
+      for (const rawPath of unresolvedPathSpans) {
+        const absolute = validatePathWithinRoot(projectRoot, rawPath);
+        if (!absolute) continue;
+        try {
+          if (existsSync(absolute) && statSync(absolute).isFile()) {
+            const relative = relativePath(projectRoot, absolute).replace(/\\/g, '/');
+            return this.handleUnindexedFileView(relative, absolute, {});
+          }
+        } catch { /* 文件可能在查询期间被编辑器替换；继续返回稳定的未命中结果。 */ }
+      }
       const missNote = unresolvedPathSpans.length > 0
         ? ` (no indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')})`
         : '';
@@ -4782,9 +4927,57 @@ export class ToolHandler {
 
     // Explicitly requested definitions, callers, and tests must survive the general file-score threshold.
     for (const [filePath] of focusedFilePriority) {
-      if (!requestedTests && isTestFile(filePath)) continue;
+      // An exact query for a test declaration is itself an explicit request for
+      // that file, even when the query did not contain the word "test".
+      if (!requestedTests && isTestFile(filePath) && focusedNode?.filePath !== filePath) continue;
       const group = fileGroups.get(filePath);
       if (group && !relevantFiles.some(([candidate]) => candidate === filePath)) relevantFiles.push([filePath, group]);
+    }
+
+    // Directory/language filters are presentation filters. Keep a bounded
+    // cross-language neighborhood so a frontend filter cannot hide the API or
+    // worker node that is the next hop in the requested flow.
+    if (displayFilters.directory || displayFilters.languages.size > 0) {
+      const selected = new Set<string>();
+      for (const [filePath, group] of relevantFiles) {
+        const inDirectory = !displayFilters.directory
+          || filePath.toLowerCase() === displayFilters.directory
+          || filePath.toLowerCase().startsWith(`${displayFilters.directory}/`);
+        const inLanguage = displayFilters.languages.size === 0
+          || group.nodes.some((node) => displayFilters.languages.has(node.language));
+        if (inDirectory && inLanguage) selected.add(filePath);
+      }
+      if (selected.size > 0) {
+        const fileByNode = new Map<string, string>();
+        for (const [filePath, group] of relevantFiles) for (const node of group.nodes) fileByNode.set(node.id, filePath);
+        const keep = new Set(selected);
+        let frontier = new Set(selected);
+        for (let hop = 0; hop < displayFilters.depth && frontier.size > 0; hop++) {
+          const next = new Set<string>();
+          for (const edge of subgraph.edges) {
+            const sourceFile = fileByNode.get(edge.source);
+            const targetFile = fileByNode.get(edge.target);
+            if (!sourceFile || !targetFile || sourceFile === targetFile) continue;
+            if (frontier.has(sourceFile) && !keep.has(targetFile)) next.add(targetFile);
+            if (frontier.has(targetFile) && !keep.has(sourceFile)) next.add(sourceFile);
+          }
+          for (const filePath of next) keep.add(filePath);
+          frontier = next;
+        }
+        relevantFiles = relevantFiles.filter(([filePath]) => keep.has(filePath));
+      } else {
+        relevantFiles = [];
+      }
+    }
+    if (relevantFiles.length === 0 && (displayFilters.directory || displayFilters.languages.size > 0)) {
+      const filterLabel = [
+        displayFilters.directory ? `directory \`${displayFilters.directory}\`` : '',
+        displayFilters.languages.size ? `language(s) ${[...displayFilters.languages].join(', ')}` : '',
+      ].filter(Boolean).join(' and ');
+      return this.textResult(
+        `No indexed source matched ${filterLabel}. ` +
+        'Check the path/language filter, or run `codegraph sync --file <path>` after adding the file.'
+      );
     }
     const sortedFiles = relevantFiles.sort((a, b) => {
       const aPath = a[0].toLowerCase();
@@ -4915,7 +5108,7 @@ export class ToolHandler {
     // The Flow section labels each hop with its branch conditions; that read
     // is synchronous, so the grammars it needs are loaded here, once.
     await warmBranchGuardGrammars();
-    const flow = this.buildFlowFromNamedSymbols(cg, matchQuery, priorEvidenceKeys);
+    const flow = this.buildFlowFromNamedSymbols(cg, matchQuery, priorEvidenceKeys, displayFilters.depth);
 
     // Snapshot every ranked candidate's scoring inputs, in final sort order, so
     // the diagnostic can show what each file's share of the envelope was BOUGHT
@@ -5857,6 +6050,15 @@ export class ToolHandler {
         if (n && n.filePath === filePath && n.startLine > 0 && n.endLine > 0) rangeNodes.set(id, n);
       }
       const ranges: Array<{ start: number; end: number; name: string; kind: string; importance: number; spine: boolean; spineCallLine?: number }> = [...rangeNodes.values()]
+        // 默认只展开主路径和关键节点；字段、局部变量以及短 getter/setter
+        // 仍保留在图和文件索引中，但以头部摘要代替源码片段。
+        .filter(n => {
+          const important = entryNodeIds.has(n.id) || flow.namedNodeIds.has(n.id) || flow.pathNodeIds.has(n.id);
+          if (displayFilters.symbolTypes.size > 0 && !displayFilters.symbolTypes.has(n.kind) && !important) return false;
+          if (displayFilters.excludeTypes.has(n.kind) && !important) return false;
+          if (displayFilters.excludeTypes.size === 0 && isFoldableExploreNode(n) && !important) return false;
+          return true;
+        })
         // Drop whole-file envelope nodes (containers covering >50% of the file).
         .filter(n => n.id === focusedNode?.id
           || !(ENVELOPE_KINDS.has(n.kind) && (n.endLine - n.startLine + 1) > fileLines.length * 0.5))
@@ -5883,6 +6085,9 @@ export class ToolHandler {
       // traversal may have pruned template reference targets due to node budget.
       const edgeLines = new Set<string>(); // dedup by "line:name"
       for (const node of group.nodes) {
+        if (displayFilters.excludeTypes.has(node.kind)
+          || (displayFilters.excludeTypes.size === 0 && isFoldableExploreNode(node) && !entryNodeIds.has(node.id)
+            && !flow.namedNodeIds.has(node.id) && !flow.pathNodeIds.has(node.id))) continue;
         const outgoing = cg.getOutgoingEdges(node.id);
         for (const edge of outgoing) {
           if (!edge.line || edge.line <= 0 || edge.kind === 'contains') continue;
@@ -7039,7 +7244,15 @@ export class ToolHandler {
     const normalize = (p: string) => p.replace(/\\/g, '/').replace(/^(?:\.?\/+)+/, '').replace(/\/+$/, '');
     const wantLower = normalize(fileArg).toLowerCase();
     const allFiles = cg.getFiles();
-    if (allFiles.length === 0) return this.textResult('No files indexed. Run `codegraph index` first.');
+    const directAbs = validatePathWithinRoot(cg.getProjectRoot(), fileArg);
+    let directIsFile = false;
+    try { directIsFile = Boolean(directAbs && existsSync(directAbs) && statSync(directAbs).isFile()); } catch { /* file disappeared during lookup */ }
+    if (directAbs && directIsFile
+      && !allFiles.some((file) => file.path.toLowerCase() === wantLower)) {
+      const directPath = relativePath(cg.getProjectRoot(), directAbs).replace(/\\/g, '/');
+      return this.handleUnindexedFileView(directPath, directAbs, { offset: opts.offset, limit: opts.limit, symbolsOnly: opts.symbolsOnly });
+    }
+    if (allFiles.length === 0) return this.textResult('No files indexed. Run `codegraph index` first, or pass a newly created source file to codegraph_node for a direct unindexed view.');
 
     let resolved = allFiles.find((f) => f.path.toLowerCase() === wantLower);
     let candidates: typeof allFiles = [];
@@ -7163,6 +7376,40 @@ export class ToolHandler {
     }
     // Self-bounded to CHAR_BUDGET — do NOT route through truncateOutput (15k).
     return this.textResult(out.join('\n'));
+  }
+
+  /** 磁盘上已存在但尚未进入图的文件：只读源码，不伪造节点、边或 blast radius。 */
+  private handleUnindexedFileView(
+    filePath: string,
+    absolutePath: string,
+    opts: { offset?: number; limit?: number; symbolsOnly?: boolean },
+  ): ToolResult {
+    if (!isSourceFile(filePath)) {
+      return this.textResult(
+        `**${filePath}** — unindexed: unsupported file type. ` +
+        'Read it directly, or add an extension mapping in `codegraph.json` and run `codegraph sync --file "' + filePath + '"`.'
+      );
+    }
+    if (opts.symbolsOnly) {
+      return this.textResult(`**${filePath}** — unindexed; no graph symbols are available yet. Run \`codegraph sync --file "${filePath}"\` to index it.`);
+    }
+    let content: string;
+    try { content = readFileSync(absolutePath, 'utf-8'); }
+    catch { return this.textResult(`**${filePath}** — unindexed, but the file could not be read. Run \`codegraph sync --file "${filePath}"\` after it is saved.`); }
+    const lines = content.split('\n');
+    const offset = Math.max(1, opts.offset ?? 1);
+    const limit = Math.max(1, opts.limit ?? 2000);
+    if (offset > lines.length) return this.textResult(`**${filePath}** — unindexed; offset ${offset} is past the ${lines.length}-line file.`);
+    const numbered = lines.slice(offset - 1, offset - 1 + limit).map((line, index) => `${offset + index}\t${line}`);
+    const truncated = offset - 1 + numbered.length < lines.length;
+    return this.textResult([
+      `**${filePath}** — ⚠ unindexed; graph results are withheld until refresh completes.`,
+      '',
+      ...numbered,
+      ...(truncated ? ['', `> Showing ${numbered.length} of ${lines.length} lines. Pass \`offset\`/\`limit\` for another slice.`] : []),
+      '',
+      `> Refresh this file with \`codegraph sync --file "${filePath}"\`; until then this is direct disk source only.`,
+    ].join('\n'));
   }
 
   /** Render one symbol: details + (optional) body/outline + its caller/callee trail. */
