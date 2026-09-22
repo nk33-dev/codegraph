@@ -98,6 +98,7 @@ export async function vueRouterLinkEdges(ctx: ResolutionContext, onYield: MaybeY
             synthesizedBy: 'vue-router-link',
             href: display,
             navMethod: 'link',
+            ...(destinations.length > 1 || bound ? { confidence: 'inferred', inferred: true } : {}),
             ...(named !== null && routes.byName.has(named) ? { by: 'name' } : {}),
             registeredAt: `${file}:${line}`,
           },

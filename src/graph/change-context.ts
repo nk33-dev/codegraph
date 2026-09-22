@@ -12,6 +12,7 @@ import { detectLanguage } from '../extraction';
 import { materializeKernelResult } from '../extraction/kernel';
 import { isCodeGraphDataDir } from '../directory';
 import { analyzeImpact, findAffectedTests } from './change-impact';
+import type { TestType } from './change-impact';
 
 export const CHANGE_CONTEXT_SCHEMA_VERSION = 1;
 export const DEFAULT_CHANGE_CONTEXT_DEPTH = 2;
@@ -96,6 +97,7 @@ export interface ChangeContext {
     distance: number;
     reason: 'changed' | 'dependent';
     confidence: 'direct' | 'high' | 'indirect';
+    testTypes: TestType[];
     via: string[];
   }>;
   missingTestRisks: MissingTestRisk[];
@@ -662,7 +664,7 @@ export async function analyzeChangeContext(
     warnings.push('删除符号在当前图中已无节点；影响范围可能漏掉动态调用、未解析引用以及仅指向已删除节点的旧边。');
   }
   if (missingTestRisks.length > 0) {
-    warnings.push('高扇入改动未找到关联测试；这表示当前依赖图没有找到测试，不代表改动肯定没有测试或影响。');
+    warnings.push('高扇入改动：图中未发现覆盖；这不代表项目没有测试或影响。');
   }
 
   if (options.deep && commit) {
@@ -719,7 +721,7 @@ export function formatChangeContext(context: ChangeContext): string {
   if (context.affectedTests.length > 0) {
     lines.push('', '**Related tests**');
     for (const test of context.affectedTests.slice(0, 10)) {
-      lines.push(`- ${test.filePath} (${test.confidence}, distance ${test.distance}, ${test.reason})`);
+      lines.push(`- ${test.filePath} (${test.confidence}, ${test.testTypes.join('/')}, distance ${test.distance}, ${test.reason})`);
     }
     if (context.affectedTests.length > 10) lines.push(`- ... and ${context.affectedTests.length - 10} more tests`);
   }

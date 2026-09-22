@@ -3649,7 +3649,7 @@ export class ToolHandler {
     const MAX_HOPS = 3; // direct dependents are hop 1
     const BUDGET = 64;  // getCallers lookups per entry — bounds god-fan-in symbols
     const FILE_CAP = 2;
-    if (dependents.length === 0) return `; no tests found within ${MAX_HOPS} caller hops`;
+    if (dependents.length === 0) return `; 图中未发现覆盖（已搜索 ${MAX_HOPS} 层调用方）；不代表项目没有测试`;
     let budget = BUDGET;
     const visited = new Set(dependents.map((n) => n.id));
     let frontier = dependents;
@@ -3680,8 +3680,8 @@ export class ToolHandler {
     // Budget exhaustion means hops 2-3 weren't fully searched — fall back to
     // the weaker claim that IS established by the direct-dependents check.
     return budget > 0
-      ? `; no tests found within ${MAX_HOPS} caller hops`
-      : '; no test reaches this within the hops searched';
+      ? `; 图中未发现覆盖（已搜索 ${MAX_HOPS} 层调用方）；不代表项目没有测试`
+      : '; 图中未发现覆盖（调用方搜索预算已耗尽）；不代表项目没有测试';
   }
 
   /**
