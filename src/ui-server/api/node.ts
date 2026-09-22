@@ -305,8 +305,8 @@ export interface WireTestSummary {
   files: string[];
   /**
    * The search finished rather than running out of budget. `false` weakens the
-   * claim from "no test reaches this within 3 hops" to "no test calls this
-   * directly", which is all that was actually checked.
+   * claim from "图中未发现覆盖" to a bounded statement about the indexed
+   * caller graph, which is all that was actually checked.
    */
   exhaustive: boolean;
   hopsSearched: number;
@@ -319,8 +319,8 @@ export interface WireTestSummary {
  * Direct test callers first; failing that, walk up to two more caller hops,
  * because a helper called only by production code is still tested through
  * whatever calls it. The budget bounds a god-symbol, and running out of it is
- * reported rather than papered over: claiming "no test reaches this" after an
- * incomplete search would be exactly the kind of confident wrong answer the
+ * reported rather than papered over: claiming there are no project tests after
+ * an incomplete search would be exactly the kind of confident wrong answer the
  * viewer exists to avoid.
  */
 function summarizeTestCallers(cg: CodeGraph, directCallers: readonly Node[]): WireTestSummary {

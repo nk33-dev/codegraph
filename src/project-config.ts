@@ -82,6 +82,15 @@ export interface ProjectConfig {
    * beyond the built-ins.
    */
   deprioritize?: string[];
+  /**
+   * 跨层 HTTP 客户端到服务端关联。默认开启以保持现有项目行为；init
+   * 可以保存显式选择，以及 monorepo 可选的客户端/服务端路径。
+   */
+  apiCorrelation?: {
+    enabled?: boolean;
+    clientPaths?: string[];
+    serverPaths?: string[];
+  };
 }
 
 /** Parsed, validated view of a project's `codegraph.json`. */
@@ -91,6 +100,11 @@ interface ParsedConfig {
   exclude: string[];
   deprioritize: string[];
   include: string[];
+  apiCorrelation: {
+    enabled: boolean;
+    clientPaths: string[];
+    serverPaths: string[];
+  };
 }
 
 interface CacheEntry {
@@ -114,6 +128,11 @@ const EMPTY_CONFIG: ParsedConfig = Object.freeze({
   exclude: Object.freeze([]) as unknown as string[],
   include: Object.freeze([]) as unknown as string[],
   deprioritize: Object.freeze([]) as unknown as string[],
+  apiCorrelation: Object.freeze({
+    enabled: true,
+    clientPaths: Object.freeze([]) as unknown as string[],
+    serverPaths: Object.freeze([]) as unknown as string[],
+  }),
 });
 
 /**
@@ -167,16 +186,41 @@ function parseConfig(file: string): ParsedConfig {
   const exclude = extractExclude(parsed, file);
   const include = extractInclude(parsed, file);
   const deprioritize = extractPatternList(parsed, file, 'deprioritize');
+  const apiCorrelation = extractApiCorrelation(parsed, file);
   if (
     extensions === EMPTY_EXTENSIONS &&
     includeIgnored.length === 0 &&
     exclude.length === 0 &&
     include.length === 0 &&
     deprioritize.length === 0
+    && apiCorrelation.enabled === true
+    && apiCorrelation.clientPaths.length === 0
+    && apiCorrelation.serverPaths.length === 0
   ) {
     return EMPTY_CONFIG;
   }
-  return { extensions, includeIgnored, exclude, include, deprioritize };
+  return { extensions, includeIgnored, exclude, include, deprioritize, apiCorrelation };
+}
+
+function extractApiCorrelation(parsed: object, file: string): ParsedConfig['apiCorrelation'] {
+  const raw = (parsed as ProjectConfig).apiCorrelation;
+  if (raw === undefined) return EMPTY_CONFIG.apiCorrelation;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    logWarn(`Ignoring "apiCorrelation" in ${PROJECT_CONFIG_FILENAME}: must be an object`, { file });
+    return EMPTY_CONFIG.apiCorrelation;
+  }
+  const enabled = raw.enabled === undefined ? true : raw.enabled === true;
+  const readPaths = (key: 'clientPaths' | 'serverPaths'): string[] => {
+    const value = raw[key];
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) {
+      logWarn(`Ignoring "apiCorrelation.${key}" in ${PROJECT_CONFIG_FILENAME}: must be an array`, { file });
+      return [];
+    }
+    return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      .map((entry) => entry.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, ''));
+  };
+  return { enabled, clientPaths: readPaths('clientPaths'), serverPaths: readPaths('serverPaths') };
 }
 
 /**
@@ -391,6 +435,11 @@ export function loadIncludePatterns(rootDir: string): string[] {
   return loadParsedConfig(rootDir).include;
 }
 
+/** Read the normalized HTTP client/server correlation configuration. */
+export function loadApiCorrelationConfig(rootDir: string): ParsedConfig['apiCorrelation'] {
+  return loadParsedConfig(rootDir).apiCorrelation;
+}
+
 /** Test/maintenance hook: forget cached config (e.g. after rewriting it in a test). */
 export function clearProjectConfigCache(): void {
   cache.clear();
@@ -446,4 +495,26 @@ export function addIncludeIgnoredPatterns(rootDir: string, patterns: string[]): 
   fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n');
   clearProjectConfigCache();
   return added;
+}
+
+/** Persist the init-time HTTP correlation choice without disturbing other keys. */
+export function writeApiCorrelationConfig(
+  rootDir: string,
+  value: ProjectConfig['apiCorrelation'],
+): void {
+  const file = path.join(rootDir, PROJECT_CONFIG_FILENAME);
+  let config: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) config = parsed as Record<string, unknown>;
+  } catch (err) {
+    if (fs.existsSync(file)) throw new Error(`${PROJECT_CONFIG_FILENAME} is not valid JSON — fix it by hand, then re-run.`);
+  }
+  config.apiCorrelation = {
+    enabled: value?.enabled !== false,
+    ...(value?.clientPaths?.length ? { clientPaths: value.clientPaths } : {}),
+    ...(value?.serverPaths?.length ? { serverPaths: value.serverPaths } : {}),
+  };
+  fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n');
+  clearProjectConfigCache();
 }

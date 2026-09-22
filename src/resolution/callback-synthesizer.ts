@@ -60,6 +60,9 @@ const VUE_KEBAB_RE = /<([a-z][a-z0-9]*(?:-[a-z0-9]+)+)[\s/>]/g;
 // (`<NuxtLink>`, `<Transition>`) simply resolve to nothing and emit no edge.
 const VUE_PASCAL_RE = /<([A-Z][A-Za-z0-9]*)[\s/>]/g;
 const VUE_HANDLER_RE = /(?:@|v-on:)([a-zA-Z][\w-]*)(?:\.[\w]+)*\s*=\s*"([^"]+)"/g;
+// Vue 设计系统常用动态组件出口。字面量 `:is="Dialog"` 仍是有用证据，
+// 但它属于推断关系，不是编译器确认的渲染边。
+const VUE_DYNAMIC_COMPONENT_RE = /<component\b[^>]*:?is\s*=\s*["']([A-Za-z_$][\w$]*)["']/g;
 // Composable/hook destructure: `const { close: closeSidebar } = useSidebarControl()`.
 // Captures the destructure body + the called composable; only `use*` calls qualify.
 const VUE_DESTRUCTURE_RE = /(?:const|let|var)\s*\{([^}]+)\}\s*=\s*(\w+)\s*\(/g;
@@ -1368,7 +1371,7 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
       const k = `${comp.id}>${target.id}>${meta.synthesizedBy}`;
       if (seen.has(k)) return;
       seen.add(k);
-      edges.push({ source: comp.id, target: target.id, kind: 'calls', line: comp.startLine, provenance: 'heuristic', metadata: meta });
+      edges.push({ source: comp.id, target: target.id, kind: 'calls', line: comp.startLine, provenance: 'heuristic', metadata: { ...meta, inferred: true } });
       added++;
     };
     // Prefer a target in THIS SFC (handlers live in the same file's script) —
@@ -1391,6 +1394,11 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     while ((m = VUE_PASCAL_RE.exec(tpl))) {
       const tag = m[1]!;
       addEdge(resolve(tag, COMPONENT_KINDS) ?? nuxtComponents.get(tag), { synthesizedBy: 'jsx-render', via: tag });
+    }
+    VUE_DYNAMIC_COMPONENT_RE.lastIndex = 0;
+    while ((m = VUE_DYNAMIC_COMPONENT_RE.exec(tpl))) {
+      const target = resolve(m[1]!, COMPONENT_KINDS) ?? nuxtComponents.get(m[1]!);
+      if (target) addEdge(target, { synthesizedBy: 'vue-dynamic-component', via: ':is', confidence: 'inferred' });
     }
     VUE_HANDLER_RE.lastIndex = 0;
     while ((m = VUE_HANDLER_RE.exec(tpl))) {

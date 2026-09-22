@@ -115,7 +115,7 @@ describe('codegraph_explore — blast radius', () => {
     const text = res.content[0].text;
 
     // Bounded claim, no warning glyph — the tool verified nothing beyond 3 hops.
-    expect(text).toMatch(/`untestedHelper`[^\n]*no tests found within 3 caller hops/);
+    expect(text).toMatch(/`untestedHelper`[^\n]*图中未发现覆盖/);
     expect(text).not.toContain('⚠️ no covering tests found');
   });
 

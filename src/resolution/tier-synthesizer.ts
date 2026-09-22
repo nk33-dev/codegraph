@@ -16,8 +16,9 @@
  *     `ky`, `got`, `$fetch`, `useFetch`, `useSWR`, or a project instance made by
  *     `axios.create(…)` / `ky.extend(…)`) → the ONE route node `METHOD path` it
  *     denotes. Template holes match a `:param`; a hole in front of the path
- *     (`${API_URL}/users`) matches a route by its tail; a variable url, a path
- *     no route serves, or a path two routes serve alike produce nothing.
+ *     (`${API_URL}/users`) matches a route by its tail; a variable url or a
+ *     path with no route serves produces nothing. Tied routes remain explicit
+ *     inferred candidates instead of being guessed away.
  *     Edge: enclosing function → route, `tier: 'client→server'`.
  *  2. **`queue-job`** — `queue.add('job', …)` where the queue is named (`new
  *     Queue('email')`, `@InjectQueue('email')`) → the `@Process('job')` method
@@ -49,6 +50,7 @@ import { isGeneratedFile } from '../extraction/generated-detection';
 import { isTestPath } from '../search/query-utils';
 import { HOLE, readStringAt } from './frameworks/expo-router';
 import { enclosingFn, enclosingValue, makeLineAt } from './synth-utils';
+import { loadApiCorrelationConfig } from '../project-config';
 
 const JS_FILE = /\.(?:[cm]?[jt]sx?)$/;
 
@@ -371,6 +373,7 @@ interface HttpSite {
   /** The path began with a hole — a base URL — and matches a route by its tail. */
   suffix: boolean;
   display: string;
+  params: string[];
 }
 
 function httpRoutes(ctx: ResolutionContext): HttpRoute[] {
@@ -414,10 +417,10 @@ function scorePath(client: readonly string[], route: readonly string[]): number 
   return i === client.length ? score : null;
 }
 
-function matchHttp(site: HttpSite, routes: readonly HttpRoute[]): HttpRoute | null {
+function matchHttp(site: HttpSite, routes: readonly HttpRoute[]): { route: HttpRoute | null; candidates: HttpRoute[] } {
   let best: HttpRoute | null = null;
   let bestScore = -1;
-  let tied = false;
+  let ambiguous = false;
   for (const r of routes) {
     if (r.method !== 'ALL' && r.method !== 'ANY' && r.method !== site.method) continue;
     let score: number | null;
@@ -433,10 +436,21 @@ function matchHttp(site: HttpSite, routes: readonly HttpRoute[]): HttpRoute | nu
     if (score > bestScore) {
       best = r;
       bestScore = score;
-      tied = false;
-    } else if (score === bestScore) tied = true;
+      ambiguous = false;
+    } else if (score === bestScore) ambiguous = true;
   }
-  return tied ? null : best;
+  if (best && ambiguous) {
+    const candidates = routes.filter((r) => {
+      if (r.method !== 'ALL' && r.method !== 'ANY' && r.method !== site.method) return false;
+      const score = site.suffix
+        ? (site.segs.length >= 2 && r.segs.length >= site.segs.length && r.segs.length - site.segs.length <= 2
+          ? scorePath(site.segs, r.segs.slice(r.segs.length - site.segs.length)) : null)
+        : scorePath(site.segs, r.segs);
+      return score === bestScore;
+    });
+    return { route: null, candidates };
+  }
+  return { route: best, candidates: best ? [best] : [] };
 }
 
 /**
@@ -444,8 +458,10 @@ function matchHttp(site: HttpSite, routes: readonly HttpRoute[]): HttpRoute | nu
  * when a base URL came first. Null when the path is not literal enough: a
  * relative path with no base, or nothing but holes.
  */
-function clientPath(raw: string, baseURL: string | null): { segs: string[]; suffix: boolean; display: string } | null {
+function clientPath(raw: string, baseURL: string | null): { segs: string[]; suffix: boolean; display: string; params: string[] } | null {
   let p = raw;
+  const query = /\?([^#]*)/.exec(p)?.[1] ?? '';
+  const params = query.split('&').map((entry) => entry.split('=')[0]!.trim()).filter(Boolean);
   const cut = p.search(/[?#]/);
   if (cut >= 0) p = p.slice(0, cut);
   let suffix = false;
@@ -482,7 +498,7 @@ function clientPath(raw: string, baseURL: string | null): { segs: string[]; suff
     .filter((s) => s.length > 0)
     .map((s) => (s.includes(HOLE) ? '*' : s));
   if (segs.length > 0 && segs.every((s) => s === '*')) return null;
-  return { segs, suffix, display: '/' + segs.map((s) => (s === '*' ? '${…}' : s)).join('/') };
+  return { segs, suffix, display: '/' + segs.map((s) => (s === '*' ? '${…}' : s)).join('/'), params };
 }
 
 /** What a member-call receiver is: a client (with its base URL), or nothing. */
@@ -532,7 +548,7 @@ function collectHttpSites(ctx: ResolutionContext, facts: FileFacts, sites: HttpS
     if (literal === null) return;
     const path = clientPath(literal, baseURL);
     if (!path) return;
-    sites.push({ fn, file: facts.file, line, column: facts.columnOf(index), callee, method, segs: path.segs, suffix: path.suffix, display: path.display });
+    sites.push({ fn, file: facts.file, line, column: facts.columnOf(index), callee, method, segs: path.segs, suffix: path.suffix, display: path.display, params: path.params });
   };
 
   BARE_CLIENT_CALL.lastIndex = 0;
@@ -881,7 +897,15 @@ const QUEUE_GATE = /\.\s*add\s*\(|@Processor\s*\(|\bnew\s+Worker\s*[<(]|\.\s*pro
 const EVENT_GATE = /\.\s*(?:emit|emitAsync|on|once)\s*\(|@OnEvent\s*\(|@SubscribeMessage\s*\(/;
 
 export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
-  const routes = httpRoutes(ctx);
+  const correlation = loadApiCorrelationConfig(ctx.getProjectRoot());
+  const inRoots = (file: string, roots: readonly string[]): boolean => {
+    if (roots.length === 0) return true;
+    const normalized = file.replace(/\\/g, '/').replace(/^\.\//, '');
+    return roots.some((root) => normalized === root || normalized.startsWith(`${root}/`));
+  };
+  const routes = correlation.enabled
+    ? httpRoutes(ctx).filter((route) => inRoots(route.node.filePath, correlation.serverPaths))
+    : [];
   const httpSites: HttpSite[] = [];
   const producers: QueueProducer[] = [];
   const consumers: QueueConsumer[] = [];
@@ -905,7 +929,7 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
       cache.set(file, facts);
     }
     if (!facts) continue;
-    if (wantsHttp) collectHttpSites(ctx, facts, httpSites, cache);
+    if (wantsHttp && correlation.enabled && inRoots(file, correlation.clientPaths)) collectHttpSites(ctx, facts, httpSites, cache);
     if (wantsQueue) collectQueue(ctx, facts, producers, consumers, cache);
     if (wantsEvents) collectEvents(ctx, facts, dispatches, handlers, cache);
   }
@@ -913,28 +937,39 @@ export async function crossTierEdges(ctx: ResolutionContext, onYield: MaybeYield
   const edges: Edge[] = [];
   const seen = new Set<string>();
   for (const site of httpSites) {
-    const route = matchHttp(site, routes);
-    if (!route || route.node.id === site.fn.id) continue;
-    const key = `${site.fn.id}>${route.node.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    edges.push({
-      source: site.fn.id,
-      target: route.node.id,
-      kind: 'calls',
-      line: site.line,
-      column: site.column,
-      provenance: 'heuristic',
-      metadata: {
-        synthesizedBy: 'http-client',
-        channel: 'http',
-        callee: site.callee,
-        tier: TIER_CLIENT_TO_SERVER,
-        method: site.method,
-        href: site.display,
-        registeredAt: `${route.node.filePath}:${route.node.startLine}`,
-      },
-    });
+    const matched = matchHttp(site, routes);
+    const targets = matched.route ? [matched.route] : matched.candidates;
+    const ambiguous = !matched.route && targets.length > 1;
+    for (const candidate of targets) {
+      const route = candidate;
+      if (route.node.id === site.fn.id) continue;
+      const key = `${site.fn.id}>${route.node.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        source: site.fn.id,
+        target: route.node.id,
+        kind: 'calls',
+        line: site.line,
+        column: site.column,
+        provenance: 'heuristic',
+        metadata: {
+          synthesizedBy: 'http-client',
+          channel: 'http',
+          callee: site.callee,
+          tier: TIER_CLIENT_TO_SERVER,
+          method: site.method,
+          href: site.display,
+          ...(site.params.length > 0 ? { params: site.params } : {}),
+          ...(ambiguous ? {
+            confidence: 'candidate',
+            inferred: true,
+            candidateTargets: targets.map((item) => item.node.name).sort(),
+          } : {}),
+          registeredAt: `${route.node.filePath}:${route.node.startLine}`,
+        },
+      });
+    }
   }
   await onYield();
   pairQueue(producers, consumers, edges, seen);

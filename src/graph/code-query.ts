@@ -7,6 +7,7 @@ import { indexedFileFreshness, type FileFreshness } from '../sync/file-freshness
 import { isConfigLeafNode, validatePathWithinRoot } from '../utils';
 import { lookupSymbolNodes } from './symbol-lookup';
 import { analyzeImpact, findAffectedTests, DEFAULT_IMPACT_DEPTH, DEFAULT_TESTS_DEPTH } from './change-impact';
+import type { TestType } from './change-impact';
 import { collectIncomingRelations } from './incoming-relations';
 
 export const CODE_QUERY_MODES = ['definitions', 'references', 'symbols', 'diagnostics', 'status', 'impact', 'tests'] as const;
@@ -171,6 +172,7 @@ export interface AffectedTestItem {
   distance: number;
   reason: 'changed' | 'dependent';
   confidence: 'direct' | 'high' | 'indirect';
+  testTypes: TestType[];
   /** Deduplicated, sorted predecessor files on the shortest path at the selected confidence. */
   via: string[];
 }
@@ -552,6 +554,7 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
       distance: test.distance,
       reason: test.reason,
       confidence: test.confidence,
+      testTypes: test.testTypes,
       via: test.via,
     } satisfies AffectedTestItem));
     if (analysis.tests.length === 0) result.status = 'not_found';

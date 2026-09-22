@@ -57,6 +57,7 @@ import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime
 import { installCommandSupervision } from './command-supervision';
 import { EXTRACTION_VERSION } from '../extraction/extraction-version';
 import { getTelemetry, TELEMETRY_DOCS, recordIndexEvent } from '../telemetry';
+import { writeApiCorrelationConfig } from '../project-config';
 // Value import, but dependency-free by design so `--help` text can name the
 // default port without dragging node:http into every other subcommand; the
 // server itself is loaded lazily inside the `ui` action. See ui-server/constants.
@@ -715,6 +716,41 @@ async function runInit(
     const { default: CodeGraph, getDatabasePath } = await loadCodeGraph();
     const cg = await CodeGraph.init(projectPath, { index: false });
     clack.log.success(`Initialized in ${projectPath}`);
+
+    // 跨层 HTTP 关联是可选的。把选择写入项目根的 codegraph.json，后续可
+    // 直接编辑该文件，不把交互状态藏在用户目录或索引数据库里。
+    if (!options.yes && process.stdin.isTTY && process.stdout.isTTY) {
+      const enabled = await clack.confirm({
+        message: '启用前后端 HTTP 接口关联（Axios/fetch ↔ Spring/Express 等路由）？',
+        initialValue: true,
+      });
+      if (!clack.isCancel(enabled)) {
+        const guess = (names: string[]): string[] => names.filter((name) => fs.existsSync(path.join(projectPath, name)));
+        const clientDefaults = guess(['web', 'frontend', 'client', 'src']);
+        const serverDefaults = guess(['server', 'backend', 'api', 'services']);
+        const text = async (message: string, initialValue: string): Promise<string> => {
+          const value = await clack.text({ message, initialValue, placeholder: '留空表示不限制路径' });
+          return clack.isCancel(value) ? initialValue : value;
+        };
+        const clientText = enabled
+          ? await text('客户端路径（逗号分隔，可留空）', clientDefaults.join(', '))
+          : '';
+        const serverText = enabled
+          ? await text('服务端路径（逗号分隔，可留空）', serverDefaults.join(', '))
+          : '';
+        const split = (value: string): string[] => value.split(',').map((item) => item.trim()).filter(Boolean);
+        try {
+          writeApiCorrelationConfig(projectPath, {
+            enabled: enabled === true,
+            clientPaths: split(clientText),
+            serverPaths: split(serverText),
+          });
+          clack.log.info('已写入 codegraph.json；以后可直接修改 apiCorrelation.enabled/clientPaths/serverPaths。');
+        } catch (err) {
+          clack.log.warn(`无法写入 apiCorrelation 配置：${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
 
     // Indexing runs by default now. The legacy -i/--index flag is still
     // accepted (so existing muscle memory and scripts don't break) but is a
@@ -2975,14 +3011,14 @@ program
         for (const t of sortedTests) console.log(t);
       } else {
         if (sortedTests.length === 0) {
-          info('No test files affected by the changed files.');
+          info('图中未发现覆盖；这不代表项目没有测试。');
           if (!options.includeIndirect && analysis.indirectCandidates.length > 0) {
             info(`${analysis.indirectCandidates.length} indirect candidate(s) were hidden; use --include-indirect to inspect them.`);
           }
         } else {
           console.log(chalk.bold(`\nAffected test files (${sortedTests.length}):\n`));
           for (const test of analysis.tests) {
-            console.log(`  ${chalk.cyan(test.filePath)} ${chalk.dim(`[${test.confidence}, distance ${test.distance}]`)}`);
+            console.log(`  ${chalk.cyan(test.filePath)} ${chalk.dim(`[${test.confidence}; ${test.testTypes.join('/')}; distance ${test.distance}]`)}`);
           }
           if (!options.includeIndirect && analysis.indirectCandidates.length > 0) {
             console.log(chalk.dim(`\n  ${analysis.indirectCandidates.length} indirect candidate(s) hidden; use --include-indirect to inspect them.`));

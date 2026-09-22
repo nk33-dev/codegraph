@@ -7,6 +7,7 @@
 - [统一证据、置信度与实现者展开](flow-evidence.md)：`codegraph_explore` 的版本化证据、规范化断链、接口/抽象方法运行时候选、跨轮证据去重与会话字节预算。
 - [高价值动态分派补全](dynamic-dispatch.md)：接口/DI、事件与队列、RPC/handler、ORM/repository、状态管理和插件注册的共享桥接，以及不可证明运行时键的诚实 boundary。
 - [AI 改动上下文与语义差异](change-context.md)：Git 改动符号、语义边差异、影响入口、关联测试，以及显式深度基准图的隔离与清理。
+- [测试与前后端关联](api-correlation.md)：测试类型/证据区分、HTTP 方法路径参数匹配、init 配置和 Vue 推断关系。
 - [幂等与事务式结构化编辑](edit-transactions.md)：稳定 operation ID、跨文件暂存/提交/回滚、启动恢复、逐文件恢复清单与 LSP 文件通知。
 - [个人版生产硬化与发布准备](release-readiness.md)：三平台门禁、夜间真实依赖验证、个人安装产物和发布边界。
 

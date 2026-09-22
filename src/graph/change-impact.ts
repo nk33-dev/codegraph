@@ -14,6 +14,8 @@
 import type CodeGraph from '../index';
 import type { Edge, Node } from '../types';
 import { isTestPath } from '../search/query-utils';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /** The default depth for mode=impact (same as the CLI `codegraph impact` default). */
 export const DEFAULT_IMPACT_DEPTH = 2;
@@ -144,9 +146,13 @@ export interface AffectedTest {
   distance: number;
   reason: 'changed' | 'dependent';
   confidence: 'direct' | 'high' | 'indirect';
+  /** 关联证据类型；多个标签表示同一测试同时具备多种特征。 */
+  testTypes: TestType[];
   /** 所选置信度下最短路径的前驱文件，去重排序后最多保留 10 个。 */
   via: string[];
 }
+
+export type TestType = 'direct' | 'indirect' | 'parameterized' | 'mockmvc' | 'dynamic' | 'frontend';
 
 export interface AffectedTestsAnalysis {
   /** 默认可执行集合：直接测试和高置信度影响测试；includeIndirect=true 时也包含间接候选。 */
@@ -160,6 +166,25 @@ export interface AffectedTestsAnalysis {
 
 const HIGH_CONFIDENCE_MAX_DISTANCE = 3;
 const HIGH_CONFIDENCE_FAN_OUT = 12;
+
+function classifyTestTypes(cg: CodeGraph, filePath: string, confidence: AffectedTest['confidence']): TestType[] {
+  const types = new Set<TestType>([confidence === 'direct' ? 'direct' : 'indirect']);
+  let source = '';
+  try { source = fs.readFileSync(path.join(cg.getProjectRoot(), filePath), 'utf8'); } catch { /* 索引中的删除文件没有源码可读 */ }
+  if (/(?:\b(?:it|test|describe)\s*\.\s*(?:each|for|cases)\b|@(?:ParameterizedTest|CsvSource|MethodSource)\b|pytest\.mark\.parametrize|table[-_ ]driven)/i.test(source)) {
+    types.add('parameterized');
+  }
+  if (/\bMockMvc\b|mockMvc\.perform|MockMvcRequestBuilders|\bsupertest\s*\(|request\s*\(\s*app\s*\)/i.test(source)) {
+    types.add('mockmvc');
+  }
+  if (/\b(?:DynamicTest|TestFactory)\b|\b(?:it|test|describe)\s*\.\s*each\b|\bproperty\s*\(|\bfc\.assert\s*\(/i.test(source)) {
+    types.add('dynamic');
+  }
+  if (/\.vue$|@vue\/test-utils|\bmount\s*\(|\brender\s*\(|\b(?:playwright|cypress)\b/i.test(filePath + '\n' + source)) {
+    types.add('frontend');
+  }
+  return [...types];
+}
 
 /**
  * Related tests: a changed file counts as a hit when it is itself a test; otherwise the search walks
@@ -204,14 +229,15 @@ export function findAffectedTests(
     narrowPath: boolean,
   ): void => {
     const confidence = reason === 'changed' ? 'direct' : classify(distance, narrowPath);
+    const testTypes = classifyTestTypes(cg, filePath, confidence);
     const existing = found.get(filePath);
     if (!existing) {
-      found.set(filePath, { filePath, distance, reason, confidence, via: via ? [via] : [] });
+      found.set(filePath, { filePath, distance, reason, confidence, testTypes, via: via ? [via] : [] });
       return;
     }
     const rankDifference = confidenceRank(confidence) - confidenceRank(existing.confidence);
     if (rankDifference > 0 || (rankDifference === 0 && distance < existing.distance)) {
-      found.set(filePath, { filePath, distance, reason, confidence, via: via ? [via] : [] });
+      found.set(filePath, { filePath, distance, reason, confidence, testTypes, via: via ? [via] : [] });
       return;
     }
     if (rankDifference === 0 && distance === existing.distance && via && !existing.via.includes(via)) {
