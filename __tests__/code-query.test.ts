@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'child_process';
 import { once } from 'events';
 import { createInterface } from 'readline';
@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph, type CodeSymbol, type CodeReference } from '../src';
-import { ToolHandler, __setLoadCodeGraphForTests } from '../src/mcp/tools';
+import { ToolHandler, getStaticTools, __setLoadCodeGraphForTests } from '../src/mcp/tools';
 import { __emitWatchEventForTests } from '../src/sync/watcher';
 
 let root: string;
@@ -67,6 +67,19 @@ describe('structured graph queries', () => {
     expect(refs.every(r => typeof r.provenance === 'string')).toBe(true);
   });
 
+  it('groups repeated relationship sites without losing their coordinates', async () => {
+    write('a/multi.ts', "import { run } from './service';\nexport function double() { return run() + run(); }\n");
+    await cg.indexAll();
+    const result = cg.queryCode({ mode: 'references', query: 'run', file: 'a/service.ts' });
+    const repeated = (result.items as CodeReference[]).find((item) => item.source.name === 'double');
+    expect(repeated?.sites).toHaveLength(2);
+    expect(repeated?.site).toEqual(repeated?.sites?.[0]);
+    expect((result.items as CodeReference[]).filter((item) => item.source.name === 'double' && item.kind === 'calls')).toHaveLength(1);
+    expect(result.warnings.join('\n')).toContain('Grouped');
+    const callers = cg.queryCode({ mode: 'callers', query: 'run', file: 'a/service.ts' });
+    expect((callers.items as CodeReference[]).find((item) => item.source.name === 'double')?.sites).toHaveLength(2);
+  });
+
   it('paginates direct callers and callees separately with provenance', () => {
     const callers = cg.queryCode({ mode: 'callers', query: 'run', limit: 1 });
     expect(callers.page).toMatchObject({ total: 2, nextOffset: 1 });
@@ -103,6 +116,14 @@ describe('structured graph queries', () => {
     expect((cg.queryCode({ mode: 'definitions', query: 'run', file: 'a/service.ts' }).items[0] as CodeSymbol).freshness).toBe('current');
   });
 
+  it('accepts an indexed file path as the impact root', () => {
+    const result = cg.queryCode({ mode: 'impact', query: 'a/service.ts' });
+    expect(result.status).toBe('ok');
+    expect(result.ambiguous).toBe(false);
+    expect(result.items.some((item) => (item as CodeSymbol).name === 'run')).toBe(true);
+    expect(result.warnings.join('\n')).toContain('treated "a/service.ts" as the indexed file root');
+  });
+
   it('status separates unscanned from on-disk changes and incremental sync updates only changed files', async () => {
     const untouched = cg.getFile('view.js')!.indexedAt;
     const status = cg.queryCode({ mode: 'status', query: 'status' });
@@ -112,6 +133,7 @@ describe('structured graph queries', () => {
     write('b/service.ts', 'export function changedName() {}\n');
     fs.unlinkSync(path.join(root, 'a/service.ts'));
     const before = cg.queryCode({ mode: 'status', query: 'status', checkFiles: true });
+    expect(before.index).toMatchObject({ freshness: 'stale', laggingFileCount: expect.any(Number) });
     expect(before.index!.changes).toMatchObject({
       added: expect.arrayContaining(['added.ts']), modified: expect.arrayContaining(['b/service.ts']), removed: expect.arrayContaining(['a/service.ts']),
     });
@@ -119,6 +141,7 @@ describe('structured graph queries', () => {
     expect((cg.queryCode({ mode: 'definitions', query: 'run', file: 'a/service.ts' }).items[0] as CodeSymbol).freshness).toBe('missing');
     await cg.sync();
     expect(cg.queryCode({ mode: 'status', query: 'status', checkFiles: true }).index!.changes).toEqual({ added: [], modified: [], removed: [] });
+    expect(cg.queryCode({ mode: 'status', query: 'status', checkFiles: true }).index!.freshness).toBe('current');
     expect(cg.queryCode({ mode: 'definitions', query: 'run' }).status).toBe('not_found');
     expect(cg.getFile('view.js')!.indexedAt).toBe(untouched);
   });
@@ -194,6 +217,28 @@ describe('structured graph queries', () => {
       const result = await handler.execute('codegraph_explore', { mode: 'definitions', query: 'run', ...extra });
       expect(result.isError).toBe(true);
       expect(result.structuredContent!.status).toBe('error');
+    }
+    const invalidDepth = await handler.execute('codegraph_explore', { mode: 'definitions', query: 'run', depth: 1 });
+    expect(invalidDepth.structuredContent).toMatchObject({ status: 'error', projectRoot: root, index: { freshness: expect.any(String) } });
+    expect(invalidDepth.structuredContent!.warnings.join('\n')).toContain('depth is only supported');
+  });
+
+  it('exposes small explore text in structured content and routes diagnostics automatically', async () => {
+    expect(getStaticTools().find((tool) => tool.name === 'codegraph_explore')?.inputSchema.properties.backend).not.toHaveProperty('default');
+    const explore = await handler.execute('codegraph_explore', { query: 'a/service.ts' });
+    expect((explore.structuredContent as any).rendered).toMatchObject({ truncated: false });
+    expect((explore.structuredContent as any).rendered.text).toContain('export function run');
+    expect((explore.structuredContent as any).rendered.text).toBe(explore.content[0]!.text);
+
+    const routed = vi.spyOn(cg, 'queryCodeWithBackend').mockImplementation(async (request) => {
+      expect(request.backend).toBe('auto');
+      return cg.queryCode({ mode: 'status', query: 'status' });
+    });
+    try {
+      await handler.execute('codegraph_explore', { mode: 'diagnostics', query: 'a/service.ts', file: 'a/service.ts' });
+      expect(routed).toHaveBeenCalledOnce();
+    } finally {
+      routed.mockRestore();
     }
   });
 

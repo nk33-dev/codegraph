@@ -34,7 +34,7 @@ import {
 } from '../sync/worktree';
 import { pendingFileState, sortPendingFiles, type PendingFile } from '../sync';
 import { indexedFileFreshness } from '../sync/file-freshness';
-import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
+import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, buildIndexBlock, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
 import { NODE_KINDS, LANGUAGES, type Node, type Edge, type EdgeKind, type SearchResult, type Subgraph, type NodeKind, type Language } from '../types';
 import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, formatCodeEditText, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
 import { editTools } from './edit-tool';
@@ -1387,6 +1387,12 @@ export interface ExploreStructuredContent {
     files: string[];
     bytes: number;
   };
+  rendered: {
+    text: string | null;
+    chars: number;
+    truncated: boolean;
+    hint: string | null;
+  };
 }
 
 /**
@@ -1585,9 +1591,8 @@ export const tools: ToolDefinition[] = [
         },
         backend: {
           type: 'string',
-          description: 'JSON backend: graph, lsp, auto, both.',
+          description: 'JSON backend: graph, lsp, auto, both. Omit for graph; diagnostics automatically uses auto so an available LSP can answer.',
           enum: [...CODE_QUERY_BACKENDS],
-          default: 'graph',
         },
         file: {
           type: 'string',
@@ -1600,7 +1605,7 @@ export const tools: ToolDefinition[] = [
         },
         depth: {
           type: 'number',
-          description: 'explore depth 1–10 (default 3); impact/tests depth (2/5).',
+          description: 'explore depth 1–10 (default 3); structured depth is only valid for impact/tests (defaults 2/5).',
         },
         includeIndirect: {
           type: 'boolean',
@@ -7151,6 +7156,7 @@ export class ToolHandler {
     changes: ChangeContext | null = null,
   ): ToolResult {
     const result = this.textResult(text);
+    const structuredTextLimit = 12000;
     result.structuredContent = {
       schemaVersion: 1,
       kind: 'explore',
@@ -7161,6 +7167,14 @@ export class ToolHandler {
       source: {
         files: emission.files.map((file) => file.path),
         bytes: emission.sourceBytes,
+      },
+      rendered: {
+        text: text.length <= structuredTextLimit ? text : null,
+        chars: text.length,
+        truncated: text.length > structuredTextLimit,
+        hint: text.length > structuredTextLimit
+          ? 'Use mode:"source" with file, offset, and limit for a narrower source slice.'
+          : null,
       },
     };
     result[EXPLORE_EMISSION_KEY] = emission;
@@ -7609,22 +7623,32 @@ export class ToolHandler {
   private async handleCodeQuery(args: Record<string, unknown>): Promise<ToolResult> {
     if (!CODE_QUERY_MODES.includes(args.mode as CodeQueryMode)) return this.errorResult('Unknown explore mode');
     const mode = args.mode as CodeQueryMode;
-    // An explicit value must pass through unchanged: quietly downgrading auto/both to
-    // graph would make callers believe routing took effect.
-    const backend: CodeQueryBackend = CODE_QUERY_BACKENDS.includes(args.backend as CodeQueryBackend)
+    // 显式后端原样传递；诊断没有图数据，未指定时交给自动路由选择语言服务。
+    const backend: CodeQueryBackend = args.backend === undefined && mode === 'diagnostics'
+      ? 'auto'
+      : CODE_QUERY_BACKENDS.includes(args.backend as CodeQueryBackend)
       ? args.backend as CodeQueryBackend
       : 'graph';
+    const requestArgs = args.backend === undefined && mode === 'diagnostics'
+      ? { ...args, backend: 'auto' }
+      : args;
     let result = emptyCodeQueryResult(mode, typeof args.query === 'string' ? args.query : '', backend);
+    let cg: CodeGraph | null = null;
     try {
-      let cg = this.getCodeGraph(args.projectPath as string | undefined);
+      cg = this.getCodeGraph(args.projectPath as string | undefined);
       // When an explicit projectPath hits the default project, reuse the connection
       // that carries the watcher.
       if (this.cg && resolvePath(cg.getProjectRoot()) === resolvePath(this.cg.getProjectRoot())) cg = this.cg;
-      result = await cg.queryCodeWithBackend(args as unknown as CodeQueryRequest);
+      result = await cg.queryCodeWithBackend(requestArgs as unknown as CodeQueryRequest);
       const mismatch = this.worktreeMismatchFor(args.projectPath as string | undefined);
       if (mismatch) result.warnings.push(worktreeMismatchNotice(mismatch));
     } catch (error) {
       result.status = error instanceof NotIndexedError ? 'not_indexed' : 'error';
+      if (cg) {
+        result.projectRoot = cg.getProjectRoot();
+        result.index = buildIndexBlock(cg, { checkFiles: false, includeStats: mode === 'status' });
+        result.warnings.push('Request validation stopped before results were collected; the project and index context are still reported below.');
+      }
       result.warnings.push(error instanceof Error ? error.message : String(error));
     }
     return {
@@ -7695,6 +7719,7 @@ export class ToolHandler {
     }
     const stats = cg.getStats();
     const indexStatus = cg.getIndexStatus();
+    const indexView = buildIndexBlock(cg, { checkFiles: false, includeStats: false });
 
     // Warn when this index actually belongs to a different git working tree
     // (e.g. the server resolved up from a nested worktree to the main checkout).
@@ -7716,6 +7741,7 @@ export class ToolHandler {
       `**Current commit:** ${indexStatus.currentCommit ?? 'unknown'}`,
       `**Last updated:** ${indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never'}`,
       `**Lagging files:** ${indexStatus.laggingFileCount}`,
+      `**Freshness:** ${indexView.freshness}${indexView.freshnessReason ? ` — ${indexView.freshnessReason}` : ''}`,
       ...(indexStatus.textChanges ? [
         `**Text index changes:** +${indexStatus.textChanges.added.length} ~${indexStatus.textChanges.modified.length} -${indexStatus.textChanges.removed.length}`,
         ...indexStatus.textChanges.added.slice(0, 10).map((filePath) => `- not indexed: ${filePath}`),

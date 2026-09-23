@@ -88,6 +88,8 @@ export interface CodeReference {
   confidence?: 'direct' | 'inferred' | 'unknown';
   /** Stays null when there is no call-site coordinate; it must not impersonate the source function's definition position. */
   site: { filePath: string; line: number | null; column: number | null };
+  /** 同一关系的所有去重位置；只有多个位置时才出现。 */
+  sites?: Array<{ filePath: string; line: number | null; column: number | null }>;
   indexVersion?: string | null;
 }
 
@@ -225,6 +227,9 @@ export interface IndexBlock {
   /** null means no full working-tree scan was done; it does not mean the whole index matches disk. */
   changes: ReturnType<CodeGraph['getChangedFiles']> | null;
   changeCounts: { added: number; modified: number; removed: number } | null;
+  /** 供调用方快速判断索引和工作区是否同步的摘要。 */
+  freshness: 'current' | 'syncing' | 'stale' | 'degraded';
+  freshnessReason: string | null;
   stats: GraphStats | null;
 }
 
@@ -434,6 +439,28 @@ export function buildIndexBlock(
   const pending = cg.getPendingFiles();
   const status = cg.getIndexStatus(options.checkFiles || options.includeStats);
   const changes = options.checkFiles ? cg.getChangedFiles() : null;
+  const hasTextChanges = Boolean(status.textChanges && (
+    status.textChanges.added.length > 0
+    || status.textChanges.modified.length > 0
+    || status.textChanges.removed.length > 0
+  ));
+  const hasCommitDrift = Boolean(status.indexedCommit && status.currentCommit && status.indexedCommit !== status.currentCommit);
+  let freshness: IndexBlock['freshness'] = 'current';
+  let freshnessReason: string | null = null;
+  if (cg.isWatcherDegraded()) {
+    freshness = 'degraded';
+    freshnessReason = cg.getWatcherDegradedReason() ?? 'live file watching stopped';
+  } else if (pending.length > 0 || cg.getPendingReferenceCount() > 0 || status.state === 'indexing') {
+    freshness = 'syncing';
+    freshnessReason = 'the index still has files or references waiting for reconciliation';
+  } else if (hasCommitDrift || hasTextChanges || status.laggingFileCount > 0 || status.state === 'partial' || status.state === 'failed') {
+    freshness = 'stale';
+    freshnessReason = hasCommitDrift
+      ? 'the indexed Git commit differs from the current working tree commit'
+      : status.laggingFileCount > 0 || hasTextChanges
+        ? 'the working tree has indexed files that differ from disk without a pending reconciliation'
+        : 'the last index task did not complete';
+  }
   return {
     version: status.version,
     indexedCommit: status.indexedCommit,
@@ -454,6 +481,8 @@ export function buildIndexBlock(
       removed: changes.removed.slice(0, STATE_PATH_LIMIT),
     } : null,
     changeCounts: changes ? { added: changes.added.length, modified: changes.modified.length, removed: changes.removed.length } : null,
+    freshness,
+    freshnessReason,
     stats: options.includeStats ? cg.getStats() : null,
   };
 }
@@ -465,6 +494,12 @@ export function indexWarnings(index: IndexBlock): string[] {
   }
   if (index.degraded) warnings.push('Auto-sync is disabled; indexed results may be stale.');
   if (index.pendingReferences) warnings.push('Reference resolution is incomplete; results may omit edges.');
+  if (index.freshness !== 'current' && index.freshnessReason) {
+    warnings.push(`Index freshness is ${index.freshness}: ${index.freshnessReason}.`);
+  }
+  if (index.state === 'complete' && index.laggingFileCount > 0 && index.pendingFileCount === 0) {
+    warnings.push('The index reports lagging files without pending paths; recheck status before trusting a complete blast radius.');
+  }
   return warnings;
 }
 
@@ -545,6 +580,43 @@ export function makeSymbolBuilder(cg: CodeGraph, root: string): (node: Node) => 
   };
 }
 
+type GraphRelation = { edge: Edge; source: Node; target: Node };
+
+/** 同一关系的多个位置合并到一行分页结果，同时保留调用点。 */
+function groupGraphRelations(
+  relations: GraphRelation[],
+  symbol: (node: Node) => CodeSymbol,
+): CodeReference[] {
+  const grouped = new Map<string, { relation: GraphRelation; sites: Array<{ filePath: string; line: number | null; column: number | null }> }>();
+  for (const relation of relations) {
+    const { edge, source, target } = relation;
+    const provenance = edge.provenance ?? 'unknown';
+    const key = `${source.id}\0${target.id}\0${edge.kind}\0${provenance}`;
+    const site = { filePath: source.filePath, line: edge.line ?? null, column: edge.column ?? null };
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, { relation, sites: [site] });
+      continue;
+    }
+    if (!current.sites.some((item) => item.filePath === site.filePath && item.line === site.line && item.column === site.column)) {
+      current.sites.push(site);
+    }
+  }
+  return [...grouped.values()]
+    .sort((left, right) => compareNodes(left.relation.source, right.relation.source)
+      || compareNodes(left.relation.target, right.relation.target)
+      || (left.sites[0]!.line ?? 0) - (right.sites[0]!.line ?? 0))
+    .map(({ relation, sites }) => ({
+      source: symbol(relation.source),
+      target: symbol(relation.target),
+      kind: relation.edge.kind,
+      provenance: relation.edge.provenance ?? 'unknown',
+      confidence: relation.edge.provenance === 'heuristic' ? 'inferred' : relation.edge.provenance ? 'direct' : 'unknown',
+      site: sites[0]!,
+      ...(sites.length > 1 ? { sites } : {}),
+    } satisfies CodeReference));
+}
+
 /** The graph query shared by CLI/MCP; it only reads the existing index — it neither starts an LSP nor modifies the index. */
 export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryResult {
   const { offset, limit } = validateCodeQueryRequest(request);
@@ -620,12 +692,16 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
 
   // resolveFileInput uses null for "no file qualifier", while the predicate below tests for undefined:
   // passing null straight through would make every query without a file filter out all nodes.
-  const file = resolveFileInput(root, request) ?? undefined;
-  const nodes = (request.mode === 'symbols'
+  const impactPath = request.mode === 'impact' && request.file === undefined
+    ? normalizeToProjectRelative(root, result.query)
+    : null;
+  const impactFile = impactPath && cg.getFile(impactPath) ? impactPath : null;
+  const file = resolveFileInput(root, request) ?? impactFile ?? undefined;
+  const nodes = (request.mode === 'symbols' || impactFile !== null
     ? cg.getNodesInFile(file!)
     : lookupSymbolNodes(cg, result.query).nodes.filter(n => file === undefined || n.filePath === file))
-    .filter((node) => isQueryEligibleNode(root, node)).sort(compareNodes);
-  result.ambiguous = request.mode !== 'symbols' && nodes.length > 1;
+    .filter((node) => (impactFile !== null && node.kind === 'file') || isQueryEligibleNode(root, node)).sort(compareNodes);
+  result.ambiguous = request.mode !== 'symbols' && impactFile === null && nodes.length > 1;
   if (!nodes.length && request.mode !== 'impact') result.status = 'not_found';
 
   if (request.mode === 'impact') {
@@ -638,6 +714,11 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
       ...symbol(entry.node), distance: entry.distance, via: entry.via, rootId: entry.rootId,
     } satisfies ImpactItem));
     if (!nodes.length) result.status = 'not_found';
+    if (impactFile !== null) {
+      result.warnings.push(`Impact query treated "${result.query}" as the indexed file root; use file with a symbol query to narrow one definition.`);
+    } else if (impactPath && /[\\/]|\.[a-z0-9]+$/i.test(result.query) && nodes.length === 0) {
+      result.warnings.push(`"${result.query}" is not an indexed file or symbol; use mode "symbols" to inspect an indexed file path, or run codegraph sync.`);
+    }
     if (ordered.length > 0) {
       result.warnings.push(`Impact distance is the graph's propagation depth within ${depth} hops, not a guarantee that the symbol breaks; dynamic calls with no resolved edge are invisible.`);
     }
@@ -654,34 +735,28 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
         .filter((edge) => edge.kind === 'calls' || edge.kind === 'instantiates')
         .map((edge) => ({ edge, source: target, target: cg.getNode(edge.target) }))
         .filter((item): item is { edge: Edge; source: Node; target: Node } => item.target !== null));
-    const ordered = relations.filter(({ source, target }) => isQueryEligibleNode(root, source) && isQueryEligibleNode(root, target))
-      .sort((left, right) => compareNodes(left.source, right.source) || compareNodes(left.target, right.target)
-        || (left.edge.line ?? 0) - (right.edge.line ?? 0));
-    result.page.total = ordered.length;
-    result.items = ordered.slice(offset, offset + limit).map(({ edge, source, target }) => ({
-      source: symbol(source), target: symbol(target), kind: edge.kind,
-      provenance: edge.provenance ?? 'unknown',
-      confidence: edge.provenance === 'heuristic' ? 'inferred' : edge.provenance ? 'direct' : 'unknown',
-      site: { filePath: source.filePath, line: edge.line ?? null, column: edge.column ?? null },
-    } satisfies CodeReference));
-    result.routing.sources.graph = ordered.length;
-    if (ordered.length === 0) result.status = 'not_found';
+    const eligible = relations.filter(({ source, target }) => isQueryEligibleNode(root, source) && isQueryEligibleNode(root, target));
+    const grouped = groupGraphRelations(eligible, symbol);
+    result.page.total = grouped.length;
+    result.items = grouped.slice(offset, offset + limit);
+    result.routing.sources.graph = grouped.length;
+    if (grouped.length < eligible.length) {
+      result.warnings.push(`Grouped ${eligible.length} graph edges into ${grouped.length} relationships; repeated sites are listed in each item's sites field.`);
+    }
+    if (grouped.length === 0) result.status = 'not_found';
   } else if (request.mode === 'references') {
     const references = collectIncomingRelations(cg, nodes)
       .filter(({ edge, source }) => edge.kind !== 'contains'
         && !isConfigLeafNode(source)
         && Boolean(validatePathWithinRoot(root, source.filePath)));
-    result.page.total = references.length;
-    result.items = references.slice(offset, offset + limit).map(({ edge, source, target }) => {
-      const reference = {
-        source: symbol(source), target: symbol(target),
-        kind: edge.kind, provenance: edge.provenance ?? 'unknown',
-        site: { filePath: source.filePath, line: edge.line ?? null, column: edge.column ?? null },
-      } satisfies CodeReference;
-      return reference;
-    });
+    const grouped = groupGraphRelations(references, symbol);
+    result.page.total = grouped.length;
+    result.items = grouped.slice(offset, offset + limit);
+    if (grouped.length < references.length) {
+      result.warnings.push(`Grouped ${references.length} graph edges into ${grouped.length} relationships; repeated sites are listed in each item's sites field.`);
+    }
     result.warnings.push('Graph edges are best-effort relationships, not a complete list of LSP reference occurrences.');
-    result.routing.sources.graph = references.length;
+    result.routing.sources.graph = grouped.length;
   } else {
     result.page.total = nodes.length;
     result.items = nodes.slice(offset, offset + limit).map(symbol);

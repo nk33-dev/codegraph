@@ -8,10 +8,10 @@ Keep using `codegraph_explore`, selecting structured queries through `mode`:
 
 | mode | query | Result |
 | --- | --- | --- |
-| `explore` (default) | Question or symbol name | The original source and call-chain text |
+| `explore` (default) | Question or symbol name | The original source and call-chain text; small responses also appear as `structuredContent.rendered.text` |
 | `definitions` | Symbol name or qualified name | Positions of matching definitions; definitions sharing a name are not merged on our own |
-| `references` | Symbol name or qualified name | Reference relations in the graph, each item stating source, target, relation type and provenance |
-| `callers` / `callees` | Symbol name or qualified name | Paginated incoming/outgoing call and construction edges, with site, provenance and direct/inferred/unknown confidence |
+| `references` | Symbol name or qualified name | Grouped graph relationships with the first `site`, optional additional `sites`, provenance and confidence |
+| `callers` / `callees` | Symbol name or qualified name | Paginated call and construction relationships with the first `site` and optional additional `sites` |
 | `symbols` | Exact project-relative file path | File symbol overview, including parent symbol IDs |
 | `status` | `status` | Index time, watcher state, pending files and unfinished reference resolution |
 | `text` | Literal text or configuration key | File-level paginated matches in indexed source, comments, scripts, documentation and configuration; first five matching line numbers per file |
@@ -22,6 +22,8 @@ Keep using `codegraph_explore`, selecting structured queries through `mode`:
 默认 `explore` 对“项目启动流程”类问题会优先选择根目录、`src/` 和 `bin`/`cmd` 中的常见入口，沿入口的调用/导入边向外展开；未识别入口时仍使用普通检索，不推断不存在的运行时边。蛇形模块名、带扩展名的文件名、`mod 模块名` 和完整路径会归一到已索引的同一文件；同名文件最多固定三个，避免把热词误认为唯一模块。空结果会给出文件、符号和索引状态的后续查询建议，可能的相近符号仅作为建议，不当作精确命中。
 
 JSON 结构化模式接受 `offset`（从 0 开始，默认 0）和 `limit`（1–200，默认 50）；`file` 是精确项目相对路径，不能模糊匹配。`source` 则复用 `codegraph_node` 的当前磁盘文件读取及安全门，`offset` 从 1 开始，且配置文件仍按键摘要保护。`text` 只支持 Graph 后端，按文件稳定分页，配置行只给行号、不返回值；每个命中还标记 `freshness`，已变化的文件省略旧片段。敏感 `.env`、私钥和大于 256 KiB 的文件不进入文本索引；旧索引首次运行 `codegraph sync` 后才可用。`projectPath` 复用既有跨项目解析及路径校验。
+
+MCP 的 `explore` 文本仍是完整的默认回答；结构化内容另附 `rendered`：不超过 12,000 字符时 `text` 可直接读取同一回答，超出时 `text: null`、`truncated: true` 与按文件/行范围续读的 `hint` 明确指出缺口。结构化 `references`、`callers`、`callees` 按源、目标、边类型和来源合并重复调用点，`site` 保留首个位置，重复关系的 `sites` 保留所有去重位置；`page.total` 统计关系而非原始边。`impact` 可直接用已索引的文件路径作为 `query`，并保留每个受影响项的 `rootId`。`diagnostics` 在 MCP 未指定 `backend` 时使用 `auto`；schema 不声明固定的后端默认值，以免客户端替用户注入 `graph`；显式选择后端仍按原契约校验。
 
 ```json
 {"mode":"definitions","query":"CodeGraph.queryCode","file":"src/index.ts","limit":20}
@@ -106,6 +108,8 @@ Incremental indexing remains the responsibility of the existing sync/orchestrato
 
 `__tests__/query-paths.test.ts` 覆盖模块别名；`__tests__/explore-intent-topic-query.test.ts` 覆盖启动链和空结果建议；`__tests__/flow-evidence.test.ts` 覆盖宽泛问题不产生普通词的伪断链；`__tests__/code-query.test.ts` 覆盖跨提交前后的索引 commit 状态。
 `__tests__/file-text-search.test.ts` 覆盖全文命中、分页、配置值隐藏、漂移、同步、旧数据库升级与重复打开；`__tests__/node-file-view.test.ts` 覆盖 `source` 行范围；`__tests__/server-instructions.test.ts` 守护固定表面预算。
+
+本轮 MCP 体验优化由 `code-query.test.ts` 的重复位置合并、文件级影响、错误上下文、默认源码呈现和诊断路由，以及 `edit-code-edit.test.ts` 的文件内歧义提示固定。2026-09-23 本地 `npm run typecheck`、定向的 6 项查询回归、`server-instructions.test.ts` 和 `mcp-fixed-surface.test.ts` 的 18 项用例通过；含 CLI/MCP 子进程的定向套件共 87 项中 79 项通过，8 项因本地缺失 `dist/bin/codegraph.js` 未通过，`npm run check:quick` 同样受影响，不能算全量通过。未执行本地完整构建、完整测试或重启后的 MCP 端到端验证；发布和版本未变。
 
 `__tests__/explore-blast-radius.test.ts` 固定依赖分类与计数口径（测试调用方只计为测试文件、生产调用方数量与所列文件一致、纯导入文件仍单独归类），`__tests__/explore-test-summary.test.ts` 固定测试摘要契约（测试声明与 exercises 标注、测试体省略与抽样、`includeTestSource: true` 的全文路径、未请求测试时不受影响）。`__tests__/explore-intent-query-focus.test.ts` 继续覆盖意图词收束本身。
 
