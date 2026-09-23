@@ -186,7 +186,8 @@ export function resolveEditTarget(cg: CodeGraph, request: CodeEditRequest): Reso
     const listed = nodes.slice(0, MAX_AMBIGUOUS_LISTED)
       .map((node) => `${node.filePath}:${node.startLine} (${node.kind} ${node.qualifiedName})`);
     throw new CodeEditRefusal(
-      `"${request.symbol}" matches ${nodes.length} definitions; pass file (and a qualified name) to pin one: ${listed.join(', ')}`,
+      `"${request.symbol}" matches ${nodes.length} definitions${file ? ` in ${file}` : ''}; ` +
+      `${file ? 'pass a qualified symbol name' : 'pass file, then a qualified symbol name if needed'} to pin one: ${listed.join(', ')}`,
       'ambiguous',
     );
   }

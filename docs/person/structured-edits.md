@@ -38,7 +38,7 @@ Library users call `CodeGraph.editCode(request)`; `queryCode`/`queryCodeWithBack
 | --- | --- |
 | `operation` | `rename`, `replace-body`, `insert-before`, `insert-after` |
 | `symbol` | The target name or qualified name, resolved through the index (an exact-match lookup, never a text scan) |
-| `file` | An exact project-relative path; pins an ambiguous name. Optional: a name that matches exactly one indexed definition resolves without it |
+| `file` | An exact project-relative path; narrows an ambiguous name to one file. If that file still has multiple matches, pass a qualified `symbol` name. Optional when a name matches exactly one indexed definition |
 | `line` / `column` | `rename` only: a position target (1-based line, 0-based UTF-16 column) instead of a name |
 | `newName` | `rename` only, no whitespace |
 | `content` | `replace-body`/`insert-*` only |
@@ -55,7 +55,7 @@ A bare `apply: true` re-plans against the current index and re-verifies every ta
 `status` is one of `preview`, `applied`, `not_found`, `ambiguous`, `stale`, `conflict`, `unavailable`, `rejected`, `not_indexed`, `error`. `preview` and `applied` are successes; the rest say why nothing (or only part of something) was written:
 
 - `not_found` — no indexed definition matches the name;
-- `ambiguous` — the name matches several definitions; the message lists them, pass `file` (or a qualified name) to pin one;
+- `ambiguous` — the name matches several definitions; the message lists them, pass `file` to narrow it, then a qualified symbol name if the file still contains multiple matches;
 - `stale` — the file's index row no longer matches the bytes on disk, so the recorded position cannot be trusted (run `codegraph sync`, then query again);
 - `conflict` — the file changed between the preview and the write, the preview hash did not match, or a planned create/rename destination already exists;
 - `unavailable` — `rename` without a usable language server (not installed, not configured, disabled, or the server has no `renameProvider`), or a server that returned no edits for this symbol;

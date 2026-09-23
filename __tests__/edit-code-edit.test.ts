@@ -246,6 +246,15 @@ describe('MCP tool and CLI', () => {
     expect(read('a/service.ts')).toBe(SERVICE);
   });
 
+  it('asks for a qualified name when the file still contains multiple matches', async () => {
+    write('a/overload.ts', 'export const location = 1;\nexport function location() { return 2; }\n');
+    await cg.indexAll();
+    const result = await cg.editCode({ operation: 'replace-body', symbol: 'location', file: 'a/overload.ts', content: 'x' });
+    expect(result.status).toBe('ambiguous');
+    expect(result.warnings.join(' ')).toContain('pass a qualified symbol name');
+    expect(result.warnings.join(' ')).not.toContain('pass file');
+  });
+
   it('大型预览默认文本每文件最多展示三个片段，结构化编辑不裁剪', async () => {
     const full = await cg.editCode({
       operation: 'replace-body', symbol: 'run', file: 'a/service.ts', content: 'export function run() { return 3; }',
