@@ -202,6 +202,8 @@ export type MergedCodeQueryItem = CodeQueryItem & { origin: CodeQuerySource; cor
 
 export interface IndexBlock {
   version: string | null;
+  indexedCommit: string | null;
+  currentCommit: string | null;
   state: ReturnType<CodeGraph['getIndexStatus']>['state'];
   phase: string | null;
   lastUpdatedAt: number | null;
@@ -429,6 +431,8 @@ export function buildIndexBlock(
   const changes = options.checkFiles ? cg.getChangedFiles() : null;
   return {
     version: status.version,
+    indexedCommit: status.indexedCommit,
+    currentCommit: status.currentCommit,
     state: status.state,
     phase: status.phase,
     lastUpdatedAt: status.lastUpdatedAt,
@@ -450,6 +454,9 @@ export function buildIndexBlock(
 
 export function indexWarnings(index: IndexBlock): string[] {
   const warnings: string[] = [];
+  if (index.indexedCommit && index.currentCommit && index.indexedCommit !== index.currentCommit) {
+    warnings.push('The index was built at a different Git commit; run codegraph sync and check the changed-file list.');
+  }
   if (index.degraded) warnings.push('Auto-sync is disabled; indexed results may be stale.');
   if (index.pendingReferences) warnings.push('Reference resolution is incomplete; results may omit edges.');
   return warnings;

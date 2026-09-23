@@ -520,6 +520,7 @@ export function buildFlowEvidenceReport(
   const resolvedIds = new Set([...flow.named.keys(), ...flow.namedTypes.keys(), ...flow.dynNamed.keys()]);
   for (const token of flow.tokens) {
     if ((flow.tokenResolved.get(token)?.length ?? 0) > 0) continue;
+    if (flow.tokens.length > 1 && !(/[._$]|::|[a-z][A-Z]/.test(token) || /^[A-Z]/.test(token))) continue;
     if (allBreaks.length >= budget.maxBreaks) {
       truncated = true;
       break;
@@ -541,7 +542,8 @@ export function buildFlowEvidenceReport(
     });
   }
 
-  if (chain.length < 2 && resolvedIds.size > 1 && allBreaks.length < budget.maxBreaks) {
+  if (chain.length < 2 && resolvedIds.size > 1 && allBreaks.length < budget.maxBreaks
+    && (flow.tokens.length <= 2 || flow.preciseNamedIds.size >= 2)) {
     const languages = new Set(
       [...flow.named.values(), ...flow.namedTypes.values(), ...flow.dynNamed.values()].map((node) => node.language),
     );

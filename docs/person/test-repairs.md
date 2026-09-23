@@ -308,3 +308,7 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - Git 安装使用临时源码快照仓库和隔离 prefix 验证，不提交或覆盖当前工作区，也不修改用户全局安装。
 - 可重复执行 `npm run verify:personal-install`，验证当前产物打包后的安装、doctor、UI 资源、Python 图查询和编辑预览；验证目录会自动清理。
 - 本轮没有做全语言性能评测，没有在 Linux/macOS 实跑，没有扩建 CI。现存大文件继续按功能边界逐步维护，不为缩短文件而批量搬动上游代码。
+## 2026-09-23 检索入口、模块别名与索引基准
+
+- 实现：启动问句从常见入口沿现有图展开；蛇形模块别名固定到文件；空结果给出查询建议；宽泛英文词不产生伪断链；索引状态记录同步时 HEAD 与查询时 HEAD（旧索引为 unknown）。
+- 验证：`npm run typecheck` 通过；定向 `query-paths`、`explore-intent-topic-query`、`flow-evidence`、`code-query` 相关用例共 6 项通过。`npm run check:quick` 的类型检查通过，受影响测试 68 文件中 59 文件通过、9 文件失败；其中依赖 `dist/bin/codegraph.js` 的 CLI 用例因当前工作区未构建而失败，不能记作全通过。未在本地运行完整构建或全量测试。

@@ -54,7 +54,8 @@ export interface QueryPathExtraction {
 export function queryMightContainPaths(query: string): boolean {
   return /[/\\]/.test(query)
     || /\.[A-Za-z][A-Za-z0-9]{0,7}(?=[\s,;:)\]'"`]|$)/.test(query)
-    || /(?:^|[^-\w])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?=[^-\w]|$)/.test(query);
+    || /(?:^|[^-\w])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?=[^-\w]|$)/.test(query)
+    || /(?:^|[^\w-])[A-Za-z][\w]*_[\w]+(?=$|[^\w-])/.test(query);
 }
 
 /**
@@ -275,6 +276,30 @@ export function extractQueryPaths(
       if (pinnedSeen.has(m) || pinned.length >= maxPins) continue;
       pinnedSeen.add(m);
       pinned.push(m);
+    }
+  }
+
+  const moduleStems = new Map<string, string[]>();
+  for (const filePath of indexedPaths) {
+    const basename = filePath.slice(Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')) + 1);
+    const stem = basename.replace(LAST_EXTENSION, '').toLowerCase();
+    if (!stem.includes('_')) continue;
+    const matches = moduleStems.get(stem) ?? [];
+    matches.push(filePath);
+    moduleStems.set(stem, matches);
+  }
+  for (let i = 0; i < tokens.length && pinned.length < maxPins; i++) {
+    if (consumed.has(i)) continue;
+    const stem = stripWrapping(tokens[i]!).toLowerCase();
+    if (!/^[a-z][\w]*_[\w]+$/.test(stem)) continue;
+    const matches = moduleStems.get(stem);
+    if (!matches || matches.length > maxMatchesPerSpan) continue;
+    consumed.add(i);
+    if (tokens[i - 1]?.toLowerCase() === 'mod') consumed.add(i - 1);
+    for (const filePath of matches) {
+      if (pinnedSeen.has(filePath) || pinned.length >= maxPins) continue;
+      pinnedSeen.add(filePath);
+      pinned.push(filePath);
     }
   }
 

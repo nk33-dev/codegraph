@@ -3971,6 +3971,22 @@ export class ToolHandler {
       } catch { /* path pinning must never fail an explore call */ }
     }
 
+    const startupQuestion = /(?:启动|运行).{0,8}(?:流程|调用链|入口)|(?:项目|应用|服务).{0,8}启动|\b(?:startup|boot(?:strap)?|entry point)\s+(?:flow|process|path)\b/i.test(rawQuery);
+    if (startupQuestion && pinnedFiles.length === 0) {
+      const entries = cg.getFiles().map((file) => file.path)
+        .filter((filePath) => !isTestFile(filePath))
+        .map((filePath) => {
+          if (/^(?:src\/)?main\.[^/]+$/i.test(filePath) || /^(?:src\/)?__main__\.py$/i.test(filePath)) return { filePath, priority: 0 };
+          if (/^(?:src\/)?(?:index|app|server|program)\.[^/]+$/i.test(filePath)) return { filePath, priority: 1 };
+          if (/^(?:src\/)?(?:bin|cmd)\/[^/]+(?:\/main)?\.[^/]+$/i.test(filePath)) return { filePath, priority: 2 };
+          return null;
+        })
+        .filter((entry): entry is { filePath: string; priority: number } => entry !== null)
+        .sort((left, right) => left.priority - right.priority || left.filePath.localeCompare(right.filePath));
+      pinnedFiles = entries.slice(0, 3).map((entry) => entry.filePath);
+      matchQuery = 'main bootstrap initialize start';
+    }
+
     // Intent words such as definitions, callers, and tests must not widen a single-symbol query.
     // Focus only when the index uniquely confirms one code-shaped identifier and all remaining text is intent;
     // multi-symbol flows, architecture questions, and explicit paths keep the full exploration path.
@@ -4100,6 +4116,21 @@ export class ToolHandler {
       maxNodes: 200,
       minScore: 0.2,
     });
+    if (startupQuestion && pinnedFiles.length > 0) {
+      for (const filePath of pinnedFiles) {
+        const entry = cg.getNodesInFile(filePath)
+          .find((node) => ['function', 'method', 'module'].includes(node.kind)
+            && /^(?:main|start|bootstrap|init|run|App|Server)$/i.test(node.name));
+        if (!entry) continue;
+        const reachable = cg.traverse(entry.id, {
+          direction: 'outgoing', maxDepth: Math.min(displayFilters.depth, 4), limit: 60,
+          edgeKinds: ['calls', 'instantiates', 'imports', 'references'],
+        });
+        subgraph.roots.unshift(entry.id);
+        for (const [id, node] of reachable.nodes) subgraph.nodes.set(id, node);
+        subgraph.edges.push(...reachable.edges);
+      }
+    }
     if (focusedNode) {
       focusedFilePriority.set(focusedNode.filePath, 0);
       // 精确自然语言查询显式收集目标的直接入边，避免通用 traverse 的节点预算或
@@ -4212,10 +4243,28 @@ export class ToolHandler {
       const empty = changeContext
         ? `${formatChangeContext(changeContext)}\n\nNo indexed source is available for the changed files.`
         : `No relevant code found for "${query}"${missNote}`;
+      const suggestions: string[] = [];
+      const target = matchQuery.trim().split(/\s+/).filter((part) => part.length >= 4).sort((a, b) => b.length - a.length)[0];
+      if (target) {
+        const candidates = cg.searchNodes(target, { limit: 5 })
+          .map(({ node }) => node)
+          .filter((node) => node.kind !== 'file' && node.kind !== 'import' && node.kind !== 'export');
+        const seen = new Set<string>();
+        for (const node of candidates) {
+          const key = `${node.filePath}:${node.startLine}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          suggestions.push(`- \`${node.name}\` — \`${node.filePath}:${node.startLine}\``);
+          if (suggestions.length === 3) break;
+        }
+      }
+      const guidance = [empty, '', 'Try an exact file path or basename, or a function/type name.',
+        'Use `mode:"symbols"` with a file path for its definitions; use `mode:"status", checkFiles:true` to check index freshness.',
+        ...(suggestions.length ? ['', 'Nearby indexed symbols:', ...suggestions] : [])].join('\n');
       // Still an explore call, so it is still recorded: an empty answer spends a
       // call against the tier budget even though it emits no source.
-      return this.exploreResult(empty, {
-        projectRoot, query, files: [], sourceBytes: 0, responseBytes: empty.length,
+      return this.exploreResult(guidance, {
+        projectRoot, query, files: [], sourceBytes: 0, responseBytes: guidance.length,
       }, null, changeContext);
     }
 
@@ -7649,6 +7698,8 @@ export class ToolHandler {
     }
     lines.push(
       `**Index generation:** ${indexStatus.version ?? 'unknown'}`,
+      `**Indexed commit:** ${indexStatus.indexedCommit ?? 'unknown'}`,
+      `**Current commit:** ${indexStatus.currentCommit ?? 'unknown'}`,
       `**Last updated:** ${indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never'}`,
       `**Lagging files:** ${indexStatus.laggingFileCount}`,
       `**Index phase:** ${indexStatus.phase ?? 'unknown'} (${indexStatus.taskLevel ?? 'unknown'} task)`,

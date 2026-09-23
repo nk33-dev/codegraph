@@ -155,9 +155,17 @@ describe('structured graph queries', () => {
     git('add', 'a/service.ts');
     git('-c', 'user.name=CodeGraph Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-m', 'rename');
     await cg.sync();
+    expect(cg.queryCode({ mode: 'status', query: 'status', checkFiles: true }).index).toMatchObject({
+      indexedCommit: git('rev-parse', 'HEAD').toString().trim(),
+      currentCommit: git('rev-parse', 'HEAD').toString().trim(),
+    });
     expect(cg.queryCode({ mode: 'definitions', query: 'replacement' }).page.total).toBe(1);
     git('switch', 'base');
+    const beforeSync = cg.queryCode({ mode: 'status', query: 'status', checkFiles: true });
+    expect(beforeSync.index.indexedCommit).not.toBe(beforeSync.index.currentCommit);
+    expect(beforeSync.warnings).toContain('The index was built at a different Git commit; run codegraph sync and check the changed-file list.');
     await cg.sync();
+    expect(cg.queryCode({ mode: 'status', query: 'status', checkFiles: true }).index.indexedCommit).toBe(git('rev-parse', 'HEAD').toString().trim());
     const incremental = cg.queryCode({ mode: 'references', query: 'run' }).items;
     expect(cg.queryCode({ mode: 'definitions', query: 'replacement' }).status).toBe('not_found');
     await cg.indexAll();

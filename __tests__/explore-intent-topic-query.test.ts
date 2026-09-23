@@ -26,6 +26,11 @@ describe('codegraph_explore intent words', () => {
       'export function search(term: string) { return term.length; }\n' +
       'export function code(id: number) { return id + 1; }\n',
     );
+    fs.writeFileSync(path.join(src, 'main.ts'),
+      'import { callerFn } from "./callers";\n' +
+      'export function initialize() { return callerFn(); }\n' +
+      'export function main() { return initialize(); }\n',
+    );
     cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
     await cg.indexAll();
     handler = new ToolHandler(cg);
@@ -42,6 +47,8 @@ describe('codegraph_explore intent words', () => {
     });
     const output = result.content[0].text;
     expect(output).toContain('No relevant code found for "Widget render callers and related code"');
+    expect(output).toContain('Try an exact file path or basename');
+    expect(output).toContain('mode:"status"');
     expect(output).not.toMatch(/callerFn|jsCaller|relatedHelper|Found \d+ symbols/);
   });
 
@@ -51,6 +58,15 @@ describe('codegraph_explore intent words', () => {
     });
     expect(result.content[0].text).toContain('No relevant code found for');
     expect(result.content[0].text).not.toContain('callerFn');
+  });
+
+  it('locates the entry and initialization chain from a startup question', async () => {
+    const result = await handler.execute('codegraph_explore', { query: '这个项目的启动流程是什么' });
+    const output = result.content[0].text;
+    expect(output).toContain('src/main.ts');
+    expect(output).toContain('function main()');
+    expect(output).toContain('initialize()');
+    expect(output).toContain('callerFn');
   });
 
   it('still focuses an exact symbol and preserves symbols named like intent words', async () => {

@@ -1373,6 +1373,8 @@ program
             : null,
           index: {
             version: indexStatus.version,
+            indexedCommit: indexStatus.indexedCommit,
+            currentCommit: indexStatus.currentCommit,
             lastUpdatedAt: indexStatus.lastUpdatedAt,
             laggingFileCount: indexStatus.laggingFileCount,
             phase: indexStatus.phase,
@@ -1412,6 +1414,8 @@ program
       // Project info
       console.log(chalk.cyan('Project:'), projectPath);
       console.log(chalk.cyan('Index generation:'), indexStatus.version ?? 'unknown');
+      console.log(chalk.cyan('Indexed commit:'), indexStatus.indexedCommit ?? 'unknown');
+      console.log(chalk.cyan('Current commit:'), indexStatus.currentCommit ?? 'unknown');
       console.log(chalk.cyan('Last updated:'), indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never');
       console.log(chalk.cyan('Lagging files:'), formatNumber(indexStatus.laggingFileCount));
       console.log(chalk.cyan('Phase:'), indexStatus.phase ?? 'unknown');

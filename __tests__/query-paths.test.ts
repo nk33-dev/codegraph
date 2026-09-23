@@ -40,6 +40,16 @@ const INDEX = [
 ];
 
 describe('queryMightContainPaths — the cheap pre-gate', () => {
+  it('recognizes extensionless module identifiers', () => {
+    const indexed = ['src/net/protocol_proxy.rs'];
+    for (const query of ['protocol_proxy', 'protocol_proxy.rs', 'mod protocol_proxy', 'src/net/protocol_proxy.rs']) {
+      expect(queryMightContainPaths(query)).toBe(true);
+      const result = extractQueryPaths(query, indexed);
+      expect(result.pinnedFiles).toContain('src/net/protocol_proxy.rs');
+      expect(result.strippedQuery).toBe('');
+    }
+    expect(extractQueryPaths('unknown_module', indexed).strippedQuery).toBe('unknown_module');
+  });
   it('fires on slashes and dotted basenames', () => {
     expect(queryMightContainPaths('look at src/lib/chat-manager.ts')).toBe(true);
     expect(queryMightContainPaths('look at chat-manager.ts please')).toBe(true);
@@ -57,9 +67,9 @@ describe('queryMightContainPaths — the cheap pre-gate', () => {
     expect(queryMightContainPaths('usage, add-to-training-set.')).toBe(true);
   });
 
-  it('stays quiet on flags, snake_case, and snake-with-a-dash hybrids', () => {
+  it('stays quiet on flags and snake-with-a-dash hybrids', () => {
     expect(queryMightContainPaths('run it with --no-cache maybe')).toBe(false);
-    expect(queryMightContainPaths('where is background_image_table used')).toBe(false);
+    expect(queryMightContainPaths('where is background_image_table used')).toBe(true);
     expect(queryMightContainPaths('the foo_bar-baz helper')).toBe(false);
   });
 });

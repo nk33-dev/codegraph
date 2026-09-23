@@ -14,6 +14,10 @@ Keep using `codegraph_explore`, selecting structured queries through `mode`:
 | `symbols` | Exact project-relative file path | File symbol overview, including parent symbol IDs |
 | `status` | `status` | Index time, watcher state, pending files and unfinished reference resolution |
 
+`status` 还显示 `indexedCommit`（上次索引/同步时的 HEAD）与 `currentCommit`（查询时的 HEAD）；非 Git 项目或旧索引可为 `null`。二者不同时返回警告，但相同不代表工作区干净，应结合 `checkFiles: true` 的 `changes`、`pendingFiles` 和 `laggingFileCount` 判断未同步文件。`lastUpdatedAt` 是最近文件索引时间，不能当作 Git 提交时间。
+
+默认 `explore` 对“项目启动流程”类问题会优先选择根目录、`src/` 和 `bin`/`cmd` 中的常见入口，沿入口的调用/导入边向外展开；未识别入口时仍使用普通检索，不推断不存在的运行时边。蛇形模块名、带扩展名的文件名、`mod 模块名` 和完整路径会归一到已索引的同一文件；同名文件最多固定三个，避免把热词误认为唯一模块。空结果会给出文件、符号和索引状态的后续查询建议，可能的相近符号仅作为建议，不当作精确命中。
+
 Structured modes accept `offset` (0-based, default 0) and `limit` (1–200, default 50); `file` is an exact file qualifier and does not do fuzzy suffix matching. In `symbols`, file can override the path given by query. `projectPath` reuses the existing cross-project resolution and path validation.
 
 ```json
@@ -91,6 +95,8 @@ Incremental indexing remains the responsibility of the existing sync/orchestrato
 ## Verification
 
 `__tests__/code-query.test.ts` uses real TS, JS and Rust files plus SQLite, covering definition ambiguity, exact file qualification, hierarchy, graph references, cross-project, CLI/MCP consistency, real MCP handshake, watcher state, file modification/rename/deletion, and consistency of incremental and rebuild results after a Git branch switch.
+
+`__tests__/query-paths.test.ts` 覆盖模块别名；`__tests__/explore-intent-topic-query.test.ts` 覆盖启动链和空结果建议；`__tests__/flow-evidence.test.ts` 覆盖宽泛问题不产生普通词的伪断链；`__tests__/code-query.test.ts` 覆盖跨提交前后的索引 commit 状态。
 
 `__tests__/explore-blast-radius.test.ts` 固定依赖分类与计数口径（测试调用方只计为测试文件、生产调用方数量与所列文件一致、纯导入文件仍单独归类），`__tests__/explore-test-summary.test.ts` 固定测试摘要契约（测试声明与 exercises 标注、测试体省略与抽样、`includeTestSource: true` 的全文路径、未请求测试时不受影响）。`__tests__/explore-intent-query-focus.test.ts` 继续覆盖意图词收束本身。
 

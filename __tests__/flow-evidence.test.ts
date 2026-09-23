@@ -118,6 +118,12 @@ afterAll(() => {
 });
 
 describe('统一流证据', () => {
+  it('宽泛问题中的普通英文词不伪装成断链', () => {
+    const flow = resolveNamedSymbolFlow(cg, 'explain parsing lookup startup flow');
+    const report = buildFlowEvidenceReport(cg, flow).report;
+    expect(report.breaks.filter((item) => item.reason === 'unindexed')).toEqual([]);
+    expect(report.breaks.filter((item) => item.reason === 'no_syntax_edge')).toEqual([]);
+  });
   it('为静态路径保留定义位置和调用位置', () => {
     const flow = resolveNamedSymbolFlow(cg, 'start finish');
     const built = buildFlowEvidenceReport(cg, flow);

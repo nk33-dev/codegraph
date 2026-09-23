@@ -7,6 +7,7 @@
 
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { queryCode, type CodeQueryRequest, type CodeQueryResult } from './graph/code-query';
 import { queryCodeRouted, type LspAvailability } from './graph/code-query-route';
 import { editCode, type CodeEditRequest, type CodeEditResult } from './edits';
@@ -200,6 +201,8 @@ export interface IndexOptions {
 
 export interface IndexStatus {
   version: string | null;
+  indexedCommit: string | null;
+  currentCommit: string | null;
   state: 'indexing' | 'complete' | 'partial' | 'failed' | null;
   lastUpdatedAt: number | null;
   laggingFileCount: number;
@@ -567,6 +570,7 @@ export class CodeGraph {
     const version = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
     try {
       this.queries.setMetadata('index_generation', version);
+      this.queries.setMetadata('index_commit', this.currentGitCommit() ?? '');
       this.queries.setMetadata('index_state', 'indexing');
       this.queries.setMetadata('index_phase', 'scanning');
       this.queries.setMetadata('index_task_level', taskLevel);
@@ -1006,6 +1010,9 @@ export class CodeGraph {
       } catch { /* 状态元数据是辅助信息，不阻断同步 */ }
     }
     if (result.durationMs > 0) {
+      if (!result.lockUnavailable) {
+        try { this.queries.setMetadata('index_commit', this.currentGitCommit() ?? ''); } catch { /* best effort */ }
+      }
       const changed = result.filesAdded + result.filesModified + result.filesRemoved;
       resourceMetrics().recordIndexRun('incremental', result.durationMs, changed);
     }
@@ -1478,6 +1485,17 @@ export class CodeGraph {
     return this.queries.getMetadata('index_generation');
   }
 
+  private currentGitCommit(): string | null {
+    try {
+      return execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: this.projectRoot, encoding: 'utf8', timeout: 2000,
+        stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+      }).trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   /** 统一索引状态快照，供 CLI、MCP 和 UI 共享。 */
   getIndexStatus(checkFiles = true): IndexStatus {
     const changes = checkFiles ? this.getChangedFiles() : { added: [], modified: [], removed: [] };
@@ -1487,6 +1505,8 @@ export class CodeGraph {
     const lastUpdatedAt = this.getLastIndexedAt();
     return {
       version: this.getIndexVersion(),
+      indexedCommit: this.queries.getMetadata('index_commit') || null,
+      currentCommit: checkFiles ? this.currentGitCommit() : null,
       state: this.getIndexState(),
       lastUpdatedAt,
       laggingFileCount: new Set([...pending.map((file) => file.path), ...changes.added, ...changes.modified, ...changes.removed]).size,
