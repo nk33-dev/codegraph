@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import CodeGraph from '../src/index';
 import { ToolHandler } from '../src/mcp/tools';
-import { removeQueryIntentWords, stripQueryIntentWords } from '../src/search/query-intent';
+import { parseQueryIntent, removeQueryIntentWords, stripQueryIntentWords } from '../src/search/query-intent';
 
 describe('codegraph_explore intent words', () => {
   let testDir: string;
@@ -30,6 +30,11 @@ describe('codegraph_explore intent words', () => {
       'import { callerFn } from "./callers";\n' +
       'export function initialize() { return callerFn(); }\n' +
       'export function main() { return initialize(); }\n',
+    );
+    fs.writeFileSync(path.join(src, 'document-import.ts'),
+      '// Word PDF Excel are accepted document formats.\n' +
+      'export function importDocuments() { return traceImport(); }\n' +
+      'export function traceImport() { return 1; }\n',
     );
     cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
     await cg.indexAll();
@@ -92,5 +97,25 @@ describe('codegraph_explore intent words', () => {
     for (const query of ['runUpgrade definition', 'Widget render callers', '获取用户列表 的调用方']) {
       expect(stripQueryIntentWords(query).trim()).toBe(removeQueryIntentWords(query).trim());
     }
+  });
+
+  it('treats a natural-language flow request as intent instead of missing symbol names', async () => {
+    const intent = parseQueryIntent('查找 Word/PDF/Excel 导入流程');
+    expect(intent).toMatchObject({ flow: true, remainder: 'Word PDF Excel 导入' });
+
+    const result = await handler.execute('codegraph_explore', {
+      query: '查找 Word/PDF/Excel 导入流程',
+    });
+    const output = result.content[0].text;
+    expect(output).toContain('**Flow status — incomplete**');
+    expect(output).toContain('Treat this result as partial evidence');
+    expect(output).toContain('src/document-import.ts');
+    expect(output).not.toContain('[unindexed]');
+    expect(output).not.toContain('**Blast radius');
+    expect(output).not.toContain('**Relationships**');
+    expect((result.structuredContent as any).evidence).toMatchObject({
+      status: 'unconnected',
+      breaks: [],
+    });
   });
 });

@@ -20,6 +20,7 @@ export interface ExploreQueryIntent {
   definitions: boolean;
   callers: boolean;
   callees: boolean;
+  flow: boolean;
   references: boolean;
   tests: boolean;
   direct: boolean;
@@ -40,6 +41,7 @@ const INTENT_GROUPS = {
     '被谁调用', '谁调用了', '谁调用', '被调用', '调用方', '调用者', '上游',
   ],
   callees: ['callee', 'callees', 'calls', '调用链', '下游'],
+  flow: ['flow', 'flows', 'pipeline', '流程', '调用链', '链路'],
   references: [
     'usage', 'usages', 'used', 'uses', 'use', 'using',
     'reference', 'references', 'referenced', 'mentioned', '引用', '使用',
@@ -60,7 +62,7 @@ const FILLER_WORDS: readonly string[] = [
   'source', 'sources', 'symbol', 'symbols', 'method', 'methods', 'function', 'functions',
   'location', 'locations', 'located', 'where', 'file', 'files', 'code',
   'purpose', 'usage-doc', 'example', 'examples', 'explain', 'explanation', 'description', 'describe',
-  'signature', 'body', 'behavior', 'behaviour', 'flow', 'dependency', 'dependencies',
+  'signature', 'body', 'behavior', 'behaviour', 'dependency', 'dependencies',
   // English connectors, quantities, questions, and imperatives.
   'and', 'or', 'its', 'their', 'the', 'this', 'that',
   'these', 'those', 'of', 'for', 'to', 'from', 'in', 'on', 'with', 'by', 'is', 'are', 'was',
@@ -150,6 +152,7 @@ export function parseQueryIntent(text: string): ExploreQueryIntent {
     definitions: containsAny(text, INTENT_GROUPS.definitions),
     callers: containsAny(text, INTENT_GROUPS.callers),
     callees: containsAny(text, INTENT_GROUPS.callees),
+    flow: containsAny(text, INTENT_GROUPS.flow),
     references: containsAny(text, INTENT_GROUPS.references),
     tests: containsAny(text, INTENT_GROUPS.tests),
     direct: containsAny(text, INTENT_GROUPS.direct),

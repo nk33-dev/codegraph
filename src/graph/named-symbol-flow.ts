@@ -272,7 +272,7 @@ function rankForDirected(nodes: readonly Node[]): Node[] {
  * English word that happened to exact-match a callable.
  */
 function isPreciseToken(token: string): boolean {
-  return /[._$]|::|\//.test(token) || /[a-z][A-Z]/.test(token) || /^[A-Z]/.test(token);
+  return /[._$]|::|\//.test(token) || /[a-z][A-Z]/.test(token);
 }
 
 /** The symbol-shaped tokens of a query, deduped and capped. */
@@ -347,7 +347,10 @@ export function resolveNamedTokens(
       t,
       kept.map((n) => n.id)
     );
-    const precise = isPreciseToken(t);
+    // 单个首字母大写词也可能只是产品名或文件格式。只有它确实命中类型/组件时，
+    // 才按显式符号处理；`Word`、`Excel` 这类自然语言主题不会凭大小写获得高权重。
+    const precise = isPreciseToken(t) || (/^[A-Z][A-Za-z0-9]*$/.test(t)
+      && hits.some((n) => HIERARCHY_ENDPOINT_KINDS.has(n.kind) || n.kind === 'component'));
     for (const n of kept) {
       out.named.set(n.id, n);
       if (specific) out.uniqueNamedNodeIds.add(n.id);

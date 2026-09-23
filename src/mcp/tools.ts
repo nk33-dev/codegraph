@@ -55,6 +55,8 @@ import { findDynamicBoundaries, type BoundarySite, type NodeBoundary } from '../
 import { countImplementers } from '../graph/type-hierarchy';
 import {
   buildFlowEvidenceReport,
+  DEFAULT_FLOW_EVIDENCE_BUDGET,
+  FLOW_EVIDENCE_SCHEMA_VERSION,
   type FlowEvidenceReport,
 } from '../graph/flow-evidence';
 import {
@@ -3238,18 +3240,16 @@ export class ToolHandler {
       const identityOnly = () => {
         const built = buildFlowEvidenceReport(cg, flow, [], { priorEvidenceKeys });
         const evidenceText = this.buildEvidenceSection(built.report);
-        return preciseNamedIds.size === 0 && flow.namedTypes.size === 0 && !evidenceText
-          ? EMPTY
-          : {
-              text: '',
-              pathNodeIds: new Set<string>(),
-              namedNodeIds: new Set<string>([...preciseNamedIds, ...flow.namedTypes.keys()]),
-              uniqueNamedNodeIds: new Set<string>([...uniqueNamedNodeIds].filter((id) => preciseNamedIds.has(id))),
-              spineCallSites: new Map<string, number>(),
-              evidence: built.report,
-              evidenceKeys: built.observedEvidenceKeys,
-              evidenceText,
-            };
+        return {
+          text: '',
+          pathNodeIds: new Set<string>(),
+          namedNodeIds: new Set<string>([...preciseNamedIds, ...flow.namedTypes.keys()]),
+          uniqueNamedNodeIds: new Set<string>([...uniqueNamedNodeIds].filter((id) => preciseNamedIds.has(id))),
+          spineCallSites: new Map<string, number>(),
+          evidence: built.report,
+          evidenceKeys: built.observedEvidenceKeys,
+          evidenceText,
+        };
       };
       if (named.size < 2) {
         // <2 CALLABLES resolved. Two recoveries before giving up: (1) synthesized
@@ -4014,6 +4014,7 @@ export class ToolHandler {
     let focusedRelations: ReturnType<typeof collectIncomingRelations> = [];
     const focusedRelationSources = new Map<string, { source: Node; line: number; origins: Set<'graph' | 'lsp'> }>();
     const queryIntent = parseQueryIntent(query);
+    const flowQueryRequested = queryIntent.flow;
     const requestedTests = queryIntent.tests;
     // "Include the relevant tests" means include the TESTS, not their bodies:
     // every text segment inside them is fixture literal. The default is
@@ -4061,6 +4062,14 @@ export class ToolHandler {
         }
       };
       matchQuery = removeQueryIntentWords(matchQuery, isIndexedName);
+    }
+    if (queryIntent.flow) {
+      // `Word/PDF/Excel` 是自然语言主题枚举，不是路径或 Erlang `call/2` 形状。
+      // 只展开至少三段的简单标签，避免改变真实路径、限定符号和二段代码表达式。
+      matchQuery = matchQuery.replace(
+        /[A-Za-z][A-Za-z0-9-]*(?:\/[A-Za-z][A-Za-z0-9-]*){2,}/g,
+        (list) => list.replace(/\//g, ' '),
+      );
     }
     const pinnedSet = new Set(pinnedFiles);
     const pinnedOrder = new Map(pinnedFiles.map((p, i) => [p, i]));
@@ -4203,6 +4212,32 @@ export class ToolHandler {
           }
         } catch {
           // LSP 不可用时保留完整 Graph 结果；路由层已经负责可用性与超时边界。
+        }
+      }
+    }
+
+    // Vue 模板正文不属于 script 节点，节点 FTS 可能完全看不到格式提示等 UI 文案。
+    // 明确的流程查询在图检索为空时，用现有文件全文索引找到唯一相关 SFC，再从组件根沿 calls 展开。
+    if (flowQueryRequested && subgraph.nodes.size === 0 && cg.isTextIndexReady()) {
+      const textQuery = (matchQuery.match(/[A-Za-z0-9_$.-]+/g) ?? [])
+        .filter((part) => part.length >= 2)
+        .join(' ');
+      if (textQuery.length >= 3) {
+        const textHits = cg.searchText(textQuery, { limit: maxFiles }).items
+          .filter((hit) => hit.freshness === 'current' && hit.filePath.endsWith('.vue'));
+        for (const hit of textHits) {
+          const component = cg.getNodesInFile(hit.filePath).find((node) => node.kind === 'component');
+          if (!component) continue;
+          const reachable = cg.traverse(component.id, {
+            direction: 'outgoing',
+            maxDepth: Math.min(displayFilters.depth, 4),
+            limit: 80,
+            edgeKinds: ['calls', 'navigates'],
+          });
+          subgraph.roots.push(component.id);
+          subgraph.nodes.set(component.id, component);
+          for (const [id, node] of reachable.nodes) subgraph.nodes.set(id, node);
+          subgraph.edges.push(...reachable.edges);
         }
       }
     }
@@ -4416,7 +4451,7 @@ export class ToolHandler {
       // sibling-bag case), which an incidental English-word collision never is.
       const lcTokens = new Set(tokens.map((x) => x.toLowerCase()));
       const isPreciseToken = (x: string) =>
-        /[._$]|::|\//.test(x) || /[a-z][A-Z]/.test(x) || /^[A-Z]/.test(x);
+        /[._$]|::|\//.test(x) || /[a-z][A-Z]/.test(x);
       const fileNameSets = new Map<string, Set<string>>();
       const coNamedInFile = (t: string, fp: string): boolean => {
         let names = fileNameSets.get(fp);
@@ -4441,6 +4476,10 @@ export class ToolHandler {
         // codegraph_node's findSymbolMatches.) Qualified tokens keep findAllSymbols.
         const isQual = /[.\/]|::/.test(t);
         const raw = isQual ? this.findAllSymbols(cg, t).nodes : cg.getNodesByName(t);
+        // 单个 PascalCase 词只有命中类型或组件时才算精确符号。这样保留 `Widget`
+        // 类查询，同时避免 Word/PDF/Excel 之类主题词碰巧命中函数后抢占 named tier。
+        const preciseToken = isPreciseToken(t) || (/^[A-Z][A-Za-z0-9]*$/.test(t)
+          && raw.some((n) => DECLARATION_KINDS.has(n.kind) || n.kind === 'component'));
         // A query that NAMES a declared type is a question ABOUT that type, and
         // must still reach its declaration file at full weight — so record the
         // files those declarations live in and exempt them from the
@@ -4449,7 +4488,7 @@ export class ToolHandler {
         // must not exempt a `Body` interface it never meant to name. Kept
         // separate from `namedSeedIds`, which is callable-only by construction —
         // a type never becomes a named seed, so it cannot be the guard here.
-        if (isPreciseToken(t)) {
+        if (preciseToken) {
           for (const n of raw) {
             if (DECLARATION_KINDS.has(n.kind) && n.name.toLowerCase() === t.toLowerCase()) {
               namedTypeFiles.add(n.filePath);
@@ -4491,7 +4530,7 @@ export class ToolHandler {
         // the guard uniformly to both branches below, including the >3-def
         // single-pick fallback — an uncorroborated bare `run` must not tier its
         // most-substantive namesake any more than a 1-def `check` may.
-        if (!isPreciseToken(t)) {
+        if (!preciseToken) {
           cands = cands.filter((n) => coNamedInFile(t, n.filePath));
         }
         // A specific name (<=3 defs) injects all its defs. An overloaded name
@@ -5108,6 +5147,58 @@ export class ToolHandler {
       return b[1].nodes.length - a[1].nodes.length;
     });
 
+    // 自然语言可能只命中文件正文，没有显式写出符号名。Vue 模板事件已有高置信度合成边时，
+    // 仅在“一个模板处理器 + 一个下游调用”都唯一的情况下补成三点流程；多候选保持未连通。
+    let flowInput = matchQuery;
+    if (flowQueryRequested) {
+      const fileRank = new Map(sortedFiles.map(([filePath], index) => [filePath, index]));
+      const vueHandlers = subgraph.edges
+        .filter((edge) => edge.kind === 'calls' && edge.metadata?.synthesizedBy === 'vue-handler')
+        .map((edge) => ({ edge, source: subgraph.nodes.get(edge.source), target: subgraph.nodes.get(edge.target) }))
+        .filter((item): item is { edge: Edge; source: Node; target: Node } => !!item.source && !!item.target)
+        .sort((left, right) => (fileRank.get(left.source.filePath) ?? Number.MAX_SAFE_INTEGER)
+          - (fileRank.get(right.source.filePath) ?? Number.MAX_SAFE_INTEGER));
+      const bestRank = vueHandlers.length > 0
+        ? fileRank.get(vueHandlers[0]!.source.filePath) ?? Number.MAX_SAFE_INTEGER
+        : Number.MAX_SAFE_INTEGER;
+      const bestHandlers = vueHandlers.filter((item) =>
+        (fileRank.get(item.source.filePath) ?? Number.MAX_SAFE_INTEGER) === bestRank);
+      if (bestHandlers.length === 1) {
+        const selected = bestHandlers[0]!;
+        const downstream = subgraph.edges
+          .filter((edge) => edge.kind === 'calls' && edge.source === selected.target.id)
+          .map((edge) => subgraph.nodes.get(edge.target))
+          .filter((node): node is Node => !!node && node.id !== selected.source.id && !isTestFile(node.filePath));
+        const uniqueDownstream = [...new Map(downstream.map((node) => [node.id, node])).values()];
+        if (uniqueDownstream.length === 1) {
+          flowInput = `${selected.source.name} ${selected.target.name} ${uniqueDownstream[0]!.name}`;
+        }
+      }
+    }
+
+    // 流程查询先得出连接状态，后续输出才能在断链时优先说明限制，并压低自动诊断噪声。
+    await warmBranchGuardGrammars();
+    const flow = this.buildFlowFromNamedSymbols(cg, flowInput, priorEvidenceKeys, displayFilters.depth);
+    if (flowInput !== matchQuery && flow.text) {
+      flow.text = flow.text.replace(
+        '**Flow (call path among the symbols you queried)**',
+        '**Flow (confirmed from the matched Vue template)**',
+      );
+    }
+    const incompleteFlow = flowQueryRequested && flow.evidence?.status !== 'connected';
+    const visibleEvidence: FlowEvidenceReport | null = flow.evidence ?? (incompleteFlow ? {
+      schemaVersion: FLOW_EVIDENCE_SCHEMA_VERSION,
+      status: 'unconnected',
+      evidence: [],
+      breaks: [],
+      implementations: [],
+      deduplicatedEvidence: 0,
+      truncated: false,
+      elapsedMs: 0,
+      budget: { ...DEFAULT_FLOW_EVIDENCE_BUDGET },
+    } : null);
+    const visibleChangeContext = incompleteFlow && !changeIntent ? null : changeContext;
+
     // Step 3: Build relationship map
     const lines: string[] = [
       `**Exploration: ${query}**`,
@@ -5124,14 +5215,27 @@ export class ToolHandler {
     ];
     const summaryLineIdx = 2;
 
+    if (incompleteFlow) {
+      const touchesVue = sortedFiles.some(([filePath]) => filePath.endsWith('.vue'));
+      lines.push(
+        '**Flow status — incomplete**',
+        '',
+        touchesVue
+          ? '- The index did not confirm a complete path from the Vue template event through its `script setup` handler to downstream calls. Treat this result as partial evidence, not proof that the code does not exist.'
+          : '- The index did not confirm a complete path between the requested targets. Treat this result as partial evidence, not proof that the code does not exist.',
+        '- Only directly relevant source is shown below. Narrow the query with an exact file path or a camelCase/qualified symbol name.',
+        '',
+      );
+    }
+
     // Change explanations have a separate budget; structured content retains the fuller bounded fields.
-    const changeContextText = changeContext ? formatChangeContext(changeContext) : '';
+    const changeContextText = visibleChangeContext ? formatChangeContext(visibleChangeContext) : '';
     if (changeContextText) lines.push(changeContextText, '');
 
     // Blast radius (always-on, compact): for the entry symbols, who depends on
     // them + which tests cover them — locations only, no source — so the agent
     // knows what to update/verify before editing without a separate call.
-    const blastRadius = this.buildBlastRadiusSection(cg, subgraph);
+    const blastRadius = incompleteFlow ? '' : this.buildBlastRadiusSection(cg, subgraph);
     if (blastRadius) lines.push(blastRadius);
 
     // Relationship map — show how symbols connect
@@ -5139,7 +5243,7 @@ export class ToolHandler {
       e.kind !== 'contains' // skip contains — it's implied by file grouping
     );
 
-    if (budget.includeRelationships && significantEdges.length > 0) {
+    if (!incompleteFlow && budget.includeRelationships && significantEdges.length > 0) {
       lines.push('**Relationships**');
       lines.push('');
 
@@ -5169,14 +5273,7 @@ export class ToolHandler {
       }
     }
 
-    // Step 4: Read contiguous file sections
-    // Compute the flow spine once — used both to prepend the Flow section (below)
-    // and to gate adaptive source sizing: files on the spine get full source,
-    // off-spine peers skeletonize.
-    // The Flow section labels each hop with its branch conditions; that read
-    // is synchronous, so the grammars it needs are loaded here, once.
-    await warmBranchGuardGrammars();
-    const flow = this.buildFlowFromNamedSymbols(cg, matchQuery, priorEvidenceKeys, displayFilters.depth);
+    // 第 4 步：读取连续源码片段。`flow` 已提前计算，断链时可以先压低无关诊断。
 
     // Snapshot every ranked candidate's scoring inputs, in final sort order, so
     // the diagnostic can show what each file's share of the envelope was BOUGHT
@@ -7141,7 +7238,7 @@ export class ToolHandler {
       sourceBytes,
       responseBytes: finalText.length,
       evidenceKeys: flow.evidenceKeys,
-    }, flow.evidence, changeContext);
+    }, visibleEvidence, visibleChangeContext);
   }
 
   /**

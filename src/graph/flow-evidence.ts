@@ -520,7 +520,9 @@ export function buildFlowEvidenceReport(
   const resolvedIds = new Set([...flow.named.keys(), ...flow.namedTypes.keys(), ...flow.dynNamed.keys()]);
   for (const token of flow.tokens) {
     if ((flow.tokenResolved.get(token)?.length ?? 0) > 0) continue;
-    if (flow.tokens.length > 1 && !(/[._$]|::|[a-z][A-Z]/.test(token) || /^[A-Z]/.test(token))) continue;
+    // 多词自然语言中的 Word/PDF/Excel 一类主题词不能被当成缺失符号。
+    // camelCase、snake_case、限定名和路径仍具有足够强的代码形状，可以报告未索引。
+    if (flow.tokens.length > 1 && !(/[._$]|::|\/[A-Za-z0-9_$]|[a-z][A-Z]/.test(token))) continue;
     if (allBreaks.length >= budget.maxBreaks) {
       truncated = true;
       break;
@@ -529,8 +531,8 @@ export function buildFlowEvidenceReport(
       && !isSourceFile(token.replace(/\\/g, '/'));
     const reason: FlowBreakReason = unsupported ? 'unsupported' : 'unindexed';
     const detail = unsupported
-      ? `${token} 的文件类型不在当前索引支持范围内`
-      : `索引中没有名为 ${token} 的符号`;
+      ? `${token} uses a file type that the current index does not support`
+      : `No indexed symbol is named ${token}`;
     const item = breakEvidence(reason, detail, token);
     addEvidence(item);
     allBreaks.push({
@@ -549,8 +551,8 @@ export function buildFlowEvidenceReport(
     );
     const reason: FlowBreakReason = languages.size > 1 ? 'language_boundary' : 'no_syntax_edge';
     const detail = languages.size > 1
-      ? '已解析符号跨越语言边界，当前图中没有可确认的连接'
-      : '已解析符号之间没有可确认的语法或图关系';
+      ? 'The resolved symbols cross a language boundary with no confirmed graph connection'
+      : 'The resolved symbols have no confirmed syntax or graph relation';
     const item = breakEvidence(reason, detail, null);
     addEvidence(item);
     allBreaks.push({
@@ -565,7 +567,7 @@ export function buildFlowEvidenceReport(
   if (options.lspUnavailable && allBreaks.length < budget.maxBreaks) {
     const detail = typeof options.lspUnavailable === 'string'
       ? options.lspUnavailable
-      : '语言服务器不可用，当前结论仅来自索引图';
+      : 'The language server is unavailable; this conclusion uses only indexed graph evidence';
     const item = breakEvidence('lsp_unavailable', detail, null);
     addEvidence(item);
     allBreaks.push({

@@ -16,6 +16,8 @@
 
 每条证据包含稳定 ID、置信度、来源、定义位置、调用位置、注册位置与说明。断链原因统一为 `unindexed`、`no_syntax_edge`、`dynamic_key`、`ambiguous_candidates`、`language_boundary`、`lsp_unavailable`。运行时候选始终标为候选，不表述为已确认调用。
 
+自然语言流程查询会先区分流程意图与代码形状。多词查询中的普通产品名、格式名和标题词不会仅凭 PascalCase/全大写形态生成 `unindexed` 断点；未连通时模型可见文本优先给出英文不完整结论，并省略自动推导的影响面噪声。结构化 `evidence.status` 仍保留 `connected`、`partial`、`unconnected`，供调用方稳定判断。
+
 ## 实现者展开与预算
 
 - 精确查询 interface、trait、protocol、抽象类或其抽象方法时，自动沿现有 `extends`/`implements` 图展开实现者；方法查询返回具体实现方法，而不只返回容器类型。
