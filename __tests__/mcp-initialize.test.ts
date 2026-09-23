@@ -31,7 +31,7 @@ function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
     // same response-before-init guarantee lives in the shared session code and
     // is covered by mcp-daemon.test.ts. Direct mode also avoids leaking a
     // detached daemon from this suite.
-    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
+    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
     windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
 }
@@ -112,7 +112,7 @@ describe('MCP initialize handshake (issue #172)', () => {
   afterEach(async () => {
     await stopProcess(child);
     child = null;
-    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('responds to initialize quickly when no .codegraph exists in cwd', async () => {
