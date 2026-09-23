@@ -97,6 +97,7 @@ export interface ChangeContext {
     distance: number;
     reason: 'changed' | 'dependent';
     confidence: 'direct' | 'high' | 'indirect';
+    priority: 'focused' | 'related';
     testTypes: TestType[];
     via: string[];
   }>;
@@ -721,7 +722,7 @@ export function formatChangeContext(context: ChangeContext): string {
   if (context.affectedTests.length > 0) {
     lines.push('', '**Related tests**');
     for (const test of context.affectedTests.slice(0, 10)) {
-      lines.push(`- ${test.filePath} (${test.confidence}, ${test.testTypes.join('/')}, distance ${test.distance}, ${test.reason})`);
+      lines.push(`- ${test.filePath} (${test.priority}, ${test.confidence}, ${test.testTypes.join('/')}, distance ${test.distance}, ${test.reason})`);
     }
     if (context.affectedTests.length > 10) lines.push(`- ... and ${context.affectedTests.length - 10} more tests`);
   }

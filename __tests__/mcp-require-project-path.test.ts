@@ -22,7 +22,7 @@ import { CodeGraph } from '../src';
 
 const ENV = 'CODEGRAPH_MCP_TOOLS';
 
-const exploreOf = (defs: { name: string; inputSchema: { required?: string[] } }[]) =>
+const exploreOf = (defs: { name: string; inputSchema: { required?: string[]; anyOf?: Array<{ required: string[]; properties?: Record<string, { const: unknown }> }> } }[]) =>
   defs.find((t) => t.name === 'codegraph_explore')!;
 
 describe('No-default-project requires projectPath in the schema (#993)', () => {
@@ -35,8 +35,11 @@ describe('No-default-project requires projectPath in the schema (#993)', () => {
   it('marks projectPath required on codegraph_explore when no default project is loaded', () => {
     const explore = exploreOf(new ToolHandler(null).getTools());
     expect(explore.inputSchema.required).toContain('projectPath');
-    // The tool's own required arg is preserved, not replaced.
-    expect(explore.inputSchema.required).toContain('query');
+    // query/files 的条件仍保留，projectPath 作为所有分支之外的共同前提。
+    expect(explore.inputSchema.anyOf).toEqual([
+      { required: ['query'] },
+      { required: ['mode', 'files'], properties: { mode: { const: 'tests' } } },
+    ]);
   });
 
   it('requires projectPath on EVERY exposed tool, incl. ones with no prior required list', () => {
@@ -57,7 +60,11 @@ describe('No-default-project requires projectPath in the schema (#993)', () => {
     // Marking required must clone — otherwise a no-default session would corrupt
     // the schema every later default-project session reuses.
     new ToolHandler(null).getTools();
-    expect(exploreOf(tools).inputSchema.required).toEqual(['query']);
+    expect(exploreOf(tools).inputSchema.required).toBeUndefined();
+    expect(exploreOf(tools).inputSchema.anyOf).toEqual([
+      { required: ['query'] },
+      { required: ['mode', 'files'], properties: { mode: { const: 'tests' } } },
+    ]);
   });
 
   it('a missing projectPath with no default is still SUCCESS-shaped guidance, not isError', async () => {
@@ -90,8 +97,11 @@ describe('A default project keeps projectPath OPTIONAL (#993)', () => {
 
   it('leaves projectPath optional when a default project is loaded', () => {
     const explore = exploreOf(new ToolHandler(cg).getTools());
-    expect(explore.inputSchema.required).toEqual(['query']);
-    expect(explore.inputSchema.required).not.toContain('projectPath');
+    expect(explore.inputSchema.required).toBeUndefined();
+    expect(explore.inputSchema.anyOf).toEqual([
+      { required: ['query'] },
+      { required: ['mode', 'files'], properties: { mode: { const: 'tests' } } },
+    ]);
   });
 
   it('a bare call (no projectPath) still falls back to the default project', async () => {

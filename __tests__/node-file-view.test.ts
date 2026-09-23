@@ -74,6 +74,8 @@ describe('codegraph_node file-view (Read replacement)', () => {
     expect(output).toContain('1003\t  const v1001 = 1001;');
     expect(output).not.toContain('1500\t');
     expect(output).not.toContain('gap');
+    expect(output).toContain('mode:"explore"');
+    expect(output).not.toContain('codegraph_node <symbol>');
     const invalid = await h.execute('codegraph_explore', { mode: 'source', query: 'src/big.ts', offset: 0 });
     expect(invalid.isError).toBe(true);
   });

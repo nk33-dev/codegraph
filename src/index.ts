@@ -23,6 +23,7 @@ export type {
   MergedCodeQueryItem, RoutingBlock, LspSymbolItem, LspReferenceItem, LspDocumentSymbolItem,
   LspDiagnosticItem, LspResultBlock, IndexBlock,
 } from './graph/code-query';
+export type { RuntimeBuildIdentity } from './runtime-info';
 export type {
   CodeEditApplied, CodeEditOperation, CodeEditRequest, CodeEditResult, CodeEditStatus, CodeEditTarget,
   CodeEditSummary, EditFilePreview, EditTextEdit, EditPreviewLine, EditFileOperation,

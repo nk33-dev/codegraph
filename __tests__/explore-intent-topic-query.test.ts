@@ -36,6 +36,15 @@ describe('codegraph_explore intent words', () => {
       'export function importDocuments() { return traceImport(); }\n' +
       'export function traceImport() { return 1; }\n',
     );
+    fs.writeFileSync(path.join(src, 'tool-dispatch.ts'),
+      'export class ToolRouter {\n' +
+      '  execute() { return this.runInProcess(); }\n' +
+      '  runInProcess() { return this.executeReadTool(); }\n' +
+      '  executeReadTool() { return this.dispatchTool(); }\n' +
+      '  dispatchTool() { return this.handleExplore(); }\n' +
+      '  handleExplore() { return 1; }\n' +
+      '}\n',
+    );
     cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
     await cg.indexAll();
     handler = new ToolHandler(cg);
@@ -117,5 +126,17 @@ describe('codegraph_explore intent words', () => {
       status: 'unconnected',
       breaks: [],
     });
+  });
+
+  it('maps an MCP tool name to its confirmed handler dispatch path', async () => {
+    const result = await handler.execute('codegraph_explore', {
+      query: 'codegraph_explore 请求从工具入口经过哪些函数，给出调用链',
+    });
+    const output = result.content[0].text;
+    expect(output).toContain('**Flow (confirmed dispatch path for `codegraph_explore`)**');
+    expect(output).toMatch(/execute[\s\S]*runInProcess[\s\S]*executeReadTool[\s\S]*dispatchTool[\s\S]*handleExplore/);
+    expect(output).not.toContain('**Blast radius');
+    expect(output).not.toContain('**Relationships**');
+    expect((result.structuredContent as any).evidence).toMatchObject({ status: 'connected' });
   });
 });

@@ -70,6 +70,7 @@ import {
   resolveNamedSymbolFlow,
 } from '../graph/named-symbol-flow';
 import { getUpdateNotice } from '../upgrade/update-check';
+import { runtimeBuildIdentity } from '../runtime-info';
 import { ExploreDiagnostics } from './explore-diagnostics';
 import {
   EXPLORE_EMISSION_KEY,
@@ -1310,6 +1311,7 @@ export interface ToolDefinition {
     type: 'object';
     properties: Record<string, PropertySchema>;
     required?: string[];
+    anyOf?: Array<{ required: string[]; properties?: Record<string, { const: unknown }> }>;
   };
   /** Behavioral hints for clients (see {@link ToolAnnotations}). */
   annotations?: ToolAnnotations;
@@ -1637,7 +1639,7 @@ export const tools: ToolDefinition[] = [
         checkFiles: { type: 'boolean', description: 'Graph status only: scan disk changes without syncing.', default: false },
         query: {
           type: 'string',
-          description: 'Question, symbol, or file.',
+          description: 'Question, symbol, or file. Omit only for tests mode when files is provided.',
         },
         maxFiles: {
           type: 'number',
@@ -1690,7 +1692,10 @@ export const tools: ToolDefinition[] = [
         },
         projectPath: projectPathProperty,
       },
-      required: ['query'],
+      anyOf: [
+        { required: ['query'] },
+        { required: ['mode', 'files'], properties: { mode: { const: 'tests' } } },
+      ],
     },
     annotations: READ_ONLY_ANNOTATIONS,
     // Loaded from the first prompt in Claude Code, which otherwise defers every
@@ -1767,9 +1772,9 @@ export const allTools: ToolDefinition[] = [...tools, ...editTools];
  *
  * Pure: clones each tool's schema rather than mutating the shared module-level
  * `tools` array (reused by every session and the static surface). A tool that
- * doesn't expose projectPath, or already requires it, is returned untouched;
- * explore's `['query']` becomes `['query', 'projectPath']`, and a tool with no
- * `required` list (status/files) gains `['projectPath']`.
+ * doesn't expose projectPath, or already requires it, is returned untouched.
+ * Explore 的 query/files 条件留在 anyOf，projectPath 作为所有分支共同要求；
+ * status/files 等没有 required 的工具则直接获得该必填项。
  */
 function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
   return defs.map((tool) => {
@@ -3135,6 +3140,66 @@ export class ToolHandler {
   }
 
   /**
+   * 把 MCP 工具名映射到同文件的处理器调用链。
+   * 只接受唯一的 `handleXxx`/`handleCodeXxx`，并且每一跳都必须有明确 calls 边。
+   */
+  private inferToolDispatchFlow(
+    cg: CodeGraph,
+    query: string,
+  ): { toolName: string; query: string; nodes: Node[]; edges: Edge[] } | null {
+    const match = query.match(/\b(codegraph_([A-Za-z0-9_]+))\b/i);
+    if (!match) return null;
+    const toolName = match[1]!;
+    const suffix = match[2]!
+      .split('_')
+      .filter(Boolean)
+      .map((part) => part[0]!.toUpperCase() + part.slice(1))
+      .join('');
+    const callableKinds = new Set<Node['kind']>(['function', 'method', 'component']);
+    const targets = [`handle${suffix}`, `handleCode${suffix}`]
+      .flatMap((name) => lookupSymbolNodes(cg, name).nodes)
+      .filter((node) => callableKinds.has(node.kind) && !isTestFile(node.filePath));
+    const uniqueTargets = [...new Map(targets.map((node) => [node.id, node])).values()];
+    if (uniqueTargets.length !== 1) return null;
+
+    const nodes = [uniqueTargets[0]!];
+    const edges: Edge[] = [];
+    let current = uniqueTargets[0]!;
+    const ownerOf = (node: Node): string => node.qualifiedName.includes('::')
+      ? node.qualifiedName.slice(0, node.qualifiedName.lastIndexOf('::'))
+      : '';
+    for (let depth = 0; depth < 4; depth += 1) {
+      const ranked = cg.getCallers(current.id)
+        .filter(({ node, edge }) => edge.kind === 'calls'
+          && callableKinds.has(node.kind)
+          && !isTestFile(node.filePath)
+          && !nodes.some((item) => item.id === node.id))
+        .map((item) => ({
+          ...item,
+          score: (ownerOf(item.node) && ownerOf(item.node) === ownerOf(current) ? 8 : 0)
+            + (item.node.filePath === current.filePath ? 4 : 0)
+            + (/^(?:execute|dispatch|route|run)/i.test(item.node.name) ? 2 : 0),
+        }))
+        .sort((left, right) => right.score - left.score
+          || left.node.filePath.localeCompare(right.node.filePath)
+          || left.node.startLine - right.node.startLine);
+      if (ranked.length === 0 || ranked[0]!.score < 4) break;
+      if (ranked[1]?.score === ranked[0]!.score) break;
+      const selected = ranked[0]!;
+      nodes.unshift(selected.node);
+      edges.unshift(selected.edge);
+      current = selected.node;
+    }
+    if (nodes.length < 2) return null;
+    return {
+      toolName,
+      query: nodes.map((node) => node.qualifiedName).join(' '),
+      nodes,
+      edges,
+    };
+  }
+
+  /**
    * Flow-from-named-symbols: an agent's codegraph_explore query is a bag of
    * symbol names that usually spans the flow it's investigating (e.g.
    * "PmsProductController getList PmsProductService list PmsProductServiceImpl").
@@ -4071,6 +4136,10 @@ export class ToolHandler {
         (list) => list.replace(/\//g, ' '),
       );
     }
+    const inferredToolFlow = flowQueryRequested
+      ? this.inferToolDispatchFlow(cg, query)
+      : null;
+    if (inferredToolFlow) matchQuery = inferredToolFlow.query;
     const pinnedSet = new Set(pinnedFiles);
     const pinnedOrder = new Map(pinnedFiles.map((p, i) => [p, i]));
 
@@ -4144,6 +4213,16 @@ export class ToolHandler {
       maxNodes: 200,
       minScore: 0.2,
     });
+    if (inferredToolFlow) {
+      subgraph.roots.unshift(inferredToolFlow.nodes[0]!.id);
+      for (const node of inferredToolFlow.nodes) subgraph.nodes.set(node.id, node);
+      for (const edge of inferredToolFlow.edges) {
+        if (!subgraph.edges.some((candidate) => candidate.source === edge.source
+          && candidate.target === edge.target && candidate.kind === edge.kind)) {
+          subgraph.edges.push(edge);
+        }
+      }
+    }
     if (startupQuestion && pinnedFiles.length > 0) {
       for (const filePath of pinnedFiles) {
         const entry = cg.getNodesInFile(filePath)
@@ -5149,7 +5228,7 @@ export class ToolHandler {
 
     // 自然语言可能只命中文件正文，没有显式写出符号名。Vue 模板事件已有高置信度合成边时，
     // 仅在“一个模板处理器 + 一个下游调用”都唯一的情况下补成三点流程；多候选保持未连通。
-    let flowInput = matchQuery;
+    let flowInput = inferredToolFlow?.query ?? matchQuery;
     if (flowQueryRequested) {
       const fileRank = new Map(sortedFiles.map(([filePath], index) => [filePath, index]));
       const vueHandlers = subgraph.edges
@@ -5179,13 +5258,19 @@ export class ToolHandler {
     // 流程查询先得出连接状态，后续输出才能在断链时优先说明限制，并压低自动诊断噪声。
     await warmBranchGuardGrammars();
     const flow = this.buildFlowFromNamedSymbols(cg, flowInput, priorEvidenceKeys, displayFilters.depth);
-    if (flowInput !== matchQuery && flow.text) {
+    if (inferredToolFlow && flow.text) {
+      flow.text = flow.text.replace(
+        '**Flow (call path among the symbols you queried)**',
+        `**Flow (confirmed dispatch path for \`${inferredToolFlow.toolName}\`)**`,
+      );
+    } else if (flowInput !== matchQuery && flow.text) {
       flow.text = flow.text.replace(
         '**Flow (call path among the symbols you queried)**',
         '**Flow (confirmed from the matched Vue template)**',
       );
     }
     const incompleteFlow = flowQueryRequested && flow.evidence?.status !== 'connected';
+    if (incompleteFlow && args.maxFiles === undefined) maxFiles = Math.min(maxFiles, 3);
     const visibleEvidence: FlowEvidenceReport | null = flow.evidence ?? (incompleteFlow ? {
       schemaVersion: FLOW_EVIDENCE_SCHEMA_VERSION,
       status: 'unconnected',
@@ -5197,7 +5282,7 @@ export class ToolHandler {
       elapsedMs: 0,
       budget: { ...DEFAULT_FLOW_EVIDENCE_BUDGET },
     } : null);
-    const visibleChangeContext = incompleteFlow && !changeIntent ? null : changeContext;
+    const visibleChangeContext = flowQueryRequested && !changeIntent ? null : changeContext;
 
     // Step 3: Build relationship map
     const lines: string[] = [
@@ -5232,10 +5317,8 @@ export class ToolHandler {
     const changeContextText = visibleChangeContext ? formatChangeContext(visibleChangeContext) : '';
     if (changeContextText) lines.push(changeContextText, '');
 
-    // Blast radius (always-on, compact): for the entry symbols, who depends on
-    // them + which tests cover them — locations only, no source — so the agent
-    // knows what to update/verify before editing without a separate call.
-    const blastRadius = incompleteFlow ? '' : this.buildBlastRadiusSection(cg, subgraph);
+    // 普通探索保留紧凑影响面；明确流程问句已有主路径，不再重复列依赖与测试扇出。
+    const blastRadius = flowQueryRequested ? '' : this.buildBlastRadiusSection(cg, subgraph);
     if (blastRadius) lines.push(blastRadius);
 
     // Relationship map — show how symbols connect
@@ -5243,7 +5326,7 @@ export class ToolHandler {
       e.kind !== 'contains' // skip contains — it's implied by file grouping
     );
 
-    if (!incompleteFlow && budget.includeRelationships && significantEdges.length > 0) {
+    if (!flowQueryRequested && budget.includeRelationships && significantEdges.length > 0) {
       lines.push('**Relationships**');
       lines.push('');
 
@@ -7545,7 +7628,7 @@ export class ToolHandler {
     if (!complete) {
       out.push(
         '',
-        `(lines ${offset}–${shownEnd} of ${total} — pass \`offset\`/\`limit\` for another range, or \`codegraph_node <symbol>\` for one symbol in full)`,
+        `(lines ${offset}–${shownEnd} of ${total} — pass \`offset\`/\`limit\` for another range, or query an exact symbol with \`mode:"explore"\`)`,
       );
     }
     // Self-bounded to CHAR_BUDGET — do NOT route through truncateOutput (15k).
@@ -7726,10 +7809,13 @@ export class ToolHandler {
       : CODE_QUERY_BACKENDS.includes(args.backend as CodeQueryBackend)
       ? args.backend as CodeQueryBackend
       : 'graph';
-    const requestArgs = args.backend === undefined && mode === 'diagnostics'
-      ? { ...args, backend: 'auto' }
+    const normalizedArgs = mode === 'tests' && args.query === undefined && Array.isArray(args.files)
+      ? { ...args, query: '' }
       : args;
-    let result = emptyCodeQueryResult(mode, typeof args.query === 'string' ? args.query : '', backend);
+    const requestArgs = args.backend === undefined && mode === 'diagnostics'
+      ? { ...normalizedArgs, backend: 'auto' }
+      : normalizedArgs;
+    let result = emptyCodeQueryResult(mode, typeof normalizedArgs.query === 'string' ? normalizedArgs.query : '', backend);
     let cg: CodeGraph | null = null;
     try {
       cg = this.getCodeGraph(args.projectPath as string | undefined);
@@ -7744,6 +7830,7 @@ export class ToolHandler {
       if (cg) {
         result.projectRoot = cg.getProjectRoot();
         result.index = buildIndexBlock(cg, { checkFiles: false, includeStats: mode === 'status' });
+        if (mode === 'status') result.runtime = runtimeBuildIdentity();
         result.warnings.push('Request validation stopped before results were collected; the project and index context are still reported below.');
       }
       result.warnings.push(error instanceof Error ? error.message : String(error));
@@ -7817,6 +7904,7 @@ export class ToolHandler {
     const stats = cg.getStats();
     const indexStatus = cg.getIndexStatus();
     const indexView = buildIndexBlock(cg, { checkFiles: false, includeStats: false });
+    const runtime = runtimeBuildIdentity();
 
     // Warn when this index actually belongs to a different git working tree
     // (e.g. the server resolved up from a nested worktree to the main checkout).
@@ -7833,6 +7921,9 @@ export class ToolHandler {
       lines.push(`> ⚠ ${worktreeMismatchWarning(mismatch).replace(/\n/g, '\n> ')}`, '');
     }
     lines.push(
+      `**Runtime version:** ${runtime.version} (${runtime.distribution})`,
+      `**Runtime build:** ${runtime.build?.commit ?? 'unavailable'}${runtime.build?.dirty ? ' (dirty)' : ''}`,
+      `**Build ID:** ${runtime.build?.buildId ?? 'unavailable'}`,
       `**Index generation:** ${indexStatus.version ?? 'unknown'}`,
       `**Indexed commit:** ${indexStatus.indexedCommit ?? 'unknown'}`,
       `**Current commit:** ${indexStatus.currentCommit ?? 'unknown'}`,

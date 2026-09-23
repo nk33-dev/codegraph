@@ -17,11 +17,26 @@ export interface BuildInfo {
   buildId: string;
 }
 
+export interface RuntimeBuildIdentity {
+  version: string;
+  distribution: 'personal' | 'upstream';
+  build: BuildInfo | null;
+}
+
 export function readBuildInfo(): BuildInfo | null {
   try {
     const info = JSON.parse(fs.readFileSync(path.join(packageRoot, 'dist', 'build-info.json'), 'utf8')) as BuildInfo;
     return info.schemaVersion === 1 && typeof info.buildId === 'string' ? info : null;
   } catch { return null; }
+}
+
+/** 返回当前进程实际加载的版本与构建身份，不暴露安装路径等环境信息。 */
+export function runtimeBuildIdentity(): RuntimeBuildIdentity {
+  return {
+    version: pkg.version,
+    distribution: PERSONAL_DISTRIBUTION ? 'personal' : 'upstream',
+    build: readBuildInfo(),
+  };
 }
 
 export const PERSONAL_DISTRIBUTION = pkg.codegraphDistribution?.channel === 'personal';
@@ -50,14 +65,15 @@ function pathCommands(): string[] {
 }
 
 export function runtimeInfo() {
+  const identity = runtimeBuildIdentity();
   return {
     packageName: pkg.name,
-    version: pkg.version,
-    distribution: PERSONAL_DISTRIBUTION ? 'personal' : 'upstream',
+    version: identity.version,
+    distribution: identity.distribution,
     packageRoot,
     entry: process.argv[1] ? path.resolve(process.argv[1]) : null,
     node: { version: process.version, executable: process.execPath, platform: process.platform, arch: process.arch },
-    build: readBuildInfo(),
+    build: identity.build,
     pathCommands: pathCommands(),
     viewerAvailable: fs.existsSync(path.join(packageRoot, 'dist', 'viewer', 'index.html')),
     updateCommand: 'codegraph upgrade',

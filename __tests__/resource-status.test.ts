@@ -141,6 +141,9 @@ describe('MCP codegraph_status 展示资源治理', () => {
   it('status 文本包含档位说明，且不因调用而启动 LSP', async () => {
     const res = await handler.execute('codegraph_status', {});
     const text = res.content[0].text;
+    expect(text).toContain('**Runtime version:**');
+    expect(text).toContain('**Runtime build:**');
+    expect(text).toContain('**Build ID:**');
     expect(text).toContain('**Resources:**');
     expect(text).toContain('profile=balanced');
     // 直连模式没有查询池：不展示 worker 数字，也不编造一个。

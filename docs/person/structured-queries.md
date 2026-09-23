@@ -13,7 +13,7 @@ Keep using `codegraph_explore`, selecting structured queries through `mode`:
 | `references` | Symbol name or qualified name | Grouped graph relationships with the first `site`, optional additional `sites`, provenance and confidence |
 | `callers` / `callees` | Symbol name or qualified name | Paginated call and construction relationships with the first `site` and optional additional `sites` |
 | `symbols` | Exact project-relative file path | File symbol overview, including parent symbol IDs |
-| `status` | `status` | Index time, watcher state, pending files and unfinished reference resolution |
+| `status` | `status` | Runtime version/build identity, index freshness, watcher state, pending files and unfinished reference resolution |
 | `text` | Literal text or configuration key | File-level paginated matches in indexed source, comments, scripts, documentation and configuration; first five matching line numbers per file |
 | `source` | File path or basename | Current file lines; `offset` is the 1-based starting line and `limit` is the number of lines (at most 2000) |
 
@@ -21,9 +21,11 @@ Keep using `codegraph_explore`, selecting structured queries through `mode`:
 
 默认 `explore` 对“项目启动流程”类问题会优先选择根目录、`src/` 和 `bin`/`cmd` 中的常见入口，沿入口的调用/导入边向外展开；未识别入口时仍使用普通检索，不推断不存在的运行时边。蛇形模块名、带扩展名的文件名、`mod 模块名` 和完整路径会归一到已索引的同一文件；同名文件最多固定三个，避免把热词误认为唯一模块。空结果会给出文件、符号和索引状态的后续查询建议，可能的相近符号仅作为建议，不当作精确命中。
 
-JSON 结构化模式接受 `offset`（从 0 开始，默认 0）和 `limit`（1–200，默认 50）；`file` 是精确项目相对路径，不能模糊匹配。`source` 则复用 `codegraph_node` 的当前磁盘文件读取及安全门，`offset` 从 1 开始，且配置文件仍按键摘要保护。`text` 只支持 Graph 后端，按文件稳定分页，配置行只给行号、不返回值；每个命中还标记 `freshness`，已变化的文件省略旧片段。敏感 `.env`、私钥和大于 256 KiB 的文件不进入文本索引；旧索引首次运行 `codegraph sync` 后才可用。`projectPath` 复用既有跨项目解析及路径校验。
+JSON 结构化模式接受 `offset`（从 0 开始，默认 0）和 `limit`（1–200，默认 50）；`file` 是精确项目相对路径，不能模糊匹配。`source` 复用现有当前磁盘文件读取及安全门，`offset` 从 1 开始，且配置文件仍按键摘要保护；分页提示只推荐继续调用默认 `codegraph_explore`，不会指向未暴露的隐藏工具。`text` 只支持 Graph 后端，按文件稳定分页，配置行只给行号、不返回值；每个命中还标记 `freshness`，已变化的文件省略旧片段。敏感 `.env`、私钥和大于 256 KiB 的文件不进入文本索引；旧索引首次运行 `codegraph sync` 后才可用。`projectPath` 复用既有跨项目解析及路径校验。
 
 MCP 的 `explore` 文本仍是完整的默认回答；结构化内容另附 `rendered`：不超过 12,000 字符时 `text` 可直接读取同一回答，超出时 `text: null`、`truncated: true` 与按文件/行范围续读的 `hint` 明确指出缺口。结构化 `references`、`callers`、`callees` 按源、目标、边类型和来源合并重复调用点，`site` 保留首个位置，重复关系的 `sites` 保留所有去重位置；`page.total` 统计关系而非原始边。`impact` 可直接用已索引的文件路径作为 `query`，并保留每个受影响项的 `rootId`。`diagnostics` 在 MCP 未指定 `backend` 时使用 `auto`；schema 不声明固定的后端默认值，以免客户端替用户注入 `graph`；显式选择后端仍按原契约校验。
+
+`tests` 模式传入 `files` 时可以省略 `query`；MCP schema 用 `query`/`files` 条件必填表达该契约，运行时仍拒绝其他模式缺少 query。测试候选先按 Graph 置信度，再按 `priority: focused | related`、距离和路径排序：`focused` 只表示测试文件名与改动路径有主题交集，不会让没有依赖边的文件进入候选。共享核心文件仍可能有很多真实直接依赖，结果会明确提示剩余 `related` 候选可能较宽。
 
 ```json
 {"mode":"definitions","query":"CodeGraph.queryCode","file":"src/index.ts","limit":20}
@@ -54,6 +56,7 @@ Development verification must invoke the local `node dist/bin/codegraph.js`; a g
 - References are graph relations rather than every textual occurrence; they may be incomplete or inferred. When there are no call-site coordinates, site stays null, and a function definition position is not used to fake a call site.
 - Every symbol states `freshness`: current, changed, missing or unavailable. The check reuses the index's size/mtime fast check and compares content hashes when necessary; it is not one atomic disk snapshot. A missing watcher does not mean the data must be stale.
 - `index.changes: null` means there was no full working-tree scan. The existing change detection is only invoked when status explicitly passes `checkFiles: true`, and it does not trigger sync. pendingFiles and each category of changes list at most 100 paths; the real counts are in pendingFileCount and changeCounts.
+- `status` 模式的 `runtime` 返回当前服务进程实际加载的版本、发行渠道和 `build-info.json` 中的提交、dirty 标志与 build ID；源码未构建时 `build` 为 null，不用索引 commit 冒充服务版本。
 - Results go both into MCP `structuredContent` and into the complete JSON in text; no text banner is concatenated outside the JSON. Not indexed is a handleable state, while invalid arguments or permission errors still return a tool error; generic MCP request validation keeps its original error format.
 
 ## 意图词收束（explore）
@@ -109,7 +112,7 @@ Incremental indexing remains the responsibility of the existing sync/orchestrato
 `__tests__/query-paths.test.ts` 覆盖模块别名；`__tests__/explore-intent-topic-query.test.ts` 覆盖启动链和空结果建议；`__tests__/flow-evidence.test.ts` 覆盖宽泛问题不产生普通词的伪断链；`__tests__/code-query.test.ts` 覆盖跨提交前后的索引 commit 状态。
 `__tests__/file-text-search.test.ts` 覆盖全文命中、分页、配置值隐藏、漂移、同步、旧数据库升级与重复打开；`__tests__/node-file-view.test.ts` 覆盖 `source` 行范围；`__tests__/server-instructions.test.ts` 守护固定表面预算。
 
-本轮 MCP 体验优化由 `code-query.test.ts` 的重复位置合并、文件级影响、错误上下文、默认源码呈现和诊断路由，以及 `edit-code-edit.test.ts` 的文件内歧义提示固定。2026-09-23 本地 `npm run typecheck`、定向的 6 项查询回归、`server-instructions.test.ts` 和 `mcp-fixed-surface.test.ts` 的 18 项用例通过；含 CLI/MCP 子进程的定向套件共 87 项中 79 项通过，8 项因本地缺失 `dist/bin/codegraph.js` 未通过，`npm run check:quick` 同样受影响，不能算全量通过。未执行本地完整构建、完整测试或重启后的 MCP 端到端验证；发布和版本未变。
+本轮 MCP 体验优化由结构化关系合并、文件级影响、错误上下文、运行构建身份、`tests/files` 条件参数与候选优先级，以及文件内编辑歧义提示共同固定。2026-09-23 本地 `npm run typecheck` 通过；流程意图、源码分页、固定表面、项目路径、运行状态与新增测试排序的定向回归共 41 项通过。`npm run check:quick` 自动选择共享核心的 188 个测试文件，源码路径共 2952 项通过；131 项失败主要来自本地未构建导致缺少 `dist/bin/codegraph.js`/viewer，另有现存大索引基线在当前索引规模下失败，因此不能记作全量通过。按个人版约束未在本地执行构建、完整测试或发布流程。
 
 `__tests__/explore-blast-radius.test.ts` 固定依赖分类与计数口径（测试调用方只计为测试文件、生产调用方数量与所列文件一致、纯导入文件仍单独归类），`__tests__/explore-test-summary.test.ts` 固定测试摘要契约（测试声明与 exercises 标注、测试体省略与抽样、`includeTestSource: true` 的全文路径、未请求测试时不受影响）。`__tests__/explore-intent-query-focus.test.ts` 继续覆盖意图词收束本身。
 

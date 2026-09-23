@@ -128,6 +128,15 @@ describe('structured graph queries', () => {
     const untouched = cg.getFile('view.js')!.indexedAt;
     const status = cg.queryCode({ mode: 'status', query: 'status' });
     expect(status.index).toMatchObject({ watching: false, changes: null });
+    expect(status.runtime).toMatchObject({
+      version: expect.any(String),
+      distribution: expect.stringMatching(/^(?:personal|upstream)$/),
+    });
+    const mcpStatus = await handler.execute('codegraph_explore', { mode: 'status', query: 'status' });
+    expect(mcpStatus.structuredContent).toMatchObject({
+      runtime: { version: expect.any(String), distribution: expect.any(String) },
+    });
+    expect(JSON.parse(mcpStatus.content[0]!.text)).toEqual(mcpStatus.structuredContent);
     expect(status.warnings).not.toContain('This index connection has no live watcher.');
     write('added.ts', 'export function added() {}\n');
     write('b/service.ts', 'export function changedName() {}\n');

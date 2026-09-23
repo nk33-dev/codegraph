@@ -188,6 +188,16 @@ describe('结构化模式的可见性（P0 问题 3）', () => {
     delete process.env[ENV];
     expect(getStaticTools()).toHaveLength(2);
   });
+
+  it('tests 模式可只传 files，其余模式仍由运行时要求 query', () => {
+    const schema = exploreOf(getStaticTools()).inputSchema;
+    expect(schema.required).toBeUndefined();
+    expect(schema.anyOf).toEqual([
+      { required: ['query'] },
+      { required: ['mode', 'files'], properties: { mode: { const: 'tests' } } },
+    ]);
+    expect(schema.properties.query.description).toMatch(/omit only for tests/i);
+  });
 });
 
 describe('explore 响应只陈述本次调用的事实（P0 问题 2）', () => {

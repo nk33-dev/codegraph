@@ -11,6 +11,7 @@ import type { TestType } from './change-impact';
 import { collectIncomingRelations } from './incoming-relations';
 import type { TextHit } from '../db/file-text';
 import type { TextIndexChanges } from '../db/file-text';
+import { runtimeBuildIdentity, type RuntimeBuildIdentity } from '../runtime-info';
 
 export const CODE_QUERY_MODES = ['definitions', 'references', 'symbols', 'callers', 'callees', 'diagnostics', 'status', 'impact', 'tests', 'text'] as const;
 export type CodeQueryMode = typeof CODE_QUERY_MODES[number];
@@ -180,6 +181,8 @@ export interface AffectedTestItem {
   distance: number;
   reason: 'changed' | 'dependent';
   confidence: 'direct' | 'high' | 'indirect';
+  /** 文件名与改动路径有明确主题交集时为 focused，其余仍是依赖图确认的 related。 */
+  priority: 'focused' | 'related';
   testTypes: TestType[];
   /** Deduplicated, sorted predecessor files on the shortest path at the selected confidence. */
   via: string[];
@@ -295,6 +298,8 @@ export interface CodeQueryResult {
   items: CodeQueryItem[];
   page: { offset: number; limit: number; total: number; nextOffset: number | null };
   index: IndexBlock | null;
+  /** 仅 status 模式返回当前服务进程的版本与构建提交。 */
+  runtime: RuntimeBuildIdentity | null;
   lsp: LspResultBlock | null;
   /** Which source the request resolved to, why, and whether the shared daemon served it. */
   routing: RoutingBlock;
@@ -332,7 +337,7 @@ export function emptyCodeQueryResult(
       columnEncoding: backend === 'graph' ? 'utf-8' : backend === 'lsp' ? 'utf-16' : backend === 'both' ? 'utf-16' : 'utf-8',
     },
     ambiguous: false, items: [], page: { offset: 0, limit: 50, total: 0, nextOffset: null },
-    index: null, lsp: null, routing: defaultRouting(backend), warnings: [],
+    index: null, runtime: null, lsp: null, routing: defaultRouting(backend), warnings: [],
   };
 }
 
@@ -627,7 +632,10 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
   result.page = { offset, limit, total: 0, nextOffset: null };
   result.index = buildIndexBlock(cg, { checkFiles: Boolean(request.checkFiles), includeStats: request.mode === 'status' });
   result.warnings.push(...indexWarnings(result.index));
-  if (request.mode === 'status') return result;
+  if (request.mode === 'status') {
+    result.runtime = runtimeBuildIdentity();
+    return result;
+  }
 
   if (request.mode === 'text') {
     if (!cg.isTextIndexReady()) {
@@ -675,11 +683,15 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
       distance: test.distance,
       reason: test.reason,
       confidence: test.confidence,
+      priority: test.priority,
       testTypes: test.testTypes,
       via: test.via,
     } satisfies AffectedTestItem));
     if (analysis.tests.length === 0) result.status = 'not_found';
     result.warnings.push('Related tests come from the graph\'s file dependency edges: a missing edge (dynamic require, reflection, unindexed file) means a missed test.');
+    if (analysis.tests.some((test) => test.priority === 'related')) {
+      result.warnings.push('Focused tests with path-name affinity are listed first; remaining related tests are graph dependents and may be broad for shared core files.');
+    }
     if (!request.includeIndirect && analysis.indirectCandidates.length > 0) {
       result.warnings.push(
         `${analysis.indirectCandidates.length} indirect test candidate(s) reached through broad/shared dependency chains were hidden; pass includeIndirect=true to inspect them.`,

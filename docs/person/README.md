@@ -28,6 +28,8 @@
 
 CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_explore` 和 `codegraph_edit`，局部刷新通过 CLI `codegraph refresh <file>` 与公共 API 提供。可视化沿用上游功能，只有显式启动 `codegraph ui` / `web` 才运行 HTTP 服务。
 
+MCP 状态会同时报告索引 freshness 与当前服务构建身份；`tests` 结构化模式支持只传 `files`，并把文件名主题明确相关的测试排在同置信度候选之前。流程问句中的 `codegraph_*` 工具名只在能唯一映射到真实 handler 和 calls 边时提升为调度主路径。
+
 ## 验证与发布
 
 当前已发布版本为 [v1.6.0-personal.10](releases/v1.6.0-personal.10.md)。版本内容与验证边界分别见发行说明和[开发验证记录](test-repairs.md)。

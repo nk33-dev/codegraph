@@ -188,6 +188,15 @@ describe('mode=tests', () => {
     });
   }, 60_000);
 
+  it('the MCP layer accepts files without a placeholder query', async () => {
+    const result = await handler.execute('codegraph_explore', {
+      mode: 'tests', files: ['src/service.ts'], depth: 3,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({ mode: 'tests', query: '', status: 'ok' });
+    expect((result.structuredContent!.items[0] as AffectedTestItem).filePath).toBe('tests/service.test.ts');
+  }, 30_000);
+
   it('the CLI affected command shares the implementation with the new entry point: identical test file lists', () => {
     const cli = spawnSync(process.execPath, [BIN, 'affected', 'src/util.ts', '--json', '-p', root], {
       encoding: 'utf-8', timeout: 60_000, env: cliEnv,
@@ -220,4 +229,20 @@ describe('mode=tests', () => {
     });
     expect(none.stdout.trim()).toBe('');
   }, 90_000);
+
+  it('lists filename-focused tests before broad direct dependents', async () => {
+    write('tests/aaa-workflow.test.ts', "import { serviceFn } from '../src/service';\nexport function workflowCase() { return serviceFn(); }\n");
+    write('tests/zzz-service.test.ts', "import { serviceFn } from '../src/service';\nexport function serviceCase() { return serviceFn(); }\n");
+    await cg.sync();
+
+    const result = cg.queryCode({ mode: 'tests', files: ['src/service.ts'], query: '' });
+    const tests = result.items as AffectedTestItem[];
+    expect(tests.map((test) => test.filePath)).toEqual([
+      'tests/service.test.ts',
+      'tests/zzz-service.test.ts',
+      'tests/aaa-workflow.test.ts',
+    ]);
+    expect(tests.map((test) => test.priority)).toEqual(['focused', 'focused', 'related']);
+    expect(result.warnings.join('\n')).toContain('Focused tests');
+  }, 30_000);
 });

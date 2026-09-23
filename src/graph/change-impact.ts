@@ -146,6 +146,8 @@ export interface AffectedTest {
   distance: number;
   reason: 'changed' | 'dependent';
   confidence: 'direct' | 'high' | 'indirect';
+  /** focused 优先展示；related 仍由依赖图确认，但共享核心文件可能命中较宽。 */
+  priority: 'focused' | 'related';
   /** 关联证据类型；多个标签表示同一测试同时具备多种特征。 */
   testTypes: TestType[];
   /** 所选置信度下最短路径的前驱文件，去重排序后最多保留 10 个。 */
@@ -166,6 +168,29 @@ export interface AffectedTestsAnalysis {
 
 const HIGH_CONFIDENCE_MAX_DISTANCE = 3;
 const HIGH_CONFIDENCE_FAN_OUT = 12;
+
+const TEST_PATH_STOP_WORDS = new Set([
+  'src', 'source', 'test', 'tests', 'spec', 'specs', '__tests__', 'index', 'main',
+]);
+
+function pathTopicTokens(filePath: string): Set<string> {
+  return new Set(
+    filePath
+      .replace(/\.[^.\/]+$/, '')
+      .toLowerCase()
+      .split(/[\/._-]+/)
+      .filter((part) => part.length >= 3 && !TEST_PATH_STOP_WORDS.has(part)),
+  );
+}
+
+/** 文件名主题只参与排序，不会把没有依赖边的测试提升为候选。 */
+function testPriority(filePath: string, changedFiles: readonly string[]): AffectedTest['priority'] {
+  const testTokens = pathTopicTokens(filePath);
+  return changedFiles.some((changed) => {
+    const changedTokens = pathTopicTokens(changed);
+    return [...changedTokens].some((token) => testTokens.has(token));
+  }) ? 'focused' : 'related';
+}
 
 function classifyTestTypes(cg: CodeGraph, filePath: string, confidence: AffectedTest['confidence']): TestType[] {
   const types = new Set<TestType>([confidence === 'direct' ? 'direct' : 'indirect']);
@@ -230,16 +255,18 @@ export function findAffectedTests(
   ): void => {
     const confidence = reason === 'changed' ? 'direct' : classify(distance, narrowPath);
     const testTypes = classifyTestTypes(cg, filePath, confidence);
+    const priority = reason === 'changed' ? 'focused' : testPriority(filePath, changedFiles);
     const existing = found.get(filePath);
     if (!existing) {
-      found.set(filePath, { filePath, distance, reason, confidence, testTypes, via: via ? [via] : [] });
+      found.set(filePath, { filePath, distance, reason, confidence, priority, testTypes, via: via ? [via] : [] });
       return;
     }
     const rankDifference = confidenceRank(confidence) - confidenceRank(existing.confidence);
     if (rankDifference > 0 || (rankDifference === 0 && distance < existing.distance)) {
-      found.set(filePath, { filePath, distance, reason, confidence, testTypes, via: via ? [via] : [] });
+      found.set(filePath, { filePath, distance, reason, confidence, priority, testTypes, via: via ? [via] : [] });
       return;
     }
+    if (priority === 'focused') existing.priority = 'focused';
     if (rankDifference === 0 && distance === existing.distance && via && !existing.via.includes(via)) {
       existing.via.push(via);
     }
@@ -282,6 +309,7 @@ export function findAffectedTests(
     .map((test) => ({ ...test, via: [...test.via].sort().slice(0, 10) }))
     .sort((a, b) =>
       confidenceRank(b.confidence) - confidenceRank(a.confidence)
+      || (a.priority === 'focused' ? 0 : 1) - (b.priority === 'focused' ? 0 : 1)
       || a.distance - b.distance
       || a.filePath.localeCompare(b.filePath)
     );

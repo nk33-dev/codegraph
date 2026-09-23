@@ -3113,7 +3113,7 @@ program
         } else {
           console.log(chalk.bold(`\nAffected test files (${sortedTests.length}):\n`));
           for (const test of analysis.tests) {
-            console.log(`  ${chalk.cyan(test.filePath)} ${chalk.dim(`[${test.confidence}; ${test.testTypes.join('/')}; distance ${test.distance}]`)}`);
+            console.log(`  ${chalk.cyan(test.filePath)} ${chalk.dim(`[${test.priority}; ${test.confidence}; ${test.testTypes.join('/')}; distance ${test.distance}]`)}`);
           }
           if (!options.includeIndirect && analysis.indirectCandidates.length > 0) {
             console.log(chalk.dim(`\n  ${analysis.indirectCandidates.length} indirect candidate(s) hidden; use --include-indirect to inspect them.`));
