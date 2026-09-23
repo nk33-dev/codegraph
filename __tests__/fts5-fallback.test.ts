@@ -73,7 +73,7 @@ describe('FTS5 fallback (#1532)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let connection = initialize();
 
-    expect(attempts()).toBe(1);
+    expect(attempts()).toBe(2);
     expect(connection.fts5Available).toBe(false);
     expect(warn).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('no such module: fts5'));
@@ -109,6 +109,8 @@ describe('FTS5 fallback (#1532)', () => {
       SELECT type, name, sql FROM sqlite_master
       WHERE name NOT LIKE 'nodes_fts%'
         AND name NOT IN ('nodes_ai', 'nodes_ad', 'nodes_au')
+        AND name NOT LIKE 'file_text_fts%'
+        AND name NOT IN ('file_text_ai', 'file_text_ad', 'file_text_au')
       ORDER BY type, name
     `).all();
     const expected = nonFtsSchema(control);

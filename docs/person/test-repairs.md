@@ -316,3 +316,8 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 
 - 实现：`explore` 新增 `source` 行范围；Graph 结构化查询新增 `callers`、`callees` 与 `text` 文件级分页。文本索引复用 Git/.gitignore 文件发现规则并持久化到 SQLite；升级旧索引后先标记不可用，运行 `sync` 后再提供完整结果；变更或删除的文件不会回传旧文本。配置行隐藏值，排除 `.env`、私钥、二进制和超大文件。
 - 验证：Windows/Node 24.16.0，`npm run typecheck` 通过；`file-text-search` 4 项、`node-file-view` 行范围 1 项、`code-query` 调用分页 1 项、迁移相关 9 项及 `server-instructions` 5 项定向通过。尚未在本地运行完整构建或全量测试；三平台 CI 和个人发行仍待目标提交验证。
+
+## 2026-09-23 FTS5 回退兼容
+
+- CI `35811577129` 的 Ubuntu/macOS 测试揭示旧 `fts5-fallback` 契约只计入节点 FTS 的一次建表尝试，并把文件 FTS 的影子表、触发器误作普通 schema 比较。新文件全文索引在不支持 FTS5 时仍保留 `file_text` 表并使用 LIKE 检索。
+- 更新回退测试，分别排除两组 FTS 对象并计入两次尝试；三平台 CI 须在修正后的提交重新验证，不能沿用失败提交的结果。

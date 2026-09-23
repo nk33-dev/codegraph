@@ -30,41 +30,9 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 
 ## 验证与发布
 
-当前已发布版本为 [v1.6.0-personal.8](releases/v1.6.0-personal.8.md)：修复 blast radius 调用方计数与所列文件不一致、要求“相关测试”时整篇渲染测试源码，并让 MCP 固定表面预算跟上 explore 新增的 `includeTestSource` 选项。标签、归档与校验和见该版本 Release；本机定向验证与 CI 结论见[开发验证记录](test-repairs.md)。
+当前已发布版本为 [v1.6.0-personal.9](releases/v1.6.0-personal.9.md)；[v1.6.0-personal.10](releases/v1.6.0-personal.10.md) 正在准备中，尚未发布。版本内容与验证边界分别见发行说明和[开发验证记录](test-repairs.md)。
 
-上一个发行版本 [v1.6.0-personal.7](releases/v1.6.0-personal.7.md) 修复精确自然语言查询的直接调用方覆盖、旧索引重命名安全门和大型编辑预览的默认上下文开销。三平台 CI、隔离安装、归档与校验和均由 GitHub 工作流完成。
-
-personal.5 的 CI `35222050320` 暴露 Unix socket 测试目录创建顺序、macOS 重命名路径别名和 Windows 测试超时清理问题；后续补修与本地 31 项定向验证见[开发验证记录](test-repairs.md)。修复位于 personal 分支，不改写既有发行资产。
-
-个人发布完全由 GitHub Actions 完成：`personal` 是 fork 的默认分支，三平台 CI 通过后触发 `Personal Release`，由 runner 构建、隔离验证、打包并创建 prerelease；开发机不承担发布构建或资产上传。
-
-本机构建与全量测试已通过；具体环境、结果和验证范围集中记录在[开发验证记录](test-repairs.md)。语言服务文档中的历史数字只对应当时的测试环境。资源档位的实测数字、重新建立的性能基线和保留的限制见[资源档位与自动回收](resource-governance.md)。
-
-2026-09-17 的复审与补修见[静态复核记录](release-readiness.md#本轮静态复核)，本批归入 [v1.6.0-personal.4](releases/v1.6.0-personal.4.md)。开发复审未运行测试或构建；发行阶段单独生成安装包，以上历史验证不覆盖本批差异。
-
-发行后 CI `35213690657` 暴露 UI 版本同步、精确检索预算和升级提示契约问题；修复已完成 Windows 本地 4 文件、90 项定向回归，详见[开发验证记录](test-repairs.md)。这些后续修复尚未纳入 personal.4 已发布资产，不改写原标签。
-
-随后三平台 CI `35214833215` 通过；进一步修复 Windows 索引超时后的连接泄漏、后台任务串扰和数据库线程提前返回，并恢复四并发。本机定向 10 文件、77 项通过；本批远端四并发结果待确认，详见[资源清理记录](test-repairs.md#2026-09-17windows-四并发与资源清理)。
-
-个人扩展通过 `personal` 分支维护；首个 GitHub prerelease 为 `v1.6.0-personal.1`，当前发行版本为 `v1.6.0-personal.8`。向 npm registry 安装上游包不会获得个人改动；个人版按[安装说明](personal-usage.md)从 GitHub Release `.tgz` 或固定标签安装。
-
-## personal.6 发行内容（2026-09-18）
-
-以下用户报告问题纳入 `v1.6.0-personal.6`；实际发布状态以 GitHub Release 页面为准：
-
-- 默认 MCP 固定表面从 `20,338` 个字符压缩到 `7,024`，并移除随项目规模变化的工具描述；默认表面、白名单、`maxFiles` 和结构化模式契约见 [MCP 表面与缓存稳定性](mcp-surface.md)。
-- 首调用时延拆成「catch-up 等待」与「检索」两段分别记账（`CODEGRAPH_MCP_TIMINGS=1` 可逐调用输出，`codegraph status` 显示 p95），并保留对账门与超时降级；alwaysLoad 固定成本与 explore→Read 回退比例的测量口径和决策见 [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md)。
-- stale 文本改为稳定状态并按路径排序，结构化 status 保持原字段兼容；未加入未经模型级 A/B 验证的预算实验逻辑，见 [Explore 响应稳定性](explore-response.md)。
-- 匿名使用统计改为默认关闭；安装器默认不勾选，只有保存选择、`codegraph telemetry on` 或 `CODEGRAPH_TELEMETRY=1` 会开启。
-- 编辑后索引刷新补齐 grammar 预加载与引用解析，新符号和调用边在 `indexSynced:true` 前均可查询；直接 `apply:true` 与可选预览绑定的说明已统一。
-- `status` 区分 live/exited/stale daemon 快照；未知目标的意图词不再参与模糊检索；blast radius 分开统计 callers、importers 和 references。
-- 用户报告的两项 explore 输出问题：blast radius 行首的调用方数量与所列文件口径不一致（测试节点混入生产调用方，且模块 import 依赖与文件内符号重复计数），现在分类计数与文件位置同源；明确要求“相关测试”时测试文件默认只给测试摘要，测试源码需显式 `includeTestSource: true`，契约见[结构化查询](structured-queries.md#blast-radius-依赖分类)。
-
-- 跨文件重命名由“只报缺口”改为“LSP 优先、索引补全、补不了就拒绝”（AST 确认的位置才补编辑，结果标 `plannedBy`），契约见[结构化编辑](structured-edits.md#rename-completeness-guard)。
-- 唯一精确符号查询的意图词（定义/所有/调用方/相关测试）不再参与模糊匹配，契约见[结构化查询](structured-queries.md#意图词收束explore)。
-- 后续体验补修：动态 namespace import 成为可解析引用，调用/构造边记录准确标识符列；自然语言关系词改为结构化意图并复用统一入边推导，大型精确类查询保留自身定义；旧索引阻止依赖 Graph 覆盖的 rename，编辑预览增加 `canApply/blockers` 并默认输出紧凑摘要；MCP 常驻说明去重压缩。以上仍未提交、未发布，验证边界见[开发验证记录](test-repairs.md#2026-09-17mcp-体验复审与补修)。
-- 升级后旧 daemon 自动切换，并新增 `codegraph daemon --restart`；索引升级新增 `codegraph sync --upgrade-index`（先给估算再确认，范围有登记时才增量迁移），用法与边界见[个人使用与安装](personal-usage.md#升级后的-daemon-版本切换)。
-- 实现范围、验证结果与未验证边界见[开发验证记录](test-repairs.md#2026-09-17跨文件重命名补全意图词收束daemon-版本切换与索引升级)。
+个人版从 [GitHub Release 安装](personal-usage.md)，不通过上游 npm 包获得个人改动。`personal` 分支的同一提交通过三平台 CI 后，才由 `Personal Release` 在 GitHub runner 构建、隔离验证、打包并创建 prerelease；本机不承担发布构建和上传。
 
 ## 计划与维护
 
