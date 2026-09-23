@@ -326,3 +326,4 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 
 - CI `35812033463` 的 Ubuntu/macOS 全量测试通过；Windows 四并发中 `mcp-subproject-adoption` 的清理等待 `close` 超过 5 秒。`close` 还依赖标准流关闭，晚于进程退出；删除临时数据库只需等待进程 `exit`。
 - 测试清理改为等待 `exit` 并增加进程退出但标准流未关闭的回归；本提交的三平台 CI 结果待验证。
+- CI `35812826392` 的 Ubuntu/macOS 全量测试通过；Windows 的 `mcp-initialize` 在进程退出后删除临时目录时偶发 `EBUSY`。对该目录使用 Node `fs.rmSync` 内置的有界 `EBUSY` 重试；依旧保留失败时抛错，不掩盖真实泄漏。新提交仍须重新经过三平台门禁。

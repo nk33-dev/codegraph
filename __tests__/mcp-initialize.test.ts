@@ -112,7 +112,7 @@ describe('MCP initialize handshake (issue #172)', () => {
   afterEach(async () => {
     await stopProcess(child);
     child = null;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('responds to initialize quickly when no .codegraph exists in cwd', async () => {
