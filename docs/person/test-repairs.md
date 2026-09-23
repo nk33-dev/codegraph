@@ -321,3 +321,8 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 
 - CI `35811577129` 的 Ubuntu/macOS 测试揭示旧 `fts5-fallback` 契约只计入节点 FTS 的一次建表尝试，并把文件 FTS 的影子表、触发器误作普通 schema 比较。新文件全文索引在不支持 FTS5 时仍保留 `file_text` 表并使用 LIKE 检索。
 - 更新回退测试，分别排除两组 FTS 对象并计入两次尝试；三平台 CI 须在修正后的提交重新验证，不能沿用失败提交的结果。
+
+## 2026-09-23 Windows 子进程清理
+
+- CI `35812033463` 的 Ubuntu/macOS 全量测试通过；Windows 四并发中 `mcp-subproject-adoption` 的清理等待 `close` 超过 5 秒。`close` 还依赖标准流关闭，晚于进程退出；删除临时数据库只需等待进程 `exit`。
+- 测试清理改为等待 `exit` 并增加进程退出但标准流未关闭的回归；本提交的三平台 CI 结果待验证。
