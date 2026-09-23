@@ -631,6 +631,8 @@ export class DatabaseConnection {
    * next open retries rather than a stall.
    */
   async healOversizedWal(): Promise<{ healed: boolean; beforeBytes: number; afterBytes: number }> {
+    // A truncated WAL does not mean the checkpoint worker has released its handles.
+    if (this.walHeal) return this.walHeal;
     const beforeBytes = this.getWalSizeBytes();
     if (beforeBytes <= WAL_HEAL_THRESHOLD_BYTES) {
       return { healed: false, beforeBytes, afterBytes: beforeBytes };

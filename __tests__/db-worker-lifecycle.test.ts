@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DatabaseConnection } from '../src/db';
+import { WAL_HEAL_THRESHOLD_BYTES } from '../src/db/index';
 
 // 分开发送 message 和 exit，稳定复现“SQL 已完成但线程尚未退出”的窗口。
 const workers: EventEmitter[] = [];
@@ -28,6 +29,27 @@ afterEach(() => {
 });
 
 const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+
+it('joins the in-flight heal after the WAL shrinks but before worker exit', async () => {
+  const size = vi.spyOn(db, 'getWalSizeBytes').mockReturnValue(WAL_HEAL_THRESHOLD_BYTES + 1);
+  const first = db.healOversizedWal();
+  await nextTurn();
+  workers[0].emit('message', { row: { busy: 0, log: 1, checkpointed: 1 } });
+  workers[0].emit('exit', 0);
+  await nextTurn();
+  const truncate = workers[1];
+  expect(truncate).toBeDefined();
+  size.mockReturnValue(0);
+  truncate.emit('message', { row: { busy: 0, log: 0, checkpointed: 0 } });
+  let joined = false;
+  const second = db.healOversizedWal().then(result => { joined = true; return result; });
+  await nextTurn();
+  expect(joined).toBe(false);
+  truncate.emit('exit', 0);
+  await expect(first).resolves.toMatchObject({ healed: true, afterBytes: 0 });
+  await expect(second).resolves.toMatchObject({ healed: true, afterBytes: 0 });
+  size.mockRestore();
+});
 
 it('维护收到完成消息后仍等待线程退出', async () => {
   let finished = false;

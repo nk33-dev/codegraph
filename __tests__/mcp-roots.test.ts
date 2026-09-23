@@ -30,6 +30,7 @@ function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
   return spawn(process.execPath, [BIN, 'serve', '--mcp', '--no-watch'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' },
     windowsHide: true,
   }) as ChildProcessWithoutNullStreams;
 }
@@ -89,8 +90,8 @@ describe('MCP project resolution via roots/list (issue #196)', () => {
   afterEach(async () => {
     await stopProcess(child);
     child = null;
-    fs.rmSync(cwdDir, { recursive: true, force: true });
-    fs.rmSync(projectDir, { recursive: true, force: true });
+    await fs.promises.rm(cwdDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await fs.promises.rm(projectDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it('resolves the project from the client roots/list when no rootUri is sent', async () => {

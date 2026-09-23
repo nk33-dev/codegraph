@@ -145,6 +145,8 @@ With no Linux test machine available, you can validate in a container if Docker 
 
 Validate paths, permissions, named pipes, file locks, and process exit on a real Windows environment. Install dependencies on that platform with `npm ci`; do not reuse a macOS/Linux `node_modules`. Refresh PATH when needed under SSH; do not assume the upstream maintainer's VM, accounts, or architecture exist.
 
+直接测试 MCP 子进程时设置 `CODEGRAPH_NO_DAEMON=1` 和 `CODEGRAPH_WASM_RELAUNCHED=1`，确保测试持有实际服务进程；退出后删除工作目录可使用 Node 原生异步 `rm` 的有界重试。WAL 文件缩小不表示 checkpoint worker 已退出：`healOversizedWal()` 先返回既有任务，调用方在清理临时数据库前等待该任务结束。
+
 测试和运行时代码启动控制台子进程时必须传 `windowsHide: true`，否则从 Codex 等 GUI 宿主运行全量测试会反复闪现 `cmd`/conhost 窗口。`__tests__/windows-child-process.test.ts` 对测试源码执行 AST 检查，覆盖静态导入、`require()` 和动态 `import()`。
 
 Upstream has recorded failures such as symlink permissions and MCP subprocesses holding SQLite/cwd and causing `EPERM` during cleanup. When you hit one, reproduce it on the current upstream baseline first; do not treat a historical record as a waiver for a current failure.

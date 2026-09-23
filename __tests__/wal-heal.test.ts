@@ -165,6 +165,8 @@ describe('WAL heal after killed sessions (#1431)', () => {
       }
       expect(walSize()).toBeLessThanOrEqual(WAL_HEAL_THRESHOLD_BYTES);
     } finally {
+      // Join the automatic heal even after the WAL has already shrunk.
+      await conn.healOversizedWal();
       conn.close();
     }
   }, 180_000);

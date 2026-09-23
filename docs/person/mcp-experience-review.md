@@ -2,6 +2,25 @@
 
 2026-09-23 对 Claude Code 的 `1.6.0-personal.10` 体验报告逐项复核。本页记录此次修复和验证边界；当前功能契约分别由链接文档维护，未发布改动不能视为已安装服务的行为。
 
+## 完成状态与源码证据
+
+- 本轮修改实现：1、2、5、6、7、8、9、11、12、13、16、17。
+- 已有实现并复核：3、4；验证后未发现所述缺陷、补回归：14；保留既有保护：15。
+- 未解决：10，不相关文件召回仍待真实仓库 A/B。以上不能统称“17 项全部修复”。
+
+实现提交为 [`167eba8`](https://github.com/nk33-dev/codegraph/commit/167eba876118dab6e2c01a00b25e249ddfb91c18)，修改 13 个 `src/` 文件（新增 243 行、删除 398 行）。测试提交为 `7be8889`，文档提交为 `4491b0e`。源码与测试是分别提交的。
+
+| 实现位置 | 负责的修复 |
+| --- | --- |
+| [MCP session](../../src/mcp/session.ts) | 默认 Explore 只传完整文本 |
+| [文件全文索引](../../src/db/file-text.ts) | 子串检索、超限文件记录、有界补扫 |
+| [共享结构化查询](../../src/graph/code-query.ts) | 结果排序、名称建议、诊断路径 |
+| [影响与测试分析](../../src/graph/change-impact.ts) | 边扫描复杂度、测试去重读取、文件名候选 |
+| [改动上下文](../../src/graph/change-context.ts) | 换行符归一与正文比较 |
+| [公共入口](../../src/index.ts) | HEAD 缓存和诊断默认路由 |
+| [LSP 查询](../../src/lsp/code-query-lsp.ts) | 非空结果在索引中仍提示不完整 |
+| [CLI](../../src/bin/codegraph.ts) 与 [路径工具](../../src/directory.ts) | Hook 触发收束与附件名过滤 |
+
 | 报告项 | 处理结果 | 契约或验证位置 |
 | --- | --- | --- |
 | 1 源码被结构化摘要遮蔽 | 默认 MCP Explore 仅传完整文本；库和 CLI 保留结构化证据 | [结构化查询](structured-queries.md)；`mcp-experience.test.ts` |

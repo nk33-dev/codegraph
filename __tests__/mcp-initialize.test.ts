@@ -112,7 +112,8 @@ describe('MCP initialize handshake (issue #172)', () => {
   afterEach(async () => {
     await stopProcess(child);
     child = null;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    // Windows may release the exited process's working-directory handle shortly after exit.
+    await fs.promises.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it('responds to initialize quickly when no .codegraph exists in cwd', async () => {
