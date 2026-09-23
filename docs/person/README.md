@@ -34,7 +34,7 @@ MCP 状态会同时报告索引 freshness 与当前服务构建身份；`tests` 
 
 ## 验证与发布
 
-当前已发布版本为 [v1.6.0-personal.10](releases/v1.6.0-personal.10.md)。版本内容与验证边界分别见发行说明和[开发验证记录](test-repairs.md)。
+当前准备发布版本为 [v1.6.0-personal.11](releases/v1.6.0-personal.11.md)；上一已发布版本为 [v1.6.0-personal.10](releases/v1.6.0-personal.10.md)。发布结果和验证边界见发行说明与[开发验证记录](test-repairs.md)。
 
 个人版从 [GitHub Release 安装](personal-usage.md)，不通过上游 npm 包获得个人改动。`personal` 分支的同一提交通过三平台 CI 后，才由 `Personal Release` 在 GitHub runner 构建、隔离验证、打包并创建 prerelease；本机不承担发布构建和上传。
 
