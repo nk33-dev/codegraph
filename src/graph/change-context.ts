@@ -11,6 +11,7 @@ import type { EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedReference } 
 import { detectLanguage } from '../extraction';
 import { materializeKernelResult } from '../extraction/kernel';
 import { isCodeGraphDataDir } from '../directory';
+import { normalizeEol } from '../edits/text-edits';
 import { analyzeImpact, findAffectedTests } from './change-impact';
 import type { TestType } from './change-impact';
 
@@ -138,6 +139,7 @@ interface SemanticEdge {
 interface FileSemanticSnapshot {
   nodes: Node[];
   edges: SemanticEdge[];
+  bodies: Map<string, string>;
 }
 
 function git(projectRoot: string, args: string[], maxBuffer = 50 * 1024 * 1024): string {
@@ -362,8 +364,20 @@ function snapshotFromExtraction(
   filePath: string,
   source: string | null,
 ): FileSemanticSnapshot {
-  if (source === null) return { nodes: [], edges: [] };
+  if (source === null) return { nodes: [], edges: [], bodies: new Map() };
+  source = normalizeEol(source, '\n');
   const result = materializedExtraction(cg, filePath, source);
+  const lines = source.split('\n');
+  const bodies = new Map<string, string>();
+  for (const node of meaningfulNodes(result)) {
+    const selected = lines.slice(node.startLine - 1, node.endLine);
+    if (selected.length) {
+      const last = selected.length - 1;
+      selected[last] = Buffer.from(selected[last]!).subarray(0, node.endColumn).toString('utf8');
+      selected[0] = Buffer.from(selected[0]!).subarray(node.startColumn).toString('utf8');
+    }
+    bodies.set(node.id, selected.join('\n'));
+  }
   const byId = new Map(result.nodes.map((node) => [node.id, node]));
   const edges: SemanticEdge[] = [];
   for (const edge of result.edges) {
@@ -384,7 +398,7 @@ function snapshotFromExtraction(
     const edge = edgeFromReference(ref, byId, filePath);
     if (edge) edges.push(edge);
   }
-  return { nodes: meaningfulNodes(result), edges };
+  return { nodes: meaningfulNodes(result), edges, bodies };
 }
 
 function edgeFromReference(
@@ -427,7 +441,7 @@ function compareFileSnapshots(
       || rangesOverlap(node.startLine, node.endLine, change.newRanges)
       || rangesOverlap(previous.startLine, previous.endLine, change.oldRanges)
       || node.signature !== previous.signature;
-    if (touched) {
+    if (touched && (change.change === 'renamed' || before.bodies.get(previous.id) !== after.bodies.get(node.id))) {
       symbols.push({
         change: 'modified', name: node.name, qualifiedName: node.qualifiedName, kind: node.kind,
         filePath: change.path, line: node.startLine,
@@ -649,7 +663,7 @@ export async function analyzeChangeContext(
   const tests = testAnalysis.tests.slice(0, MAX_AFFECTED_TESTS);
   if (testAnalysis.indirectCandidates.length > 0) {
     warnings.push(
-      `${testAnalysis.indirectCandidates.length} 个经公共模块或较长依赖链命中的测试仅作为间接候选，未混入默认关联测试。`,
+      `${testAnalysis.indirectCandidates.length} tests reached through shared modules or long dependency chains are indirect candidates, excluded from the default test list.`,
     );
   }
 
@@ -662,10 +676,10 @@ export async function analyzeChangeContext(
       .slice(0, 10)
     : [];
   if (files.some((file) => file.change === 'deleted')) {
-    warnings.push('删除符号在当前图中已无节点；影响范围可能漏掉动态调用、未解析引用以及仅指向已删除节点的旧边。');
+    warnings.push('Deleted symbols no longer exist in the current graph; impact may omit dynamic calls, unresolved references, and old edges to deleted nodes.');
   }
   if (missingTestRisks.length > 0) {
-    warnings.push('高扇入改动：图中未发现覆盖；这不代表项目没有测试或影响。');
+    warnings.push('High fan-in changes have no graph-confirmed tests; this does not mean there are no tests or dependents.');
   }
 
   if (options.deep && commit) {
@@ -727,6 +741,6 @@ export function formatChangeContext(context: ChangeContext): string {
     if (context.affectedTests.length > 10) lines.push(`- ... and ${context.affectedTests.length - 10} more tests`);
   }
   for (const warning of context.warnings) lines.push('', `> ${warning}`);
-  if (context.truncated) lines.push('', '> 改动上下文已按预算裁剪；structured content 也只包含有界结果。');
+  if (context.truncated) lines.push('', '> Change context was capped to its budget; structured content contains the same bounded results.');
   return lines.join('\n');
 }

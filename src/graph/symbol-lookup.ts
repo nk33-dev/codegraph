@@ -25,6 +25,7 @@
  */
 
 import type { Node } from '../types';
+import { splitIdentifierSegments } from '../search/identifier-segments';
 
 /** Rust path prefixes that name no directory (`crate::x`, `super::y`). */
 export const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
@@ -122,6 +123,8 @@ export interface SymbolLookupHost {
 }
 
 export interface SymbolLookupResult {
+  /** Nearby names are suggestions only, never resolved definitions. */
+  suggestions?: Node[];
   /** Every definition the query names, keepers before generated stubs. */
   nodes: Node[];
   /**
@@ -178,8 +181,14 @@ export function lookupSymbolNodes(cg: SymbolLookupHost, symbol: string): SymbolL
   let nodes = tail ? cg.getNodesByName(tail) : [];
   if (qualified) nodes = nodes.filter((n) => matchesSymbol(n, symbol));
 
+  let suggestions: Node[] = [];
   if (nodes.length === 0) {
     const hits = cg.searchNodes(symbol, { limit: 50 }).map((h) => h.node);
+    suggestions = hits;
+    if (suggestions.length === 0 && !qualified) {
+      const words = splitIdentifierSegments(symbol);
+      if (words.length > 1) suggestions = cg.searchNodes(words.join(' '), { limit: 20 }).map((hit) => hit.node);
+    }
     const exact = hits.filter((n) => matchesSymbol(n, symbol));
     if (exact.length > 0) {
       nodes = exact;
@@ -188,7 +197,7 @@ export function lookupSymbolNodes(cg: SymbolLookupHost, symbol: string): SymbolL
     // misleading fuzzy hit (#1473; qualified lookups already did this in #173).
   }
 
-  if (nodes.length === 0) return { nodes: [], ambiguous: false };
+  if (nodes.length === 0) return { nodes: [], ambiguous: false, ...(suggestions.length ? { suggestions } : {}) };
 
   // Keepers before generated stubs (.pb.go and friends), stable otherwise.
   const isGenerated = cg.generatedFilePredicate(nodes.map((n) => n.filePath));

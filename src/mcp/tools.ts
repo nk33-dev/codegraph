@@ -3516,7 +3516,7 @@ export class ToolHandler {
       '',
       ...notes,
       '',
-      '> These sites choose their call target at runtime (registry / bus / reflection) — the site shown IS where the flow continues. To follow it, run codegraph_explore or codegraph_node on a candidate; configure the framework/LSP resolver when the runtime value is not statically visible. Source for the sites above is included below.',
+      '> These sites choose their call target at runtime (registry / bus / reflection) — the site shown IS where the flow continues. To follow it, run codegraph_explore on a candidate; configure the framework/LSP resolver when the runtime value is not statically visible. Source for the sites above is included below.',
       '',
     ].join('\n');
   }
@@ -3814,7 +3814,7 @@ export class ToolHandler {
     const MAX_HOPS = 3; // direct dependents are hop 1
     const BUDGET = 64;  // getCallers lookups per entry — bounds god-fan-in symbols
     const FILE_CAP = 2;
-    if (dependents.length === 0) return `; 图中未发现覆盖（已搜索 ${MAX_HOPS} 层调用方）；不代表项目没有测试`;
+    if (dependents.length === 0) return `; No test coverage found within ${MAX_HOPS} caller hops; this does not mean the project has no tests`;
     let budget = BUDGET;
     const visited = new Set(dependents.map((n) => n.id));
     let frontier = dependents;
@@ -3845,8 +3845,8 @@ export class ToolHandler {
     // Budget exhaustion means hops 2-3 weren't fully searched — fall back to
     // the weaker claim that IS established by the direct-dependents check.
     return budget > 0
-      ? `; 图中未发现覆盖（已搜索 ${MAX_HOPS} 层调用方）；不代表项目没有测试`
-      : '; 图中未发现覆盖（调用方搜索预算已耗尽）；不代表项目没有测试';
+      ? `; No test coverage found within ${MAX_HOPS} caller hops; this does not mean the project has no tests`
+      : '; No test coverage found before the caller search budget expired; this does not mean the project has no tests';
   }
 
   /**
@@ -4336,12 +4336,6 @@ export class ToolHandler {
           subgraph.roots.push(node.id);
         }
       }
-    } else if (subgraph.nodes.size > 0) {
-      // Ordinary queries probe Git only for relevance-matched paths, then read the full worktree status
-      // and diff only when one of those paths actually changed.
-      changeContext = await analyzeChangeContext(cg, {
-        candidateFiles: [...new Set([...subgraph.nodes.values()].map((node) => node.filePath))],
-      });
     }
 
     // Pinned files' symbols enter the gather unconditionally — the agent named
@@ -4492,7 +4486,7 @@ export class ToolHandler {
       // below applies unchanged, so bare English words still can't seed a
       // same-named local. Callables keep priority via the body-size sort.
       const SEEDABLE = new Set([...CALLABLE, 'variable', 'constant']);
-      const isTestPath = (p: string) => /(^|\/)(tests?|specs?|__tests__|testdata|mocks?|fixtures?)\//i.test(p) || /\.(test|spec)\.[a-z]+$/i.test(p);
+      const isTestPath = isTestFile;
       const bodyLines = (n: Node) => Math.max(0, (n.endLine ?? n.startLine) - n.startLine);
       const callerCount = (n: Node) => { try { return cg.getCallers(n.id).length; } catch { return 0; } };
       const tokens = [...new Set(
@@ -7474,7 +7468,7 @@ export class ToolHandler {
       if (listed.length > LIST_CAP) out.push(`- … +${listed.length - LIST_CAP} more`);
       out.push(
         '',
-        `> Need one of these in full? Call codegraph_node again with \`file\` (e.g. \`"${listed[0]!.filePath.split('/').pop()}"\`) or \`line\` — do NOT Read it.`,
+        `> Need one of these in full? Call codegraph_explore with \`mode:"source"\`, \`file:"${listed[0]!.filePath}"\`, and optional \`offset\`/\`limit\`.`,
       );
     }
     return this.textResult(this.truncateOutput(out.join('\n')));
@@ -7509,7 +7503,7 @@ export class ToolHandler {
       const directPath = relativePath(cg.getProjectRoot(), directAbs).replace(/\\/g, '/');
       return this.handleUnindexedFileView(directPath, directAbs, { offset: opts.offset, limit: opts.limit, symbolsOnly: opts.symbolsOnly });
     }
-    if (allFiles.length === 0) return this.textResult('No files indexed. Run `codegraph index` first, or pass a newly created source file to codegraph_node for a direct unindexed view.');
+    if (allFiles.length === 0) return this.textResult('No files indexed. Run `codegraph index` first, or pass a newly created source file to codegraph_explore mode:"source" for a direct unindexed view.');
 
     let resolved = allFiles.find((f) => f.path.toLowerCase() === wantLower);
     let candidates: typeof allFiles = [];
@@ -7751,7 +7745,7 @@ export class ToolHandler {
     }
     if (!embedded) {
       lines.push(
-        `> ⚠ \`${node.filePath}\` changed on disk after it was last indexed — the indexed line range for this symbol no longer reliably matches, so its body is omitted rather than risk showing a different symbol's code. For current content, call codegraph_node with \`file: "${node.filePath}"\` (no symbol; \`offset\`/\`limit\` narrow it like Read), or Read the file. The change is picked up automatically on that project's next index sync.`,
+        `> ⚠ \`${node.filePath}\` changed on disk after it was last indexed — the indexed line range for this symbol no longer reliably matches, so its body is omitted rather than risk showing a different symbol's code. For current content, call codegraph_explore with \`mode: "source"\` and \`file: "${node.filePath}"\` (no symbol; \`offset\`/\`limit\` narrow it like Read), or Read the file. The change is picked up automatically on that project's next index sync.`,
       );
     }
     return lines.join('\n') + this.formatTrail(cg, node);
@@ -7786,7 +7780,7 @@ export class ToolHandler {
     const callees = collect(cg.getCallees(node.id));
     const callers = collect(cg.getCallers(node.id));
     if (callees.length === 0 && callers.length === 0) return '';
-    const lines: string[] = ['', `**Trail — codegraph_node any of these to follow it (no Read needed; index ${cg.getIndexVersion() ?? 'unknown'})**`];
+    const lines: string[] = ['', `**Trail — codegraph_explore any of these to follow it (no Read needed; index ${cg.getIndexVersion() ?? 'unknown'})**`];
     if (callees.length > 0) {
       lines.push(`**Calls →** ${callees.slice(0, TRAIL_CAP).map(fmt).join(', ')}${callees.length > TRAIL_CAP ? `, +${callees.length - TRAIL_CAP} more` : ''}`);
     }
@@ -8455,7 +8449,7 @@ export class ToolHandler {
 
     if (outline) {
       lines.push('', outline, '',
-        `> Structural outline only. Read \`${node.filePath}\` or call codegraph_node on a specific member for its body.`);
+        `> Structural outline only. Read \`${node.filePath}\` or call codegraph_explore on a specific member for its body.`);
     } else if (code) {
       // Line-numbered (cat -n style, like codegraph_explore and Read) so the
       // agent can cite/edit exact lines without re-Reading the file for them.

@@ -314,7 +314,11 @@ export class MCPSession {
     if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] toolsCall ${toolName} id=${String(request.id)} dispatch\n`);
     const result = await this.engine.getToolHandler().execute(toolName, toolArgs, this.exploreSession);
     if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] toolsCall ${toolName} id=${String(request.id)} done\n`);
-    this.transport.sendResult(request.id, result);
+    // Default exploration has one model-visible representation across MCP clients.
+    const wireResult = toolName === 'codegraph_explore' && (!toolArgs.mode || toolArgs.mode === 'explore')
+      ? { content: result.content, ...(result.isError ? { isError: true } : {}) }
+      : result;
+    this.transport.sendResult(request.id, wireResult);
     // After the reply is on the wire — telemetry must never delay a tool
     // response (in-memory increment only; see src/telemetry).
     getTelemetry().recordUsage('mcp_tool', toolName, !result.isError, this.clientInfo);

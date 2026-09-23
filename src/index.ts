@@ -1503,22 +1503,27 @@ export class CodeGraph {
   }
 
   searchText(query: string, options: { offset?: number; limit?: number; file?: string } = {}): {
-    items: TextHit[]; total: number; nextOffset: number | null;
+    items: TextHit[]; total: number; nextOffset: number | null; warnings: string[];
   } {
     return searchFileText(this.db.getDb(), this.projectRoot, query, {
       offset: options.offset ?? 0, limit: options.limit ?? 50, file: options.file,
     });
   }
 
-  private currentGitCommit(): string | null {
+  private gitCommitCache: { at: number; value: string | null } | null = null;
+
+  private currentGitCommit(fresh = true): string | null {
+    const now = Date.now();
+    if (!fresh && this.gitCommitCache && now - this.gitCommitCache.at < 1000) return this.gitCommitCache.value;
+    let value: string | null = null;
     try {
-      return execFileSync('git', ['rev-parse', 'HEAD'], {
+      value = execFileSync('git', ['rev-parse', 'HEAD'], {
         cwd: this.projectRoot, encoding: 'utf8', timeout: 2000,
         stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
       }).trim() || null;
-    } catch {
-      return null;
-    }
+    } catch { /* Non-Git projects have no HEAD. */ }
+    this.gitCommitCache = { at: now, value };
+    return value;
   }
 
   /** 统一索引状态快照，供 CLI、MCP 和 UI 共享。 */
@@ -1532,7 +1537,7 @@ export class CodeGraph {
     return {
       version: this.getIndexVersion(),
       indexedCommit: this.queries.getMetadata('index_commit') || null,
-      currentCommit: checkFiles ? this.currentGitCommit() : null,
+      currentCommit: this.currentGitCommit(checkFiles),
       textChanges,
       state: this.getIndexState(),
       lastUpdatedAt,
@@ -1979,13 +1984,13 @@ export class CodeGraph {
    * process never spawn another one.
    */
   async queryCodeWithBackend(request: CodeQueryRequest): Promise<CodeQueryResult> {
-    const backend = request.backend ?? 'graph';
+    const backend = request.backend ?? (request.mode === 'diagnostics' ? 'auto' : 'graph');
     if (['text', 'callers', 'callees'].includes(request.mode) && backend !== 'graph') {
       throw new Error(`${request.mode} mode only supports the graph backend`);
     }
     if (backend === 'graph') return this.queryCode(request);
     if (backend === 'lsp') return queryCodeLsp(this, this.getLspManager(), request);
-    return queryCodeRouted(this, request, {
+    return queryCodeRouted(this, { ...request, backend }, {
       queryGraph: (routed) => this.queryCode(routed),
       queryLsp: (routed) => queryCodeLsp(this, this.getLspManager(), routed),
       lspAvailability: (language) => this.lspAvailability(language),

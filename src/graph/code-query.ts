@@ -5,6 +5,7 @@ import { sortPendingFiles, type PendingFile } from '../sync';
 import type { LspCapabilities, LspServerState, LspServerStatus } from '../lsp/manager';
 import { indexedFileFreshness, type FileFreshness } from '../sync/file-freshness';
 import { isConfigLeafNode, validatePathWithinRoot } from '../utils';
+import { isTestFile } from '../search/query-utils';
 import { lookupSymbolNodes } from './symbol-lookup';
 import { analyzeImpact, findAffectedTests, DEFAULT_IMPACT_DEPTH, DEFAULT_TESTS_DEPTH } from './change-impact';
 import type { TestType } from './change-impact';
@@ -296,6 +297,7 @@ export interface CodeQueryResult {
   coordinates: { lineBase: 1; columnBase: 0; columnEncoding: 'utf-8' | 'utf-16' };
   ambiguous: boolean;
   items: CodeQueryItem[];
+  filenameCandidates?: import('./change-impact').AffectedTestsAnalysis['filenameCandidates'];
   page: { offset: number; limit: number; total: number; nextOffset: number | null };
   index: IndexBlock | null;
   /** 仅 status 模式返回当前服务进程的版本与构建提交。 */
@@ -313,7 +315,8 @@ export function defaultRouting(backend: CodeQueryBackend): RoutingBlock {
     resolved: backend,
     reason: backend === 'graph'
       ? 'backend "graph" was requested explicitly; the query read the index only'
-      : 'backend "lsp" was requested explicitly',
+      : backend === 'lsp' ? 'backend "lsp" was requested explicitly'
+        : `backend "${backend}" was requested; routing has not completed`,
     fallback: null,
     families: [],
     sources: { graph: 0, lsp: 0 },
@@ -508,8 +511,13 @@ export function indexWarnings(index: IndexBlock): string[] {
   return warnings;
 }
 
+export function sourcePathPriority(filePath: string): number {
+  if (/(?:^|[\\/])(?:fixtures?|testdata|__fixtures__)(?:[\\/]|$)/i.test(filePath)) return 2;
+  return isTestFile(filePath) ? 1 : 0;
+}
+
 function compareNodes(a: Node, b: Node): number {
-  return a.filePath.localeCompare(b.filePath) || a.startLine - b.startLine
+  return sourcePathPriority(a.filePath) - sourcePathPriority(b.filePath) || a.filePath.localeCompare(b.filePath) || a.startLine - b.startLine
     || a.startColumn - b.startColumn || a.id.localeCompare(b.id);
 }
 
@@ -526,7 +534,7 @@ export { compareNodes };
  * outright error. Shared by the graph and LSP paths, so the same parameter cannot be judged differently.
  */
 export function resolveFileInput(root: string, request: CodeQueryRequest): string | null {
-  const raw = request.mode === 'symbols' ? request.file ?? request.query : request.file;
+  const raw = (request.mode === 'symbols' || request.mode === 'diagnostics') ? request.file ?? request.query : request.file;
   if (raw === undefined) return null;
   if (typeof raw !== 'string' || !raw.trim() || raw.length > 4096) throw new Error('file must be a non-empty path');
   const normalized = raw.replace(/\\/g, '/');
@@ -646,6 +654,7 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     const file = resolveFileInput(root, request) ?? undefined;
     const page = cg.searchText(result.query, { offset, limit, file });
     result.items = page.items;
+    result.warnings.push(...page.warnings);
     if (page.items.some((item) => item.freshness !== 'current')) {
       result.warnings.push('Some text matches changed after indexing; their indexed snippets were omitted. Run codegraph sync.');
     }
@@ -675,6 +684,10 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     const unknown = files.filter((f) => !cg.getFile(f));
     if (unknown.length > 0) {
       result.warnings.push(`${unknown.length} changed file(s) are not in the index, so their dependents cannot be known: ${unknown.slice(0, 5).join(', ')}`);
+    }
+    result.filenameCandidates = analysis.filenameCandidates;
+    if (analysis.filenameCandidates.length) {
+      result.warnings.push('filenameCandidates are low-confidence name matches, not confirmed dependencies; distance is unknown and they are excluded from items.');
     }
     result.page.total = analysis.tests.length;
     result.items = analysis.tests.slice(offset, offset + limit).map((test) => ({
@@ -709,18 +722,27 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     : null;
   const impactFile = impactPath && cg.getFile(impactPath) ? impactPath : null;
   const file = resolveFileInput(root, request) ?? impactFile ?? undefined;
+  const lookup = request.mode === 'symbols' || impactFile !== null ? null : lookupSymbolNodes(cg, result.query);
   const nodes = (request.mode === 'symbols' || impactFile !== null
     ? cg.getNodesInFile(file!)
-    : lookupSymbolNodes(cg, result.query).nodes.filter(n => file === undefined || n.filePath === file))
+    : lookup!.nodes.filter(n => file === undefined || n.filePath === file))
     .filter((node) => (impactFile !== null && node.kind === 'file') || isQueryEligibleNode(root, node)).sort(compareNodes);
   result.ambiguous = request.mode !== 'symbols' && impactFile === null && nodes.length > 1;
-  if (!nodes.length && request.mode !== 'impact') result.status = 'not_found';
+  if (!nodes.length) {
+    if (request.mode !== 'impact') result.status = 'not_found';
+    if (request.mode !== 'symbols' && !impactFile) {
+      const suggestions = (lookup?.suggestions ?? [])
+        .filter((node) => (file === undefined || node.filePath === file) && isQueryEligibleNode(root, node))
+        .sort(compareNodes).slice(0, 3);
+      if (suggestions.length) result.warnings.push(`No exact symbol matched. Did you mean: ${suggestions.map((node) => `${node.qualifiedName} (${node.filePath}:${node.startLine})`).join(', ')}? Suggestions are not resolved targets.`);
+    }
+  }
 
   if (request.mode === 'impact') {
     const depth = request.depth ?? DEFAULT_IMPACT_DEPTH;
     const analysis = nodes.length === 0 ? { entries: new Map(), unattributed: 0 } : analyzeImpact(cg, nodes, depth);
     const ordered = [...analysis.entries.values()]
-      .sort((a, b) => compareNodes(a.node, b.node) || a.distance - b.distance || a.rootId.localeCompare(b.rootId));
+      .sort((a, b) => a.distance - b.distance || compareNodes(a.node, b.node) || a.rootId.localeCompare(b.rootId));
     result.page.total = ordered.length;
     result.items = ordered.slice(offset, offset + limit).map((entry) => ({
       ...symbol(entry.node), distance: entry.distance, via: entry.via, rootId: entry.rootId,

@@ -80,6 +80,15 @@ export function analyzeImpact(cg: CodeGraph, roots: Node[], depth: number): Impa
     const subgraph = cg.getImpactRadius(root.id, depth > 0 ? depth : DEFAULT_IMPACT_DEPTH);
     for (const edge of subgraph.edges) edges.set(`${edge.source}->${edge.target}:${edge.kind}`, edge);
     const distances = reverseDistances(subgraph.edges, root.id);
+    const via = new Map<string, Set<Edge['kind']>>();
+    for (const edge of subgraph.edges) {
+      const own = distances.get(edge.source);
+      const target = distances.get(edge.target);
+      if (own === undefined || target === undefined || target > own) continue;
+      const kinds = via.get(edge.source) ?? new Set<Edge['kind']>();
+      kinds.add(edge.kind);
+      via.set(edge.source, kinds);
+    }
     for (const [id, node] of subgraph.nodes) {
       const distance = id === root.id ? 0 : distances.get(id);
       if (distance === undefined) {
@@ -88,7 +97,7 @@ export function analyzeImpact(cg: CodeGraph, roots: Node[], depth: number): Impa
         unattributed += 1;
         continue;
       }
-      record(node, distance, viaKinds(subgraph.edges, id, distances, distance), root.id);
+      record(node, distance, [...(via.get(id) ?? [])].sort(), root.id);
     }
   }
 
@@ -114,31 +123,23 @@ function reverseDistances(edges: Edge[], rootId: string): Map<string, number> {
 
   const distances = new Map<string, number>([[rootId, 0]]);
   // 0-1 BFS: weight 0 goes to the front of the deque, weight 1 to the back, so the first finalization is the shortest.
-  const deque: string[] = [rootId];
-  while (deque.length > 0) {
-    const current = deque.shift()!;
+  const deque = new Map<number, string>([[0, rootId]]);
+  let head = 0;
+  let tail = 1;
+  while (head < tail) {
+    const current = deque.get(head)!;
+    deque.delete(head++);
     const base = distances.get(current)!;
     for (const next of outgoing.get(current) ?? []) {
       const candidate = base + next.weight;
       const known = distances.get(next.to);
       if (known !== undefined && known <= candidate) continue;
       distances.set(next.to, candidate);
-      if (next.weight === 0) deque.unshift(next.to);
-      else deque.push(next.to);
+      if (next.weight === 0) deque.set(--head, next.to);
+      else deque.set(tail++, next.to);
     }
   }
   return distances;
-}
-
-/** The edge kinds by which this symbol points at nodes no farther than itself. */
-function viaKinds(edges: Edge[], id: string, distances: Map<string, number>, own: number): Edge['kind'][] {
-  const kinds = new Set<Edge['kind']>();
-  for (const edge of edges) {
-    if (edge.source !== id) continue;
-    const target = distances.get(edge.target);
-    if (target !== undefined && target <= own) kinds.add(edge.kind);
-  }
-  return [...kinds].sort();
 }
 
 export interface AffectedTest {
@@ -161,6 +162,7 @@ export interface AffectedTestsAnalysis {
   tests: AffectedTest[];
   /** 经过公共模块或较长依赖链命中的候选，默认不混入普通测试集合。 */
   indirectCandidates: AffectedTest[];
+  filenameCandidates: Array<{ filePath: string; reason: 'filename'; confidence: 'low'; distance: null }>;
   totalDiscovered: number;
   /** The total number of dependency files discovered during traversal (including tests), matching the CLI `affected` count. */
   dependentsTraversed: number;
@@ -175,7 +177,7 @@ const TEST_PATH_STOP_WORDS = new Set([
 
 function pathTopicTokens(filePath: string): Set<string> {
   return new Set(
-    filePath
+    path.posix.basename(filePath.replace(/\\/g, '/'))
       .replace(/\.[^.\/]+$/, '')
       .toLowerCase()
       .split(/[\/._-]+/)
@@ -183,7 +185,7 @@ function pathTopicTokens(filePath: string): Set<string> {
   );
 }
 
-/** 文件名主题只参与排序，不会把没有依赖边的测试提升为候选。 */
+/** Filename affinity affects ranking and suggestions, never dependency confidence. */
 function testPriority(filePath: string, changedFiles: readonly string[]): AffectedTest['priority'] {
   const testTokens = pathTopicTokens(filePath);
   return changedFiles.some((changed) => {
@@ -254,7 +256,7 @@ export function findAffectedTests(
     narrowPath: boolean,
   ): void => {
     const confidence = reason === 'changed' ? 'direct' : classify(distance, narrowPath);
-    const testTypes = classifyTestTypes(cg, filePath, confidence);
+    const testTypes: TestType[] = [];
     const priority = reason === 'changed' ? 'focused' : testPriority(filePath, changedFiles);
     const existing = found.get(filePath);
     if (!existing) {
@@ -306,7 +308,7 @@ export function findAffectedTests(
   }
 
   const ordered = [...found.values()]
-    .map((test) => ({ ...test, via: [...test.via].sort().slice(0, 10) }))
+    .map((test) => ({ ...test, testTypes: classifyTestTypes(cg, test.filePath, test.confidence), via: [...test.via].sort().slice(0, 10) }))
     .sort((a, b) =>
       confidenceRank(b.confidence) - confidenceRank(a.confidence)
       || (a.priority === 'focused' ? 0 : 1) - (b.priority === 'focused' ? 0 : 1)
@@ -317,5 +319,9 @@ export function findAffectedTests(
   const tests = options.includeIndirect
     ? ordered
     : ordered.filter((test) => test.confidence !== 'indirect');
-  return { tests, indirectCandidates, totalDiscovered: ordered.length, dependentsTraversed: dependents.size };
+  const filenameCandidates = cg.getFiles()
+    .filter((file) => !found.has(file.path) && isTest(file.path) && testPriority(file.path, changedFiles) === 'focused')
+    .map((file) => ({ filePath: file.path, reason: 'filename' as const, confidence: 'low' as const, distance: null }))
+    .sort((a, b) => a.filePath.localeCompare(b.filePath)).slice(0, 20);
+  return { tests, indirectCandidates, filenameCandidates, totalDiscovered: ordered.length, dependentsTraversed: dependents.size };
 }

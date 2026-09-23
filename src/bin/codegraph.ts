@@ -45,8 +45,7 @@ import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens, capPromptHookInjection } from '../directory';
-import { extractProseCandidates } from '../search/identifier-segments';
+import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, extractCodeTokens, capPromptHookInjection } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
@@ -1690,7 +1689,7 @@ program
   .option('--symbol-type <kind...>', 'Include these symbol kinds in source excerpts')
   .option('--exclude-type <kind...>', 'Fold these symbol kinds out of source excerpts')
   .option('--mode <mode>', 'explore, source, definitions, references, symbols, callers, callees, diagnostics, impact, tests, status, or text', 'explore')
-  .option('--backend <backend>', 'Structured query backend: graph (index, default), lsp (language server), auto (pick one), or both (merge)', 'graph')
+  .option('--backend <backend>', 'Structured query backend: graph (default), lsp, auto, or both; diagnostics defaults to auto')
   .option('--file <file>', 'Exact project-relative file for structured queries')
   .option('--line <number>', 'backend=lsp definitions/references: 1-based line for a position query')
   .option('--column <number>', 'backend=lsp definitions/references: 0-based UTF-16 column (default 0)')
@@ -1704,7 +1703,8 @@ program
   .option('--changes', 'Attach Git changed symbols, semantic edge deltas, affected entries, and related tests')
   .option('--base <ref>', 'Git commit/ref used as the change-analysis baseline (default: HEAD)')
   .option('--deep-changes', 'Build an isolated temporary baseline index for resolved semantic edge comparison')
-  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; directory?: string; language?: string[]; framework?: string[]; symbolType?: string[]; excludeType?: string[]; mode?: string; backend?: string; file?: string; line?: string; column?: string; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean }) => {
+  .option('--json', 'Output structured exploration evidence as JSON')
+  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; directory?: string; language?: string[]; framework?: string[]; symbolType?: string[]; excludeType?: string[]; mode?: string; backend?: string; file?: string; line?: string; column?: string; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean; json?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
 
     try {
@@ -1760,7 +1760,7 @@ program
       const handler = new ToolHandler(cg);
       const result = await handler.execute('codegraph_explore', args);
 
-      console.log(result.content[0]?.text ?? '');
+      console.log(options.json ? JSON.stringify(result.structuredContent ?? result) : result.content[0]?.text ?? '');
       cg.destroy();
       if (result.isError) process.exit(1);
     } catch (err) {
@@ -1961,7 +1961,7 @@ program
 
       let input: { prompt?: string; cwd?: string } = {};
       try { input = JSON.parse(raw); } catch { return; }
-      const prompt = String(input.prompt || '');
+      const prompt = typeof input.prompt === 'string' ? input.prompt : '';
 
       // Gate telemetry: how often each tier fires vs. no-ops — counter names
       // only, NEVER prompt content (see TELEMETRY.md). This is the data that
@@ -1970,23 +1970,8 @@ program
         try { getTelemetry().recordUsage('cli_command', `prompt-hook-gate-${outcome}`, true); } catch { /* never break the hook */ }
       };
 
-      // Gate, tiered by confidence (#994, #1126):
-      //   HIGH   — a structural keyword (any covered language), or a code-shaped
-      //            token verified in the index → full explore injection.
-      //   MEDIUM — no keyword/token, but prose words match indexed symbol-name
-      //            SEGMENTS ("state machine" → OrderStateMachine, in any
-      //            language): inject a short list of the matching symbols and
-      //            let the AGENT write the explore query — the graph-derived
-      //            tier, no vocabulary involved.
-      //   silent — nothing verified. Every other prompt ("fix this typo")
-      //            stays a zero-cost no-op.
-      // Keywords fire on their own; a token or prose word is only a CANDIDATE
-      // verified against the graph below, so a tech brand ("JavaScript") that
-      // merely looks like code doesn't inject spurious context.
-      const keyworded = hasStructuralKeyword(prompt);
-      const codeTokens = keyworded ? [] : extractCodeTokens(prompt);
-      const proseWords = keyworded ? [] : extractProseCandidates(prompt);
-      if (!keyworded && codeTokens.length === 0 && proseWords.length === 0) { gate('noop-shape'); return; }
+      const codeTokens = extractCodeTokens(prompt);
+      if (codeTokens.length === 0) { gate('noop-shape'); return; }
 
       // Decide what to inject, shaped by WHERE the index(es) are: the nearest
       // indexed ancestor of cwd, or — when cwd is an un-indexed workspace root
@@ -2012,17 +1997,13 @@ program
             ? `\n${nudge(plan.nudgeProjects, 'Other indexed projects in this workspace — pass projectPath to query them:')}`
             : '';
 
-          // Tier decision against THIS index (issue #994 follow-up: candidates
-          // must be real here — a brand name or prose about another domain
-          // must not inject). Keyword-bearing prompts skip verification — the
-          // keyword is signal enough.
-          const tokenVerified = !keyworded && codeTokens.some((t) => cg.getNodesByName(t).length > 0);
-          if (keyworded || tokenVerified) {
+          const tokenVerified = codeTokens.some((token) => cg.getNodesByName(token).length > 0 || cg.getFile(token) !== null);
+          if (tokenVerified) {
             const { ToolHandler } = await import('../mcp/tools');
             const handler = new ToolHandler(cg);
             const result = await handler.execute('codegraph_explore', { query: prompt });
             const text = result.content[0]?.text ?? '';
-            if (!result.isError && text.trim()) {
+            if (!result.isError && text.trim() && !text.includes('No relevant code found')) {
               // Cap the injection so a large-repo explore can't flood the prompt.
               // Claude Code shows hook stdout inline only up to 10,000 characters;
               // above that it persists the output to a file and the model sees a
@@ -2036,46 +2017,18 @@ program
               process.stdout.write(
                 `<codegraph_context note="Structural context from CodeGraph for this prompt — treat returned source as already read; ${more}.">\n${body}${others}\n</codegraph_context>\n`,
               );
-              gate(keyworded ? 'high-keyword' : 'high-token');
+              gate('high-token');
             } else {
               // A high-* outcome must mean context was actually delivered —
               // the funnel's noop-vs-high split is how gate recall is
               // measured (#1143). An explore error or empty result is a
               // delivery failure, not a gate success.
-              gate(keyworded ? 'noop-explore-keyword' : 'noop-explore-token');
+              gate('noop-explore-token');
             }
             return;
           }
 
-          // MEDIUM: prose words → symbol-name segments, co-occurrence/rarity
-          // scored, each hit re-verified to exist (see getSegmentMatches). The
-          // payload names the symbols but does NOT run explore — the agent owns
-          // the query where the hook's confidence is only "these are related".
-          //
-          // A database indexed before the vocab table existed starts with it
-          // EMPTY, and only sync() backfills it — which this hook never runs
-          // (#1142). Heal it here: on a populated vocab this is one SELECT;
-          // the actual backfill is a one-time batched pass whose cost the MCP
-          // server's own catch-up sync usually pays first (it runs at every
-          // session start). A distinct noop outcome keeps a dormant vocab
-          // from polluting the noop-unverified recall signal.
-          const vocabReady = await cg.healSegmentVocabIfEmpty().catch(() => false);
-          if (!vocabReady) { gate('noop-vocab-empty'); return; }
-          const related = cg.getSegmentMatches(proseWords);
-          if (related.length === 0) { gate('noop-unverified'); return; }
-          const lines = related
-            .map((m) => `  - ${m.name} (${m.kind} — ${m.filePath}:${m.startLine})`)
-            .join('\n');
-          const exampleQuery = related.slice(0, 3).map((m) => m.name).join(' ');
-          const projectHint = plan.viaSubScan ? ` with projectPath: "${plan.exploreRoot}"` : '';
-          process.stdout.write(
-            `<codegraph_context note="CodeGraph found indexed symbols matching this prompt — query the graph before searching files.">\n` +
-            `This project's CodeGraph index contains symbols matching this request:\n${lines}\n` +
-            `Call codegraph_explore ONCE${projectHint} with the relevant names in one query (e.g. "${exampleQuery}") ` +
-            `to get their source, call paths, and blast radius — cheaper and more complete than Read/Grep.\n${others}` +
-            `</codegraph_context>\n`,
-          );
-          gate('medium-segment');
+          gate('noop-unverified');
         } finally {
           cg.destroy();
         }

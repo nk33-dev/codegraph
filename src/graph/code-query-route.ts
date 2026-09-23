@@ -29,6 +29,8 @@ import { byteColumnToUtf16Column } from '../lsp/code-query-lsp';
 import { type LspFamily } from '../lsp/servers';
 import {
   assertBackendFields,
+  sourcePathPriority,
+  buildIndexBlock,
   emptyCodeQueryResult,
   isQueryEligibleNode,
   normalizeToProjectRelative,
@@ -202,7 +204,7 @@ export function decideRoute(
 /** The language the query points at: a file qualifier takes precedence, otherwise the first node found in the index by name. */
 export function languageForQuery(cg: CodeGraph, request: CodeQueryRequest): Language | null {
   const root = cg.getProjectRoot();
-  const hint = request.mode === 'symbols' ? request.file ?? request.query : request.file;
+  const hint = (request.mode === 'symbols' || request.mode === 'diagnostics') ? request.file ?? request.query : request.file;
   if (hint) {
     const rel = normalizeToProjectRelative(root, hint);
     if (rel) {
@@ -345,7 +347,8 @@ function compareItems(a: MergedCodeQueryItem, b: MergedCodeQueryItem): number {
   };
   const left = position(a);
   const right = position(b);
-  return left.filePath.localeCompare(right.filePath) || left.line - right.line || left.column - right.column
+  return (('distance' in a && 'distance' in b && typeof a.distance === 'number' && typeof b.distance === 'number') ? a.distance - b.distance : 0)
+    || sourcePathPriority(left.filePath) - sourcePathPriority(right.filePath) || left.filePath.localeCompare(right.filePath) || left.line - right.line || left.column - right.column
     || left.name.localeCompare(right.name) || a.origin.localeCompare(b.origin);
 }
 
@@ -454,7 +457,16 @@ export async function queryCodeRouted(
   }
 
   if (decision.resolved === 'lsp') {
-    const lsp = await deps.queryLsp(projectRequest(request, 'lsp'));
+    let lsp: CodeQueryResult;
+    try {
+      lsp = await deps.queryLsp(projectRequest(request, 'lsp'));
+    } catch (error) {
+      lsp = emptyCodeQueryResult(request.mode, request.query.trim(), 'lsp');
+      lsp.projectRoot = cg.getProjectRoot();
+      lsp.index = buildIndexBlock(cg, { checkFiles: false, includeStats: false });
+      lsp.status = 'error';
+      lsp.warnings.push(error instanceof Error ? error.message : String(error));
+    }
     // Only the language server can answer diagnostics: there is no graph version to fall back to, so return unavailable honestly.
     if (request.mode === 'diagnostics') {
       lsp.routing = { ...lsp.routing, requested, resolved: 'lsp', reason: decision.reason, fallback: null, families, sources: { graph: 0, lsp: lsp.page.total } };

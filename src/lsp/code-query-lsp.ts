@@ -839,6 +839,9 @@ export async function queryCodeLsp(
   }
 
   result.lsp = buildLspBlock(manager, family, false);
+  if (result.lsp.server?.indexing) {
+    result.warnings.push('The language server is still indexing; results may be incomplete. Retry this query after indexing finishes.');
+  }
   result.page.nextOffset = offset + result.items.length < result.page.total ? offset + result.items.length : null;
   result.routing.families = family ? [family] : [];
   result.routing.sources.lsp = result.page.total;
