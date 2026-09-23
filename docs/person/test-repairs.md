@@ -334,3 +334,9 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - 实现：`codegraph_explore` 区分流程意图与代码形状，普通 PascalCase/全大写主题词不再直接生成缺失符号；唯一 Vue 模板处理器及其唯一下游调用可从自然语言结果提升为主路径。未连通流程优先输出英文状态并隐藏自动 change context、blast radius 和关系扇出。结构化证据即使没有可提升符号也返回 `unconnected`，不再用 `null` 混淆索引缺口与代码不存在。
 - Vue：模板 `@event`/`v-on` 绑定记录真实行号与 `registeredAt`，并验证 `@change` 可连接 `script setup` 箭头函数及其下游 API 调用。
 - 验证：`npm run typecheck` 通过；自然语言意图、命名符号、文件全文、路径保护、流程证据、动态边界、Vue 模板和 blast radius 相关专项最终为 9 个测试项目、102 项通过。`npm run check:quick` 的类型检查通过，批量受影响测试为 63 个文件通过、9 个失败；其中 53 项失败或超时源于当前工作区没有 `dist/bin/codegraph.js`，另 1 项 `process` 误作意图词的回归已修复并由动态边界专项复验通过。按个人版约束未为产物型用例运行本地完整构建或全量测试。
+
+## 2026-09-23 MCP 首答与诊断体验
+
+- 实现：流程问句可把唯一 `codegraph_*` 工具名映射到真实 handler 调度链；明确流程首答隐藏重复影响面并限制未连通文件数。`source` 分页不再推荐默认表面未暴露的 `codegraph_node`。结构化 `tests` 支持只传 `files`，候选在 Graph 置信度内按文件名主题区分 focused/related。`status` 同时返回当前服务版本、构建提交和 build ID。
+- 定向验证：`explore-intent-topic-query`、`node-file-view`、`mcp-fixed-surface`、`mcp-require-project-path` 共 38 项通过；运行状态、`tests/files` 与测试排序 3 项通过；`npm run typecheck` 通过。
+- `npm run check:quick` 因共享核心改动选择 188 个测试文件：156 个文件通过、2 个条件跳过，2952 项通过、35 项跳过；30 个文件共 131 项失败。失败主要是本地未构建导致缺少 `dist/bin/codegraph.js` 或 viewer，另有 `ui-server-api` 的既有大索引 fan-in 基线在当前索引仅 49 个调用者时失败。按个人发布约束未在本地执行 `npm run build`，因此不把这次批量运行记为通过。
