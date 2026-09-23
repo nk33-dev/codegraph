@@ -25,6 +25,8 @@ codegraph explore status --mode status --backend auto
 
 Library users go through the same entry point: `CodeGraph.queryCodeWithBackend(request)`; `queryCode(request)` is still the synchronous pure graph query.
 
+诊断在省略后端时默认 `auto`，`query` 可以直接提供文件路径。LSP 报告 `indexing: true` 时，即使结果非空也附加英文不完整警告；`status: ok` 只表示请求成功，不承诺覆盖完整。
+
 ## Automatic routing rules
 
 `auto` **selects only one source** (merging is `both`'s business: one answer can have only one coordinate system). The decision narrows layer by layer through "mode → language → server availability", and the reason for each step is written into `routing.reason`:

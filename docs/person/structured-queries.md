@@ -8,7 +8,7 @@ Keep using `codegraph_explore`, selecting structured queries through `mode`:
 
 | mode | query | Result |
 | --- | --- | --- |
-| `explore` (default) | Question or symbol name | The original source and call-chain text; small responses also appear as `structuredContent.rendered.text` |
+| `explore` (default) | Question or symbol name | Source and call-chain text; MCP returns one text representation, CLI `--json` and the library retain structured evidence |
 | `definitions` | Symbol name or qualified name | Positions of matching definitions; definitions sharing a name are not merged on our own |
 | `references` | Symbol name or qualified name | Grouped graph relationships with the first `site`, optional additional `sites`, provenance and confidence |
 | `callers` / `callees` | Symbol name or qualified name | Paginated call and construction relationships with the first `site` and optional additional `sites` |
@@ -21,11 +21,13 @@ Keep using `codegraph_explore`, selecting structured queries through `mode`:
 
 默认 `explore` 对“项目启动流程”类问题会优先选择根目录、`src/` 和 `bin`/`cmd` 中的常见入口，沿入口的调用/导入边向外展开；未识别入口时仍使用普通检索，不推断不存在的运行时边。蛇形模块名、带扩展名的文件名、`mod 模块名` 和完整路径会归一到已索引的同一文件；同名文件最多固定三个，避免把热词误认为唯一模块。空结果会给出文件、符号和索引状态的后续查询建议，可能的相近符号仅作为建议，不当作精确命中。
 
-JSON 结构化模式接受 `offset`（从 0 开始，默认 0）和 `limit`（1–200，默认 50）；`file` 是精确项目相对路径，不能模糊匹配。`source` 复用现有当前磁盘文件读取及安全门，`offset` 从 1 开始，且配置文件仍按键摘要保护；分页提示只推荐继续调用默认 `codegraph_explore`，不会指向未暴露的隐藏工具。`text` 只支持 Graph 后端，按文件稳定分页，配置行只给行号、不返回值；每个命中还标记 `freshness`，已变化的文件省略旧片段。敏感 `.env`、私钥和大于 256 KiB 的文件不进入文本索引；旧索引首次运行 `codegraph sync` 后才可用。`projectPath` 复用既有跨项目解析及路径校验。
+JSON 结构化模式接受 `offset`（从 0 开始，默认 0）和 `limit`（1–200，默认 50）；`file` 是精确项目相对路径，不能模糊匹配。`source` 复用现有当前磁盘文件读取及安全门，`offset` 从 1 开始，且配置文件仍按键摘要保护；分页提示只推荐继续调用默认 `codegraph_explore`，不会指向未暴露的隐藏工具。`text` 只支持 Graph 后端，按文件稳定分页，配置行只给行号、不返回值；每个命中还标记 `freshness`，已变化的文件省略旧片段。敏感 `.env`、私钥和二进制不进入文本索引。超过 256 KiB 的文本文件记录在 `file_text_skipped`，查询时按路径稳定补扫（每文件最多 2 MiB、每次最多 8 MiB 和 32 个文件），补扫结果标记 `source: disk`、`indexedAt: null`；超预算或不可读文件会报告未搜索数量，不能据此认定代码不存在。旧索引未记录覆盖范围时提示运行 `sync`。FTS5 使用 SQLite trigram tokenizer 支持标识符内部子串，不支持 FTS5 或少于三个 Unicode 字符时使用字面扫描；旧索引首次运行 `codegraph sync` 后才可用。`projectPath` 复用既有跨项目解析及路径校验。
 
-MCP 的 `explore` 文本仍是完整的默认回答；结构化内容另附 `rendered`：不超过 12,000 字符时 `text` 可直接读取同一回答，超出时 `text: null`、`truncated: true` 与按文件/行范围续读的 `hint` 明确指出缺口。结构化 `references`、`callers`、`callees` 按源、目标、边类型和来源合并重复调用点，`site` 保留首个位置，重复关系的 `sites` 保留所有去重位置；`page.total` 统计关系而非原始边。`impact` 可直接用已索引的文件路径作为 `query`，并保留每个受影响项的 `rootId`。`diagnostics` 在 MCP 未指定 `backend` 时使用 `auto`；schema 不声明固定的后端默认值，以免客户端替用户注入 `graph`；显式选择后端仍按原契约校验。
+MCP 默认 `explore` 在 session 传输边界只返回完整文本，避免客户端只展示结构化摘要而丢失源码。库的 `ToolHandler.execute()` 和 CLI `codegraph explore <query> --json` 保留结构化证据；其中 `rendered.text` 仍是最多 12,000 字符的便捷镜像，完整回答由返回值的 `content` 提供。显式 JSON 查询模式仍同时返回相同的 `structuredContent` 与 JSON 文本。
 
-`tests` 模式传入 `files` 时可以省略 `query`；MCP schema 用 `query`/`files` 条件必填表达该契约，运行时仍拒绝其他模式缺少 query。测试候选先按 Graph 置信度，再按 `priority: focused | related`、距离和路径排序：`focused` 只表示测试文件名与改动路径有主题交集，不会让没有依赖边的文件进入候选。共享核心文件仍可能有很多真实直接依赖，结果会明确提示剩余 `related` 候选可能较宽。
+结构化 `references`、`callers`、`callees` 按源、目标、边类型和来源合并重复调用点，`site` 保留首个位置，重复关系的 `sites` 保留所有去重位置；`page.total` 统计关系而非原始边。`impact` 可直接用已索引的文件路径作为 `query`，保留 `rootId`，并先按距离再按生产代码、测试、fixture 和路径排序。定义与编辑歧义列表也把生产代码放在前面，保留全部候选；名称未精确匹配时提供最多三个建议，不自动改选目标。`diagnostics` 在 MCP、CLI 和 `queryCodeWithBackend` 未指定 `backend` 时使用 `auto`，未传 `file` 时从 `query` 解析路径；schema 不声明固定的后端默认值，以免客户端替用户注入 `graph`；显式选择后端仍按原契约校验。
+
+`tests` 模式传入 `files` 时可以省略 `query`；MCP schema 用 `query`/`files` 条件必填表达该契约，运行时仍拒绝其他模式缺少 query。测试候选先按 Graph 置信度，再按 `priority: focused | related`、距离和路径排序：`focused` 只表示测试文件名与改动路径有主题交集，不改变依赖证据。没有依赖边但文件名主题相关的测试另列于 `filenameCandidates`，最多 20 个，标记 `reason: filename`、`confidence: low`、`distance: null`，不混入可执行的 `items`。共享核心文件仍可能有很多真实直接依赖，结果会明确提示剩余 `related` 候选可能较宽。
 
 ```json
 {"mode":"definitions","query":"CodeGraph.queryCode","file":"src/index.ts","limit":20}
@@ -112,8 +114,4 @@ Incremental indexing remains the responsibility of the existing sync/orchestrato
 `__tests__/query-paths.test.ts` 覆盖模块别名；`__tests__/explore-intent-topic-query.test.ts` 覆盖启动链和空结果建议；`__tests__/flow-evidence.test.ts` 覆盖宽泛问题不产生普通词的伪断链；`__tests__/code-query.test.ts` 覆盖跨提交前后的索引 commit 状态。
 `__tests__/file-text-search.test.ts` 覆盖全文命中、分页、配置值隐藏、漂移、同步、旧数据库升级与重复打开；`__tests__/node-file-view.test.ts` 覆盖 `source` 行范围；`__tests__/server-instructions.test.ts` 守护固定表面预算。
 
-本轮 MCP 体验优化由结构化关系合并、文件级影响、错误上下文、运行构建身份、`tests/files` 条件参数与候选优先级，以及文件内编辑歧义提示共同固定。2026-09-23 本地 `npm run typecheck` 通过；流程意图、源码分页、固定表面、项目路径、运行状态与新增测试排序的定向回归共 41 项通过。`npm run check:quick` 自动选择共享核心的 188 个测试文件，源码路径共 2952 项通过；131 项失败主要来自本地未构建导致缺少 `dist/bin/codegraph.js`/viewer，另有现存大索引基线在当前索引规模下失败，因此不能记作全量通过。按个人版约束未在本地执行构建、完整测试或发布流程。
-
-`__tests__/explore-blast-radius.test.ts` 固定依赖分类与计数口径（测试调用方只计为测试文件、生产调用方数量与所列文件一致、纯导入文件仍单独归类），`__tests__/explore-test-summary.test.ts` 固定测试摘要契约（测试声明与 exercises 标注、测试体省略与抽样、`includeTestSource: true` 的全文路径、未请求测试时不受影响）。`__tests__/explore-intent-query-focus.test.ts` 继续覆盖意图词收束本身。
-
-The shared freshness function also runs the original mcp-stale-slice and mcp-staleness-banner regressions. Complete build and full test results are recorded in the task handover/commit description; baseline failures of other tests must not be recorded as everything passing.
+最新本地验证与发布边界见[开发验证记录](test-repairs.md)。

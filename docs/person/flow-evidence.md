@@ -25,7 +25,7 @@
 - 精确查询 interface、trait、protocol、抽象类或其抽象方法时，自动沿现有 `extends`/`implements` 图展开实现者；方法查询返回具体实现方法，而不只返回容器类型。
 - 实现者总数复用 `countImplementers`，动态断点复用 `findDynamicBoundaries`，边来源复用现有 provenance，不另做全图扫描。
 - 默认预算为 16 条证据、6 个断点、每个展开 6 个候选、2400 字符与 25ms。超预算时先裁剪解释和候选，不裁剪源码主干。
-- `codegraph_explore` 文本只显示紧凑摘要；完整稳定字段放在 `structuredContent.evidence`。工具名和输入保持兼容。
+- `codegraph_explore` 文本只显示紧凑摘要；完整稳定字段保留在库返回值的 `structuredContent.evidence` 与 CLI `--json` 中；MCP 默认 Explore 只传文本。工具名和输入保持兼容。
 
 ## 跨轮状态
 
