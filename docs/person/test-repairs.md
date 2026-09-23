@@ -327,3 +327,4 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - CI `35812033463` 的 Ubuntu/macOS 全量测试通过；Windows 四并发中 `mcp-subproject-adoption` 的清理等待 `close` 超过 5 秒。`close` 还依赖标准流关闭，晚于进程退出；删除临时数据库只需等待进程 `exit`。
 - 测试清理改为等待 `exit` 并增加进程退出但标准流未关闭的回归；本提交的三平台 CI 结果待验证。
 - CI `35812826392` 的 Ubuntu/macOS 全量测试通过；Windows 的 `mcp-initialize` 在进程退出后删除临时目录时遇到 `EBUSY`。一次有界删除重试未消除该故障，CI `35813470930` 再次失败。根因是测试启动器缺少 WASM 重启标志：它杀死了重启前的父进程，却留下继承工作目录的子进程。握手测试现直接运行受测进程，避免重启 shim；目录删除恢复为普通删除。新提交仍须重新经过三平台门禁。
+- 最终提交 `c7ea3d3` 的三平台 CI `35814315682` 全部通过；`Personal Release` `35814994605` 于 2026-09-23 成功，标签 `v1.6.0-personal.10` 指向同一提交，GitHub Release 含 `.tgz` 与 `SHA256SUMS`。发布工作流完成构建、全量测试、隔离安装、打包和校验和生成；开发机未重新打包或复算归档校验和。
