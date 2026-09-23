@@ -59,7 +59,7 @@ const VUE_KEBAB_RE = /<([a-z][a-z0-9]*(?:-[a-z0-9]+)+)[\s/>]/g;
 // lowercase, so an uppercase-initial tag is a component usage; built-ins
 // (`<NuxtLink>`, `<Transition>`) simply resolve to nothing and emit no edge.
 const VUE_PASCAL_RE = /<([A-Z][A-Za-z0-9]*)[\s/>]/g;
-const VUE_HANDLER_RE = /(?:@|v-on:)([a-zA-Z][\w-]*)(?:\.[\w]+)*\s*=\s*"([^"]+)"/g;
+const VUE_HANDLER_RE = /(?:@|v-on:)([a-zA-Z][\w-]*)(?:\.[\w]+)*\s*=\s*(["'])(.*?)\2/g;
 // Vue 设计系统常用动态组件出口。字面量 `:is="Dialog"` 仍是有用证据，
 // 但它属于推断关系，不是编译器确认的渲染边。
 const VUE_DYNAMIC_COMPONENT_RE = /<component\b[^>]*:?is\s*=\s*["']([A-Za-z_$][\w$]*)["']/g;
@@ -1345,8 +1345,12 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     if ((++scannedFiles & 15) === 0) await onYield();
     if (!file.endsWith('.vue')) continue;
     const content = ctx.readFile(file);
-    const tpl = content && content.match(/<template[^>]*>([\s\S]*)<\/template>/i)?.[1];
+    if (!content) continue;
+    const templateMatch = /<template[^>]*>([\s\S]*)<\/template>/i.exec(content);
+    const tpl = templateMatch?.[1];
     if (!tpl) continue;
+    const templateOffset = templateMatch.index + templateMatch[0].indexOf(tpl);
+    const lineAt = makeLineAt(content, 1);
     const comp = ctx.getNodesInFile(file).find((n) => n.kind === 'component');
     if (!comp) continue;
 
@@ -1366,12 +1370,12 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     }
 
     let added = 0;
-    const addEdge = (target: Node | undefined, meta: Record<string, unknown>) => {
+    const addEdge = (target: Node | undefined, meta: Record<string, unknown>, line = comp.startLine) => {
       if (added >= MAX_JSX_CHILDREN || !target || target.id === comp.id) return;
       const k = `${comp.id}>${target.id}>${meta.synthesizedBy}`;
       if (seen.has(k)) return;
       seen.add(k);
-      edges.push({ source: comp.id, target: target.id, kind: 'calls', line: comp.startLine, provenance: 'heuristic', metadata: { ...meta, inferred: true } });
+      edges.push({ source: comp.id, target: target.id, kind: 'calls', line, provenance: 'heuristic', metadata: { ...meta, inferred: true } });
       added++;
     };
     // Prefer a target in THIS SFC (handlers live in the same file's script) —
@@ -1403,12 +1407,16 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
     VUE_HANDLER_RE.lastIndex = 0;
     while ((m = VUE_HANDLER_RE.exec(tpl))) {
       const event = m[1]!;
-      const expr = m[2]!.trim();
+      const expr = m[3]!.trim();
+      const line = lineAt(templateOffset + m.index);
       if (expr.includes('=>') || expr.startsWith('$')) continue; // inline arrow / $emit
       const name = expr.match(/^([A-Za-z_]\w*)/)?.[1];
       if (!name) continue;
       const direct = resolve(name, HANDLER_KINDS);
-      if (direct) { addEdge(direct, { synthesizedBy: 'vue-handler', event }); continue; }
+      if (direct) {
+        addEdge(direct, { synthesizedBy: 'vue-handler', event, registeredAt: `${file}:${line}` }, line);
+        continue;
+      }
       // Composable-destructure handler → resolve to the composable's returned fn.
       const d = destructured.get(name);
       if (!d) continue;
@@ -1420,7 +1428,11 @@ async function vueTemplateEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
       const keyFn = composable
         ? ctx.getNodesByName(d.key).find((n) => RETURN_KINDS.has(n.kind) && n.filePath === composable.filePath)
         : undefined;
-      if (keyFn) addEdge(keyFn, { synthesizedBy: 'vue-handler', event, via: d.composable });
+      if (keyFn) {
+        addEdge(keyFn, {
+          synthesizedBy: 'vue-handler', event, via: d.composable, registeredAt: `${file}:${line}`,
+        }, line);
+      }
     }
   }
   return edges;

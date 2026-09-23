@@ -32,4 +32,4 @@
 
 ## Vue 与动态关系
 
-Vue SFC 的 `<template>`、kebab-case/PascalCase 子组件、`@click`/`v-on` 处理器、`<router-link>`/`<NuxtLink>`、路径别名和 Pinia/Vuex 已纳入共享解析。`<component :is="...">`、变量路由和多个路由候选等无法静态证明的关系会带 `inferred: true` 或候选元数据；不会伪装成确定调用。
+Vue SFC 的 `<template>`、kebab-case/PascalCase 子组件、`@click`/`@change`/`v-on` 处理器、`<router-link>`/`<NuxtLink>`、路径别名和 Pinia/Vuex 已纳入共享解析。模板事件支持单双引号绑定，可连接到 `script setup` 的函数声明或箭头函数，再沿静态调用边进入 API；合成边的 `registeredAt` 与 `line` 指向真实模板绑定位置。`<component :is="...">`、变量路由和多个路由候选等无法静态证明的关系会带 `inferred: true` 或候选元数据；不会伪装成确定调用。

@@ -328,3 +328,9 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - 测试清理改为等待 `exit` 并增加进程退出但标准流未关闭的回归；本提交的三平台 CI 结果待验证。
 - CI `35812826392` 的 Ubuntu/macOS 全量测试通过；Windows 的 `mcp-initialize` 在进程退出后删除临时目录时遇到 `EBUSY`。一次有界删除重试未消除该故障，CI `35813470930` 再次失败。根因是测试启动器缺少 WASM 重启标志：它杀死了重启前的父进程，却留下继承工作目录的子进程。握手测试现直接运行受测进程，避免重启 shim；目录删除恢复为普通删除。新提交仍须重新经过三平台门禁。
 - 最终提交 `c7ea3d3` 的三平台 CI `35814315682` 全部通过；`Personal Release` `35814994605` 于 2026-09-23 成功，标签 `v1.6.0-personal.10` 指向同一提交，GitHub Release 含 `.tgz` 与 `SHA256SUMS`。发布工作流完成构建、全量测试、隔离安装、打包和校验和生成；开发机未重新打包或复算归档校验和。
+
+## 2026-09-23 自然语言流程与 Vue 模板调用链
+
+- 实现：`codegraph_explore` 区分流程意图与代码形状，普通 PascalCase/全大写主题词不再直接生成缺失符号；唯一 Vue 模板处理器及其唯一下游调用可从自然语言结果提升为主路径。未连通流程优先输出英文状态并隐藏自动 change context、blast radius 和关系扇出。结构化证据即使没有可提升符号也返回 `unconnected`，不再用 `null` 混淆索引缺口与代码不存在。
+- Vue：模板 `@event`/`v-on` 绑定记录真实行号与 `registeredAt`，并验证 `@change` 可连接 `script setup` 箭头函数及其下游 API 调用。
+- 验证：`npm run typecheck` 通过；自然语言意图、命名符号、文件全文、路径保护、流程证据、动态边界、Vue 模板和 blast radius 相关专项最终为 9 个测试项目、102 项通过。`npm run check:quick` 的类型检查通过，批量受影响测试为 63 个文件通过、9 个失败；其中 53 项失败或超时源于当前工作区没有 `dist/bin/codegraph.js`，另 1 项 `process` 误作意图词的回归已修复并由动态边界专项复验通过。按个人版约束未为产物型用例运行本地完整构建或全量测试。
