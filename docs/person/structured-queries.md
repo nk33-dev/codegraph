@@ -11,14 +11,17 @@ Keep using `codegraph_explore`, selecting structured queries through `mode`:
 | `explore` (default) | Question or symbol name | The original source and call-chain text |
 | `definitions` | Symbol name or qualified name | Positions of matching definitions; definitions sharing a name are not merged on our own |
 | `references` | Symbol name or qualified name | Reference relations in the graph, each item stating source, target, relation type and provenance |
+| `callers` / `callees` | Symbol name or qualified name | Paginated incoming/outgoing call and construction edges, with site, provenance and direct/inferred/unknown confidence |
 | `symbols` | Exact project-relative file path | File symbol overview, including parent symbol IDs |
 | `status` | `status` | Index time, watcher state, pending files and unfinished reference resolution |
+| `text` | Literal text or configuration key | File-level paginated matches in indexed source, comments, scripts, documentation and configuration; first five matching line numbers per file |
+| `source` | File path or basename | Current file lines; `offset` is the 1-based starting line and `limit` is the number of lines (at most 2000) |
 
-`status` 还显示 `indexedCommit`（上次索引/同步时的 HEAD）与 `currentCommit`（查询时的 HEAD）；非 Git 项目或旧索引可为 `null`。二者不同时返回警告，但相同不代表工作区干净，应结合 `checkFiles: true` 的 `changes`、`pendingFiles` 和 `laggingFileCount` 判断未同步文件。`lastUpdatedAt` 是最近文件索引时间，不能当作 Git 提交时间。
+索引状态与工作区差异的权威契约见[索引状态、局部刷新与生成版本](index-refresh-and-versioning.md)。
 
 默认 `explore` 对“项目启动流程”类问题会优先选择根目录、`src/` 和 `bin`/`cmd` 中的常见入口，沿入口的调用/导入边向外展开；未识别入口时仍使用普通检索，不推断不存在的运行时边。蛇形模块名、带扩展名的文件名、`mod 模块名` 和完整路径会归一到已索引的同一文件；同名文件最多固定三个，避免把热词误认为唯一模块。空结果会给出文件、符号和索引状态的后续查询建议，可能的相近符号仅作为建议，不当作精确命中。
 
-Structured modes accept `offset` (0-based, default 0) and `limit` (1–200, default 50); `file` is an exact file qualifier and does not do fuzzy suffix matching. In `symbols`, file can override the path given by query. `projectPath` reuses the existing cross-project resolution and path validation.
+JSON 结构化模式接受 `offset`（从 0 开始，默认 0）和 `limit`（1–200，默认 50）；`file` 是精确项目相对路径，不能模糊匹配。`source` 则复用 `codegraph_node` 的当前磁盘文件读取及安全门，`offset` 从 1 开始，且配置文件仍按键摘要保护。`text` 只支持 Graph 后端，按文件稳定分页，配置行只给行号、不返回值；每个命中还标记 `freshness`，已变化的文件省略旧片段。敏感 `.env`、私钥和大于 256 KiB 的文件不进入文本索引；旧索引首次运行 `codegraph sync` 后才可用。`projectPath` 复用既有跨项目解析及路径校验。
 
 ```json
 {"mode":"definitions","query":"CodeGraph.queryCode","file":"src/index.ts","limit":20}
@@ -31,6 +34,9 @@ codegraph explore CodeGraph.queryCode --mode definitions --file src/index.ts
 codegraph explore queryCode --mode references --limit 20
 codegraph explore src/index.ts --mode symbols
 codegraph explore status --mode status --check-files
+codegraph explore api.timeout --mode text --limit 20
+codegraph explore run --mode callers --offset 0 --limit 20
+codegraph explore src/main.ts --mode source --offset 100 --limit 40
 ```
 
 Development verification must invoke the local `node dist/bin/codegraph.js`; a globally installed old version must not stand in for the current implementation. Library users get the same results through `CodeGraph.queryCode(request)`.
@@ -40,6 +46,8 @@ Development verification must invoke the local `node dist/bin/codegraph.js`; a g
 - `schemaVersion: 1`, `backend: "graph"`, `mode`, `query` and `projectRoot` identify the query source.
 - `status` distinguishes `ok`, `not_found`, `not_indexed` and `error`. A definition not found and a definition with no references are different states; an empty page does not mean the symbol does not exist.
 - `items` returns symbols or references; `page` contains offset, limit, total and nextOffset. `ambiguous` means the target has multiple definitions, and does not disappear just because pagination shows only one item.
+- `callers` / `callees` 只返回调用与构造边；`provenance: heuristic` 标记推断，旧索引没有来源信息时 `confidence: unknown`，不能宣称是静态直接调用。完整跨多跳路径仍由默认 explore 的独立 Flow 段呈现。
+- `text` 的 `page.total` 是命中文件数，不是行数；每个文件最多列五个命中行，并报告 `occurrences`。短词与不支持 FTS5 的运行时退回 SQLite 内容匹配，索引范围以文件大小和排除规则为界。
 - Positions use index rows and columns: lines start at 1 and Tree-sitter byte columns start at 0; these are not LSP UTF-16 coordinates. IDs are identifiers in the current index, and must not be assumed to stay stable after moving a file or changing line numbers; query again by name and path.
 - References are graph relations rather than every textual occurrence; they may be incomplete or inferred. When there are no call-site coordinates, site stays null, and a function definition position is not used to fake a call site.
 - Every symbol states `freshness`: current, changed, missing or unavailable. The check reuses the index's size/mtime fast check and compares content hashes when necessary; it is not one atomic disk snapshot. A missing watcher does not mean the data must be stale.
@@ -97,6 +105,7 @@ Incremental indexing remains the responsibility of the existing sync/orchestrato
 `__tests__/code-query.test.ts` uses real TS, JS and Rust files plus SQLite, covering definition ambiguity, exact file qualification, hierarchy, graph references, cross-project, CLI/MCP consistency, real MCP handshake, watcher state, file modification/rename/deletion, and consistency of incremental and rebuild results after a Git branch switch.
 
 `__tests__/query-paths.test.ts` 覆盖模块别名；`__tests__/explore-intent-topic-query.test.ts` 覆盖启动链和空结果建议；`__tests__/flow-evidence.test.ts` 覆盖宽泛问题不产生普通词的伪断链；`__tests__/code-query.test.ts` 覆盖跨提交前后的索引 commit 状态。
+`__tests__/file-text-search.test.ts` 覆盖全文命中、分页、配置值隐藏、漂移、同步、旧数据库升级与重复打开；`__tests__/node-file-view.test.ts` 覆盖 `source` 行范围；`__tests__/server-instructions.test.ts` 守护固定表面预算。
 
 `__tests__/explore-blast-radius.test.ts` 固定依赖分类与计数口径（测试调用方只计为测试文件、生产调用方数量与所列文件一致、纯导入文件仍单独归类），`__tests__/explore-test-summary.test.ts` 固定测试摘要契约（测试声明与 exercises 标注、测试体省略与抽样、`includeTestSource: true` 的全文路径、未请求测试时不受影响）。`__tests__/explore-intent-query-focus.test.ts` 继续覆盖意图词收束本身。
 

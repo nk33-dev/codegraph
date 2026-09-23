@@ -312,3 +312,7 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 
 - 实现：启动问句从常见入口沿现有图展开；蛇形模块别名固定到文件；空结果给出查询建议；宽泛英文词不产生伪断链；索引状态记录同步时 HEAD 与查询时 HEAD（旧索引为 unknown）。
 - 验证：`npm run typecheck` 通过；定向 `query-paths`、`explore-intent-topic-query`、`flow-evidence`、`code-query` 相关用例共 6 项通过。`npm run check:quick` 的类型检查通过，受影响测试 68 文件中 59 文件通过、9 文件失败；其中依赖 `dist/bin/codegraph.js` 的 CLI 用例因当前工作区未构建而失败，不能记作全通过。未在本地运行完整构建或全量测试。
+## 2026-09-23 结构化调用视图与文件内容索引
+
+- 实现：`explore` 新增 `source` 行范围；Graph 结构化查询新增 `callers`、`callees` 与 `text` 文件级分页。文本索引复用 Git/.gitignore 文件发现规则并持久化到 SQLite；升级旧索引后先标记不可用，运行 `sync` 后再提供完整结果；变更或删除的文件不会回传旧文本。配置行隐藏值，排除 `.env`、私钥、二进制和超大文件。
+- 验证：Windows/Node 24.16.0，`npm run typecheck` 通过；`file-text-search` 4 项、`node-file-view` 行范围 1 项、`code-query` 调用分页 1 项、迁移相关 9 项及 `server-instructions` 5 项定向通过。尚未在本地运行完整构建或全量测试；三平台 CI 和个人发行仍待目标提交验证。

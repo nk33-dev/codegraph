@@ -15,7 +15,7 @@
  *   codegraph refresh <file>     Refresh one file with structural scope planning
  *   codegraph status [path]      Show index status
  *   codegraph query <search>     Search for symbols
- *   codegraph explore <query>    Structured queries: definitions, references, symbols, diagnostics, impact, tests, status
+ *   codegraph explore <query>    Structured queries: definitions, references, symbols, diagnostics, impact, tests, status, text
  *   codegraph edit <symbol>      Structured edits: rename, replace-body, insert-before, insert-after (preview by default)
  *   codegraph files [options]    Show project file structure
  *   codegraph context <task>     Build context for a task
@@ -1375,6 +1375,7 @@ program
             version: indexStatus.version,
             indexedCommit: indexStatus.indexedCommit,
             currentCommit: indexStatus.currentCommit,
+            textChanges: indexStatus.textChanges,
             lastUpdatedAt: indexStatus.lastUpdatedAt,
             laggingFileCount: indexStatus.laggingFileCount,
             phase: indexStatus.phase,
@@ -1418,6 +1419,10 @@ program
       console.log(chalk.cyan('Current commit:'), indexStatus.currentCommit ?? 'unknown');
       console.log(chalk.cyan('Last updated:'), indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never');
       console.log(chalk.cyan('Lagging files:'), formatNumber(indexStatus.laggingFileCount));
+      if (indexStatus.textChanges) {
+        console.log(chalk.cyan('Text index changes:'),
+          `+${indexStatus.textChanges.added.length} ~${indexStatus.textChanges.modified.length} -${indexStatus.textChanges.removed.length}`);
+      }
       console.log(chalk.cyan('Phase:'), indexStatus.phase ?? 'unknown');
       console.log(chalk.cyan('Task level:'), indexStatus.taskLevel ?? 'unknown');
       if (indexStatus.failureReason) console.log(chalk.cyan('Failure reason:'), indexStatus.failureReason);
@@ -1684,7 +1689,7 @@ program
   .option('--framework <framework...>', 'Require one or more detected project frameworks')
   .option('--symbol-type <kind...>', 'Include these symbol kinds in source excerpts')
   .option('--exclude-type <kind...>', 'Fold these symbol kinds out of source excerpts')
-  .option('--mode <mode>', 'explore, definitions, references, symbols, diagnostics, impact, tests, or status; structured modes return JSON (tests takes the changed files as the query)', 'explore')
+  .option('--mode <mode>', 'explore, source, definitions, references, symbols, callers, callees, diagnostics, impact, tests, status, or text', 'explore')
   .option('--backend <backend>', 'Structured query backend: graph (index, default), lsp (language server), auto (pick one), or both (merge)', 'graph')
   .option('--file <file>', 'Exact project-relative file for structured queries')
   .option('--line <number>', 'backend=lsp definitions/references: 1-based line for a position query')

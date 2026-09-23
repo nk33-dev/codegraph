@@ -9,8 +9,10 @@ import { lookupSymbolNodes } from './symbol-lookup';
 import { analyzeImpact, findAffectedTests, DEFAULT_IMPACT_DEPTH, DEFAULT_TESTS_DEPTH } from './change-impact';
 import type { TestType } from './change-impact';
 import { collectIncomingRelations } from './incoming-relations';
+import type { TextHit } from '../db/file-text';
+import type { TextIndexChanges } from '../db/file-text';
 
-export const CODE_QUERY_MODES = ['definitions', 'references', 'symbols', 'diagnostics', 'status', 'impact', 'tests'] as const;
+export const CODE_QUERY_MODES = ['definitions', 'references', 'symbols', 'callers', 'callees', 'diagnostics', 'status', 'impact', 'tests', 'text'] as const;
 export type CodeQueryMode = typeof CODE_QUERY_MODES[number];
 
 /**
@@ -83,6 +85,7 @@ export interface CodeReference {
   target: CodeSymbol;
   kind: Edge['kind'];
   provenance: Edge['provenance'] | 'unknown';
+  confidence?: 'direct' | 'inferred' | 'unknown';
   /** Stays null when there is no call-site coordinate; it must not impersonate the source function's definition position. */
   site: { filePath: string; line: number | null; column: number | null };
   indexVersion?: string | null;
@@ -188,7 +191,8 @@ export type CodeQueryItem =
   | LspDocumentSymbolItem
   | LspDiagnosticItem
   | ImpactItem
-  | AffectedTestItem;
+  | AffectedTestItem
+  | TextHit;
 
 /**
  * An item under `backend: "both"`: the original item's **fields are unchanged**, with origin and
@@ -204,6 +208,7 @@ export interface IndexBlock {
   version: string | null;
   indexedCommit: string | null;
   currentCommit: string | null;
+  textChanges: TextIndexChanges | null;
   state: ReturnType<CodeGraph['getIndexStatus']>['state'];
   phase: string | null;
   lastUpdatedAt: number | null;
@@ -433,6 +438,7 @@ export function buildIndexBlock(
     version: status.version,
     indexedCommit: status.indexedCommit,
     currentCommit: status.currentCommit,
+    textChanges: status.textChanges,
     state: status.state,
     phase: status.phase,
     lastUpdatedAt: status.lastUpdatedAt,
@@ -551,6 +557,24 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
   result.warnings.push(...indexWarnings(result.index));
   if (request.mode === 'status') return result;
 
+  if (request.mode === 'text') {
+    if (!cg.isTextIndexReady()) {
+      result.status = 'unavailable';
+      result.warnings.push('File text has not been indexed yet; run codegraph sync to populate it.');
+      return result;
+    }
+    const file = resolveFileInput(root, request) ?? undefined;
+    const page = cg.searchText(result.query, { offset, limit, file });
+    result.items = page.items;
+    if (page.items.some((item) => item.freshness !== 'current')) {
+      result.warnings.push('Some text matches changed after indexing; their indexed snippets were omitted. Run codegraph sync.');
+    }
+    result.page = { offset, limit, total: page.total, nextOffset: page.nextOffset };
+    result.routing.sources.graph = page.total;
+    if (page.total === 0) result.status = 'not_found';
+    return result;
+  }
+
   const symbol = makeSymbolBuilder(cg, root);
   const freshnessOf = (items: CodeQueryItem[]): FileFreshness[] =>
     items.map((item) => (item as CodeSymbol).freshness).filter((f): f is FileFreshness => typeof f === 'string');
@@ -621,6 +645,27 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
       result.warnings.push(`${analysis.unattributed} affected node(s) could not be attributed to a distance from the changed symbol and were left out rather than guessed.`);
     }
     result.routing.sources.graph = ordered.length;
+  } else if (request.mode === 'callers' || request.mode === 'callees') {
+    const relations = nodes.flatMap((target) => request.mode === 'callers'
+      ? collectIncomingRelations(cg, [target])
+        .filter(({ edge }) => edge.kind === 'calls' || edge.kind === 'instantiates')
+        .map(({ edge, source }) => ({ edge, source, target }))
+      : cg.getOutgoingEdges(target.id)
+        .filter((edge) => edge.kind === 'calls' || edge.kind === 'instantiates')
+        .map((edge) => ({ edge, source: target, target: cg.getNode(edge.target) }))
+        .filter((item): item is { edge: Edge; source: Node; target: Node } => item.target !== null));
+    const ordered = relations.filter(({ source, target }) => isQueryEligibleNode(root, source) && isQueryEligibleNode(root, target))
+      .sort((left, right) => compareNodes(left.source, right.source) || compareNodes(left.target, right.target)
+        || (left.edge.line ?? 0) - (right.edge.line ?? 0));
+    result.page.total = ordered.length;
+    result.items = ordered.slice(offset, offset + limit).map(({ edge, source, target }) => ({
+      source: symbol(source), target: symbol(target), kind: edge.kind,
+      provenance: edge.provenance ?? 'unknown',
+      confidence: edge.provenance === 'heuristic' ? 'inferred' : edge.provenance ? 'direct' : 'unknown',
+      site: { filePath: source.filePath, line: edge.line ?? null, column: edge.column ?? null },
+    } satisfies CodeReference));
+    result.routing.sources.graph = ordered.length;
+    if (ordered.length === 0) result.status = 'not_found';
   } else if (request.mode === 'references') {
     const references = collectIncomingRelations(cg, nodes)
       .filter(({ edge, source }) => edge.kind !== 'contains'

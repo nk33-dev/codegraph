@@ -65,6 +65,19 @@ describe('codegraph_node file-view (Read replacement)', () => {
     expect(out).not.toContain('```'); // Read has no code fence; neither do we
   });
 
+  it('pages a large file by line through the default explore tool', async () => {
+    const result = await h.execute('codegraph_explore', {
+      mode: 'source', query: 'src/big.ts', offset: 1001, limit: 3,
+    });
+    const output = result.content[0]!.text;
+    expect(output).toContain('1001\t  const v999 = 999;');
+    expect(output).toContain('1003\t  const v1001 = 1001;');
+    expect(output).not.toContain('1500\t');
+    expect(output).not.toContain('gap');
+    const invalid = await h.execute('codegraph_explore', { mode: 'source', query: 'src/big.ts', offset: 0 });
+    expect(invalid.isError).toBe(true);
+  });
+
   it('leads with a one-line blast-radius header (the value-add over Read)', async () => {
     const out = await text({ file: 'a.ts' });
     expect(out).toMatch(/used by 1 file: src\/b\.ts/); // a.ts is imported by b.ts

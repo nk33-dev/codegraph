@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 10;
 
 /**
  * Migration definition
@@ -175,6 +175,19 @@ const migrations: Migration[] = [
       db.exec(
         'CREATE INDEX IF NOT EXISTS idx_files_generated ON files(path) WHERE generated = 1'
       );
+    },
+  },
+  {
+    version: 10,
+    description: 'Add persisted file content for project-wide text search',
+    up: (db) => {
+      db.exec(`CREATE TABLE IF NOT EXISTS file_text (
+        path TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        modified_at INTEGER NOT NULL,
+        indexed_at INTEGER NOT NULL
+      )`);
     },
   },
 ];

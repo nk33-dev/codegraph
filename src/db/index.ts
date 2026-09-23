@@ -10,6 +10,7 @@ import * as path from 'path';
 import { SchemaVersion } from '../types';
 import { runMigrations, getCurrentVersion, CURRENT_SCHEMA_VERSION } from './migrations';
 import { getCodeGraphDir } from '../directory';
+import { ensureFileTextIndex } from './file-text';
 
 export { SqliteDatabase, SqliteBackend } from './sqlite-adapter';
 
@@ -156,6 +157,8 @@ export class DatabaseConnection {
       ).run(CURRENT_SCHEMA_VERSION, Date.now(), 'Initial schema includes all migrations');
     }
 
+    ensureFileTextIndex(db);
+
     return new DatabaseConnection(db, dbPath, backend, fts5Available);
   }
 
@@ -186,6 +189,8 @@ export class DatabaseConnection {
     if (currentVersion < CURRENT_SCHEMA_VERSION) {
       runMigrations(db, currentVersion);
     }
+
+    ensureFileTextIndex(db);
 
     // Self-heal a bulk-load window that never closed (crash between
     // beginBulkNodeLoad and endBulkNodeLoad): the FTS triggers are missing and

@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS files (
     generated INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS file_text (
+    path TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    modified_at INTEGER NOT NULL,
+    indexed_at INTEGER NOT NULL
+);
+
 -- Unresolved References: References that need resolution after full indexing.
 -- status lifecycle: rows are inserted 'pending' by extraction; a completed
 -- resolution pass either deletes a row (resolved) or marks it 'failed'

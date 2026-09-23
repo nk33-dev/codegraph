@@ -1579,64 +1579,64 @@ export const tools: ToolDefinition[] = [
       properties: {
         mode: {
           type: 'string',
-          description: 'explore source/flow; structured: definitions, references, symbols, diagnostics, impact, tests, status.',
-          enum: ['explore', ...CODE_QUERY_MODES],
+          description: 'explore/source or JSON: definitions, references, symbols, callers, callees, diagnostics, impact, tests, status, text.',
+          enum: ['explore', 'source', ...CODE_QUERY_MODES],
           default: 'explore',
         },
         backend: {
           type: 'string',
-          description: 'Structured backend: graph, lsp, auto, or both.',
+          description: 'JSON backend: graph, lsp, auto, both.',
           enum: [...CODE_QUERY_BACKENDS],
           default: 'graph',
         },
         file: {
           type: 'string',
-          description: 'Structured modes: exact project-relative file used to narrow a target or select a file.',
+          description: 'Structured modes: exact project-relative file filter.',
         },
         files: {
           type: 'array',
           items: { type: 'string', description: 'Project-relative path.' },
-          description: 'tests only: project-relative changed files; query may contain the same paths.',
+          description: 'tests: changed paths, overrides query.',
         },
         depth: {
           type: 'number',
-          description: 'explore: graph/flow depth 1–10 (default 3); impact/tests: propagation depth (defaults: impact 2, tests 5).',
+          description: 'explore depth 1–10 (default 3); impact/tests depth (2/5).',
         },
         includeIndirect: {
           type: 'boolean',
-          description: 'tests only: include lower-confidence indirect candidates.',
+          description: 'tests: include indirect candidates.',
           default: false,
         },
         line: {
           type: 'number',
-          description: 'LSP definitions/references only: 1-based position line.',
+          description: 'LSP definition/reference: 1-based line.',
         },
         column: {
           type: 'number',
-          description: 'LSP definitions/references only: 0-based UTF-16 column.',
+          description: 'LSP definition/reference: UTF-16 column.',
         },
         severity: {
           type: 'number',
-          description: 'diagnostics only: minimum severity, 1=error through 4=hint.',
+          description: 'diagnostics severity 1–4.',
           default: 4,
         },
         includeDeclaration: {
           type: 'boolean',
-          description: 'LSP references only: include the declaration.',
+          description: 'LSP references: include declaration.',
           default: true,
         },
-        offset: { type: 'number', description: 'Structured modes: 0-based result offset.', default: 0 },
-        limit: { type: 'number', description: 'Structured modes: page size 1–200.', default: 50 },
+        offset: { type: 'number', description: 'source: 1-based first line; JSON: 0-based offset.' },
+        limit: { type: 'number', description: 'source: lines; JSON: page size 1–200.' },
         checkFiles: { type: 'boolean', description: 'Graph status only: scan disk changes without syncing.', default: false },
         query: {
           type: 'string',
-          description: 'Question, symbol names, or file names.',
+          description: 'Question, symbol, or file.',
         },
         maxFiles: {
           type: 'number',
           // 公共契约不再声明固定默认值（P0 问题 4）：未指定时由运行时按项目规模分档决定，
           // getExploreOutputBudget() 是唯一事实来源。写死 12 与实际的 4/5/8 不符。
-          description: 'explore only: max source files; omit it to use the default for the project-size tier.',
+          description: 'explore file cap; default by project-size tier.',
         },
         directory: {
           type: 'string',
@@ -1669,16 +1669,16 @@ export const tools: ToolDefinition[] = [
           // (`__tests__/server-instructions.test.ts`), and the fallback — a
           // follow-up explore of the test NAME — is already discoverable from
           // the summary section's own header.
-          description: 'explore only: render requested test files as full source instead of the default compact test summary.',
+          description: 'explore: full requested test source (default summary).',
           default: false,
         },
         baseRef: {
           type: 'string',
-          description: 'explore only: Git comparison base; enables change context.',
+          description: 'explore: Git comparison base.',
         },
         deepChanges: {
           type: 'boolean',
-          description: 'explore only: build a temporary baseRef index for deeper edge comparison.',
+          description: 'explore: temporary baseRef index for edge comparison.',
           default: false,
         },
         projectPath: projectPathProperty,
@@ -2493,7 +2493,7 @@ export class ToolHandler {
 
       // Structured queries read watcher status on the main connection and do not wrap
       // the JSON in a text notice banner.
-      if (toolName === 'codegraph_explore' && args.mode !== undefined && args.mode !== 'explore') {
+      if (toolName === 'codegraph_explore' && args.mode !== undefined && args.mode !== 'explore' && args.mode !== 'source') {
         return finish(await this.handleCodeQuery(args));
       }
 
@@ -3862,6 +3862,20 @@ export class ToolHandler {
    * tax on small projects while earning its keep on large ones.
    */
   private async handleExplore(args: Record<string, unknown>): Promise<ToolResult> {
+    if (args.mode === 'source') {
+      if (args.backend !== undefined && args.backend !== 'graph') {
+        return this.errorResult('source mode only supports the graph backend');
+      }
+      if (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || (args.offset as number) < 1)) {
+        return this.errorResult('source offset must be a 1-based line number');
+      }
+      if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || (args.limit as number) < 1 || (args.limit as number) > 2000)) {
+        return this.errorResult('source limit must be between 1 and 2000 lines');
+      }
+      const file = this.validateString(args.file ?? args.query, 'file');
+      if (typeof file !== 'string') return file;
+      return this.handleNode({ file, offset: args.offset, limit: args.limit, projectPath: args.projectPath });
+    }
     if (args.mode !== undefined && args.mode !== 'explore') return this.handleCodeQuery(args);
     // backend only means anything for structured modes; silently ignoring the argument
     // misleads callers more than an error would.
@@ -7702,6 +7716,11 @@ export class ToolHandler {
       `**Current commit:** ${indexStatus.currentCommit ?? 'unknown'}`,
       `**Last updated:** ${indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never'}`,
       `**Lagging files:** ${indexStatus.laggingFileCount}`,
+      ...(indexStatus.textChanges ? [
+        `**Text index changes:** +${indexStatus.textChanges.added.length} ~${indexStatus.textChanges.modified.length} -${indexStatus.textChanges.removed.length}`,
+        ...indexStatus.textChanges.added.slice(0, 10).map((filePath) => `- not indexed: ${filePath}`),
+        ...indexStatus.textChanges.modified.slice(0, 10).map((filePath) => `- changed: ${filePath}`),
+      ] : []),
       `**Index phase:** ${indexStatus.phase ?? 'unknown'} (${indexStatus.taskLevel ?? 'unknown'} task)`,
       ...(indexStatus.failureReason ? [`**Failure reason:** ${indexStatus.failureReason}`] : []),
       `**Files indexed:** ${stats.fileCount}`,

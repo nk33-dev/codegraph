@@ -67,6 +67,18 @@ describe('structured graph queries', () => {
     expect(refs.every(r => typeof r.provenance === 'string')).toBe(true);
   });
 
+  it('paginates direct callers and callees separately with provenance', () => {
+    const callers = cg.queryCode({ mode: 'callers', query: 'run', limit: 1 });
+    expect(callers.page).toMatchObject({ total: 2, nextOffset: 1 });
+    const next = cg.queryCode({ mode: 'callers', query: 'run', limit: 1, offset: 1 });
+    const combined = [...callers.items, ...next.items] as CodeReference[];
+    expect(combined.map((item) => item.source.name).sort()).toEqual(['entry', 'otherEntry']);
+    expect(combined.map((item) => item.confidence)).toEqual(['unknown', 'unknown']);
+    const callees = cg.queryCode({ mode: 'callees', query: 'entry' });
+    expect((callees.items as CodeReference[]).some((item) => item.target.name === 'run')).toBe(true);
+    expect(cg.queryCode({ mode: 'callers', query: 'run', file: 'a/service.ts' }).page.total).toBe(1);
+  });
+
   it('Rust and JS reuse the existing parsers and outlines keep symbol hierarchy', () => {
     expect(cg.queryCode({ mode: 'references', query: 'rust_value' }).items).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: expect.objectContaining({ name: 'rust_entry', language: 'rust' }) }),

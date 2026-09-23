@@ -8,6 +8,7 @@
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { getFileTextChanges, refreshFileTextIndex, searchFileText, type TextHit, type TextIndexChanges } from './db/file-text';
 import { queryCode, type CodeQueryRequest, type CodeQueryResult } from './graph/code-query';
 import { queryCodeRouted, type LspAvailability } from './graph/code-query-route';
 import { editCode, type CodeEditRequest, type CodeEditResult } from './edits';
@@ -203,6 +204,7 @@ export interface IndexStatus {
   version: string | null;
   indexedCommit: string | null;
   currentCommit: string | null;
+  textChanges: TextIndexChanges | null;
   state: 'indexing' | 'complete' | 'partial' | 'failed' | null;
   lastUpdatedAt: number | null;
   laggingFileCount: number;
@@ -821,6 +823,12 @@ export class CodeGraph {
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
+        if (result.success) {
+          await refreshFileTextIndex(this.db.getDb(), this.projectRoot);
+          this.queries.setMetadata('text_index_ready', '1');
+        }
+
+        // Refresh planner stats + checkpoint the WAL after bulk writes.
         // Off-thread (worker connection): on a multi-GB index this is minutes
         // of IO, and inline it starved the #850 watchdog AFTER a fully
         // successful index. Never load-bearing for correctness.
@@ -927,6 +935,7 @@ export class CodeGraph {
       this.beginIndexGeneration(taskLevel, filePaths);
       try {
         const result = await this.orchestrator.indexFiles(filePaths);
+        if (result.success) await refreshFileTextIndex(this.db.getDb(), this.projectRoot, filePaths);
         this.finishIndexGeneration(result.success ? 'complete' : 'failed', result.errors.find((entry) => entry.severity === 'error')?.message);
         return result;
       } catch (error) {
@@ -1259,6 +1268,9 @@ export class CodeGraph {
           await this.resolver.resolveDeferredThisMemberRefs();
         }
 
+        await refreshFileTextIndex(this.db.getDb(), this.projectRoot, options.paths);
+        if (!options.paths) this.queries.setMetadata('text_index_ready', '1');
+
         // Refresh planner stats + checkpoint the WAL after bulk writes.
         // Off-thread — see indexAll's call site.
         if (filesChanged || result.filesRemoved > 0 || orphanCount > 0) {
@@ -1485,6 +1497,18 @@ export class CodeGraph {
     return this.queries.getMetadata('index_generation');
   }
 
+  isTextIndexReady(): boolean {
+    return this.queries.getMetadata('text_index_ready') === '1';
+  }
+
+  searchText(query: string, options: { offset?: number; limit?: number; file?: string } = {}): {
+    items: TextHit[]; total: number; nextOffset: number | null;
+  } {
+    return searchFileText(this.db.getDb(), this.projectRoot, query, {
+      offset: options.offset ?? 0, limit: options.limit ?? 50, file: options.file,
+    });
+  }
+
   private currentGitCommit(): string | null {
     try {
       return execFileSync('git', ['rev-parse', 'HEAD'], {
@@ -1499,6 +1523,7 @@ export class CodeGraph {
   /** 统一索引状态快照，供 CLI、MCP 和 UI 共享。 */
   getIndexStatus(checkFiles = true): IndexStatus {
     const changes = checkFiles ? this.getChangedFiles() : { added: [], modified: [], removed: [] };
+    const textChanges = checkFiles ? getFileTextChanges(this.db.getDb(), this.projectRoot) : null;
     const pending = this.getPendingFiles();
     const rawLevel = this.queries.getMetadata('index_task_level');
     const taskLevel = rawLevel === 'ordinary' || rawLevel === 'interface' || rawLevel === 'global' ? rawLevel : null;
@@ -1507,9 +1532,11 @@ export class CodeGraph {
       version: this.getIndexVersion(),
       indexedCommit: this.queries.getMetadata('index_commit') || null,
       currentCommit: checkFiles ? this.currentGitCommit() : null,
+      textChanges,
       state: this.getIndexState(),
       lastUpdatedAt,
-      laggingFileCount: new Set([...pending.map((file) => file.path), ...changes.added, ...changes.modified, ...changes.removed]).size,
+      laggingFileCount: new Set([...pending.map((file) => file.path), ...changes.added, ...changes.modified, ...changes.removed,
+        ...(textChanges?.added ?? []), ...(textChanges?.modified ?? []), ...(textChanges?.removed ?? [])]).size,
       phase: this.queries.getMetadata('index_phase'),
       failureReason: this.queries.getMetadata('index_failure_reason') || null,
       taskLevel,
@@ -1952,6 +1979,9 @@ export class CodeGraph {
    */
   async queryCodeWithBackend(request: CodeQueryRequest): Promise<CodeQueryResult> {
     const backend = request.backend ?? 'graph';
+    if (['text', 'callers', 'callees'].includes(request.mode) && backend !== 'graph') {
+      throw new Error(`${request.mode} mode only supports the graph backend`);
+    }
     if (backend === 'graph') return this.queryCode(request);
     if (backend === 'lsp') return queryCodeLsp(this, this.getLspManager(), request);
     return queryCodeRouted(this, request, {

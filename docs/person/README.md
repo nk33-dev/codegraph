@@ -13,7 +13,7 @@
 
 | 功能 | 文档 |
 | --- | --- |
-| Graph 定义、引用、文件符号、启动入口、模块别名与索引 Git 基准 | [结构化查询](structured-queries.md) |
+| Graph 定义、引用、调用方、文件符号、全文检索、行范围与启动入口 | [结构化查询](structured-queries.md) |
 | C/C++、JS/TS、Java、Rust、Go、Python 的按需语言服务 | [LSP](lsp-mvp.md) |
 | Graph/LSP 自动路由、结果合并、影响分析与多窗口共享 | [统一路由与影响分析](unified-routing.md) |
 | 符号重命名、正文替换、前后插入与默认预览 | [结构化编辑](structured-edits.md) |

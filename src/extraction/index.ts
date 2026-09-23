@@ -1422,6 +1422,11 @@ export function scanDirectory(
   return scanDirectoryWalk(rootDir, onProgress);
 }
 
+export function scanTextFiles(rootDir: string): string[] {
+  const gitFiles = getGitVisibleFiles(rootDir);
+  return gitFiles ? [...gitFiles] : scanDirectoryWalk(rootDir, undefined, undefined, true);
+}
+
 /**
  * Async variant of scanDirectory that yields to the event loop periodically,
  * allowing worker threads to receive and render progress messages.
@@ -1483,7 +1488,8 @@ export async function scanDirectoryAsync(
 function scanDirectoryWalk(
   rootDir: string,
   onProgress?: (current: number, file: string) => void,
-  stats?: ScanSkipStats
+  stats?: ScanSkipStats,
+  includeUnsupported = false,
 ): string[] {
   const files: string[] = [];
   let count = 0;
@@ -1567,7 +1573,7 @@ function scanDirectoryWalk(
             }
           } else if (stat.isFile()) {
             if (!isIgnored(fullPath, false, active)) {
-              if (isSourceFile(relativePath, overrides)) {
+              if (includeUnsupported || isSourceFile(relativePath, overrides)) {
                 files.push(relativePath);
                 count++;
                 onProgress?.(count, relativePath);
@@ -1588,7 +1594,7 @@ function scanDirectoryWalk(
         }
       } else if (entry.isFile()) {
         if (!isIgnored(fullPath, false, active)) {
-          if (isSourceFile(relativePath, overrides)) {
+          if (includeUnsupported || isSourceFile(relativePath, overrides)) {
             files.push(relativePath);
             count++;
             onProgress?.(count, relativePath);
