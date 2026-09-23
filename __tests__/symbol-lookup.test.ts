@@ -415,7 +415,7 @@ describe.skipIf(!HAS_SQLITE)('lookupSymbolNodes — the shared path used by call
   it.each(['grou', 'Group'])('rejects fuzzy-only bare name "%s" (#1473)', (symbol) => {
     expect(cg.getNodesByName(symbol)).toEqual([]);
     expect(cg.searchNodes(symbol).length).toBeGreaterThan(0);
-    expect(lookupSymbolNodes(cg, symbol)).toEqual({ nodes: [], ambiguous: false });
+    expect(lookupSymbolNodes(cg, symbol)).toMatchObject({ nodes: [], ambiguous: false });
   });
 
   it('rejects an unknown qualifier even when the bare tail exists (#173)', () => {

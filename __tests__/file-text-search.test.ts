@@ -92,4 +92,50 @@ describe('file text search', () => {
       { filePath: 'settings.json', lines: [{ line: 1 }] },
     ]);
   });
+
+  it('upgrades a word FTS index transactionally and keeps literal punctuation searchable', async () => {
+    graph.destroy();
+    const connection = DatabaseConnection.open(getDatabasePath(root));
+    const db = connection.getDb();
+    db.exec(`DROP TRIGGER file_text_ai; DROP TRIGGER file_text_ad; DROP TRIGGER file_text_au;
+      DROP TABLE file_text_fts;
+      CREATE VIRTUAL TABLE file_text_fts USING fts5(content, content='file_text', content_rowid='rowid');
+      INSERT INTO file_text_fts(file_text_fts) VALUES ('rebuild');`);
+    connection.close();
+    graph = await CodeGraph.open(root);
+    expect(graph.queryCode({ mode: 'text', query: 'timeo' }).page.total).toBe(3);
+    expect(graph.queryCode({ mode: 'text', query: 'pi.t' }).page.total).toBe(3);
+    expect(graph.queryCode({ mode: 'text', query: 'ti' }).page.total).toBe(3);
+  });
+
+  it('removes large-file records after deletion and preserves redaction during live scans', async () => {
+    fs.writeFileSync(path.join(root, 'large.json'), '{"secretNeedle":"private-value"}\n' + ' '.repeat(270000));
+    await graph.sync();
+    const result = graph.queryCode({ mode: 'text', query: 'secretNeedle', file: 'large.json' });
+    expect(result.items).toMatchObject([{ source: 'disk', indexedAt: null, lines: [{ text: '[configuration value omitted]' }] }]);
+    expect(JSON.stringify(result)).not.toContain('private-value');
+    fs.rmSync(path.join(root, 'large.json'));
+    await graph.sync();
+    const removed = graph.queryCode({ mode: 'text', query: 'secretNeedle' });
+    expect(removed.items).toEqual([]);
+    expect(removed.warnings).toEqual([]);
+  });
+
+  it('bounds live scans and merges their matches into stable indexed pagination', async () => {
+    const needle = 'budgetNeedle\n';
+    fs.writeFileSync(path.join(root, 'README.md'), needle);
+    for (let i = 0; i < 5; i++) {
+      fs.writeFileSync(path.join(root, `large-${i}.md`), needle + 'x'.repeat(2 * 1024 * 1024 - needle.length));
+    }
+    await graph.sync();
+    const first = graph.queryCode({ mode: 'text', query: 'budgetNeedle', limit: 2 });
+    const rest = graph.queryCode({ mode: 'text', query: 'budgetNeedle', offset: 2, limit: 10 });
+    expect(first.page).toMatchObject({ total: 5, nextOffset: 2 });
+    expect([...first.items, ...rest.items].map((item: any) => item.filePath))
+      .toEqual(['README.md', 'large-0.md', 'large-1.md', 'large-2.md', 'large-3.md']);
+    expect(first.warnings.join('\n')).toContain('1 large or unreadable file(s) were not searched');
+    const narrowed = graph.queryCode({ mode: 'text', query: 'budgetNeedle', file: 'large-4.md' });
+    expect(narrowed.page.total).toBe(1);
+    expect(narrowed.warnings).toEqual([]);
+  });
 });

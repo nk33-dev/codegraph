@@ -2,7 +2,7 @@
  * Unified contract for LSP queries: result shape and pagination for all four modes,
  * availability, CLI/MCP output parity, and unchanged graph-backend behavior (phase-one regression).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn, spawnSync } from 'child_process';
 import { createInterface } from 'readline';
 import { once } from 'events';
@@ -37,6 +37,35 @@ afterEach(() => {
 });
 
 describe('LSP structured query contract', () => {
+  it('diagnostics defaults to auto and accepts the file path in query', async () => {
+    const result = await cg.queryCodeWithBackend({ mode: 'diagnostics', query: 'a.ts' });
+    expect(result.status).toBe('ok');
+    expect(result.routing).toMatchObject({ requested: 'auto', resolved: 'lsp' });
+    expect(result.routing.reason).not.toContain('explicitly');
+    expect(result.items.length).toBeGreaterThan(0);
+  });
+
+  it('retains actual auto routing and project context when the diagnostic path is refused', async () => {
+    const result = await cg.queryCodeWithBackend({ mode: 'diagnostics', query: '../outside.ts' });
+    expect(result.status).toBe('error');
+    expect(result.projectRoot).toBe(project.root);
+    expect(result.index).not.toBeNull();
+    expect(result.routing).toMatchObject({ requested: 'auto', resolved: 'lsp' });
+    expect(result.routing.reason).not.toContain('explicitly');
+    expect(result.warnings.join('\n')).toContain('within the project root');
+  });
+
+  it('warns about incomplete indexing even when references are nonempty', async () => {
+    const manager = cg.getLspManager();
+    const status = manager.status.bind(manager);
+    const spy = vi.spyOn(manager, 'status').mockImplementation(() => status().map((server) => ({ ...server, indexing: true })));
+    try {
+      const result = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'references', query: 'Widget' });
+      expect(result.items.length).toBeGreaterThan(0);
+      expect(result.warnings.join('\n')).toContain('results may be incomplete');
+    } finally { spy.mockRestore(); }
+  });
+
   it('symbols: hierarchy, parent index, qualified name, and result source are all surfaced', async () => {
     const result = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'symbols', query: 'a.ts', file: 'a.ts' });
 
@@ -132,8 +161,7 @@ describe('LSP structured query contract', () => {
     // (the "not implemented" hint is gone).
     await expect(cg.queryCodeWithBackend({ mode: 'definitions', query: 'Widget', backend: 'sometimes' as never }))
       .rejects.toThrow(/backend must be/);
-    await expect(cg.queryCodeWithBackend({ backend: 'lsp', mode: 'diagnostics', query: 'a.ts' }))
-      .rejects.toThrow(/requires a project-relative file/);
+    expect((await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'diagnostics', query: 'a.ts' })).status).toBe('ok');
     await expect(cg.queryCodeWithBackend({ backend: 'lsp', mode: 'status', query: 'status', severity: 2 }))
       .rejects.toThrow(/severity is only supported in diagnostics/);
     // Only the graph can answer tests mode, so explicitly asking for LSP is rejected
