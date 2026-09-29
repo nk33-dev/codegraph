@@ -4877,12 +4877,17 @@ export class ToolHandler {
       diag?.setLowValueFiltered(fileGroups.size, candidateFiles.length);
     }
 
+    // Low-confidence filtering: when FTS only produces broad term matches without
+    // distinctive identifiers or multi-term corroboration, tighten the floor and gate.
+    const hasLowConfidence = subgraph.confidence === 'low';
+    const SCORE_FLOOR_FRACTION_OF_TOP_ADJUSTED = hasLowConfidence ? 0.35 : SCORE_FLOOR_FRACTION_OF_TOP;
+
     // Relative score floor — see SCORE_FLOOR_* for why it is a fraction of the
     // best file's score and why that fraction is clamped at both ends.
     const topScore = Math.max(0, ...candidateFiles.map(([, g]) => g.score));
     const scoreFloor = Math.max(
       SCORE_FLOOR_ABSOLUTE,
-      Math.min(SCORE_FLOOR_MAX, topScore * SCORE_FLOOR_FRACTION_OF_TOP),
+      Math.min(SCORE_FLOOR_MAX, topScore * SCORE_FLOOR_FRACTION_OF_TOP_ADJUSTED),
     );
     let relevantFiles = candidateFiles.filter(
       ([fp, group]) => group.score >= scoreFloor || pinnedSet.has(fp),
@@ -7253,6 +7258,13 @@ export class ToolHandler {
     let summaryLine = survivors.length > 0
       ? `Found ${shownSymbols} symbol${shownSymbols === 1 ? '' : 's'} across ${survivors.length} file${survivors.length === 1 ? '' : 's'}.`
       : `Found ${subgraph.nodes.size} symbol${subgraph.nodes.size === 1 ? '' : 's'} across ${fileGroups.size} file${fileGroups.size === 1 ? '' : 's'}.`;
+
+    // Low-confidence warning: when the query produces broad term matches without
+    // distinctive identifiers, suggest the user be more specific.
+    if (hasLowConfidence && survivors.length < 3) {
+      summaryLine += ` Results have low confidence (broad term match); try a more specific symbol or file name.`;
+    }
+
     // Path pinning is visible, not silent: say which query-named files were
     // honored, and which path spans matched nothing so the agent can correct
     // them instead of trusting a response that quietly ignored the path.
