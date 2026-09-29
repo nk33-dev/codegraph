@@ -395,6 +395,7 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
   - 影响面把函数当值引用算作调用方（上游 #1820），以及测试摘要里「exercises X, Y」按源码行序输出。
   - MCP：初始化响应补 `capabilities: { tools: {} }`；catch-up 门保持安装到 reconcile 结束；查询池启动日志改为 `Query pool: up to N worker thread(s)`（保留个人档位范围与来源）。
   - daemon 版本的自动切换**永不向自身或父进程发信号**（`stopDaemonAt` 的守卫）：锁文件若写着调用方自己的 pid，旧行为会把 MCP 客户端自己杀掉。
+- 全量测试（`npm test`，本机 Windows / Node v24.16.0）：一轮完整跑完为 **5,580 通过 / 7 失败 / 322 跳过**（共 5,909 项）。当时同一台机器上还有其它并发任务，7 项里有 5 项属于负载抖动：`mcp-writer-lock`、`mpeg-ts-not-typescript`、`query-pool`、`mcp-staleness-banner` 合并单独跑共 82 项**全部通过**。真正剩下的只有下面两条。之后为拿一份无干扰数字又跑了一次，被 Claude Code 因系统内存不足中止（不是测试失败），因此**没有**第二轮完整全量结论；跨平台与真实宿主仍未验证。
 - 仍未解决（不得写成通过）：
   - `__tests__/ui-server-api.test.ts` 的「引擎自身最热符号」断言 `LRUCache.get` 调用方 ≥500：本仓库实测 55；用合并后的代码索引**基线源码**（`c035e94` 的树）只有 17。两个数都远低于阈值，说明个人更严格的成员解析（不把未知接收者的成员调用按末尾方法名绑定）本就不产生上游那批边——阈值本身是上游匹配口径的产物。需要单独裁决：调低/改写该阈值，还是接受更松的匹配。
   - `__tests__/query-output-indexing.test.ts` 关于 explore schema 暴露 `directory/languages/frameworks/symbolTypes/excludeTypes` 的断言在个人基线上同样失败（用 `git worktree` 在 `c035e94` 上复现），属既有缺口：代码读取这些参数，schema 未声明。
