@@ -281,14 +281,6 @@ export async function stopDaemonAt(root: string, options: { preserveUnverified?:
     const removed = cleanupDaemonArtifacts(root, lockContents);
     return { root, pid, outcome: removed ? 'not-running' : 'unverified' };
   }
-  // Never signal OURSELVES or the process that started us: a lockfile naming our
-  // own pid (a client that was itself a daemon once, a recycled pid, a planted
-  // lock) would otherwise turn a version-mismatch fallback into "the MCP server
-  // killed its own client". No version switch is worth that; the session falls
-  // back to serving in-process instead.
-  if (pid === process.pid || pid === process.ppid) {
-    return { root, pid, outcome: 'unverified' };
-  }
   // Never signal a process merely because it reused a stale daemon PID. The
   // daemon's immediate hello is the process-identity proof (#1553).
   if (!identity || !canProbeDaemonIdentity(identity)) {
@@ -298,6 +290,16 @@ export async function stopDaemonAt(root: string, options: { preserveUnverified?:
     if (options.preserveUnverified) return { root, pid, outcome: 'unverified' };
     const removed = cleanupDaemonArtifacts(root, lockContents);
     return { root, pid, outcome: removed ? 'not-running' : 'unverified' };
+  }
+
+  // Identity proven — but if it is OURS or our parent's, the "old daemon" is this
+  // very process tree: a client that was itself a daemon once, a recycled pid, a
+  // planted lock. Signaling would mean the MCP server killing its own client, so
+  // refuse the switch and let the caller serve the session in-process instead.
+  // Checked AFTER the proof so a merely-reused pid still takes the cleanup path
+  // above (#1553).
+  if (pid === process.pid || pid === process.ppid) {
+    return { root, pid, outcome: 'unverified' };
   }
 
   // Identity probing awaits I/O: never act on a superseded ownership record.
