@@ -27,7 +27,7 @@ MCP 默认 `explore` 在 session 传输边界只返回完整文本，避免客�
 
 结构化 `references`、`callers`、`callees` 按源、目标、边类型和来源合并重复调用点，`site` 保留首个位置，重复关系的 `sites` 保留所有去重位置；`page.total` 统计关系而非原始边。`impact` 可直接用已索引的文件路径作为 `query`，保留 `rootId`，并先按距离再按生产代码、测试、fixture 和路径排序。定义与编辑歧义列表也把生产代码放在前面，保留全部候选；名称未精确匹配时提供最多三个建议，不自动改选目标。`diagnostics` 在 MCP、CLI 和 `queryCodeWithBackend` 未指定 `backend` 时使用 `auto`，未传 `file` 时从 `query` 解析路径；schema 不声明固定的后端默认值，以免客户端替用户注入 `graph`；显式选择后端仍按原契约校验。
 
-`tests` 模式传入 `files` 时可以省略 `query`；MCP schema 用 `query`/`files` 条件必填表达该契约，运行时仍拒绝其他模式缺少 query。测试候选先按 Graph 置信度，再按 `priority: focused | related`、距离和路径排序：`focused` 只表示测试文件名与改动路径有主题交集，不改变依赖证据。没有依赖边但文件名主题相关的测试另列于 `filenameCandidates`，最多 20 个，标记 `reason: filename`、`confidence: low`、`distance: null`，不混入可执行的 `items`。共享核心文件仍可能有很多真实直接依赖，结果会明确提示剩余 `related` 候选可能较宽。
+`tests` 模式传入 `files` 时可以省略 `query`；该契约写在 `query` 与 `files` 的参数描述里，由运行时校验：其他模式缺少 query 会被拒绝。schema 顶层不能使用 `anyOf`/`oneOf`/`allOf`，Anthropic API 会拒绝这类工具，Claude Code 因此不会加载它。测试候选先按 Graph 置信度，再按 `priority: focused | related`、距离和路径排序：`focused` 只表示测试文件名与改动路径有主题交集，不改变依赖证据。没有依赖边但文件名主题相关的测试另列于 `filenameCandidates`，最多 20 个，标记 `reason: filename`、`confidence: low`、`distance: null`，不混入可执行的 `items`。共享核心文件仍可能有很多真实直接依赖，结果会明确提示剩余 `related` 候选可能较宽。
 
 ```json
 {"mode":"definitions","query":"CodeGraph.queryCode","file":"src/index.ts","limit":20}

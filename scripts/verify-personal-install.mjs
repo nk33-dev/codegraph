@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { parseNpmPackOutput } from './lib/npm-pack-output.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -13,6 +13,40 @@ const env = { ...process.env, CODEGRAPH_TELEMETRY: '0', CODEGRAPH_NO_UPDATE_CHEC
 const run = (args, cwd = root) => execFileSync(process.execPath, args, {
   cwd, env, encoding: 'utf8', windowsHide: true, maxBuffer: 8 * 1024 * 1024,
 });
+
+/**
+ * 用已安装的包走一遍真实 MCP 握手：客户端拿到的工具表面必须完整可用。
+ * Anthropic API 拒绝顶层 anyOf/oneOf/allOf，带上它的工具会被 Claude Code 静默丢弃，
+ * 所以这里检查的是安装产物实际返回的 tools/list，而不是源码里的定义。
+ */
+function checkMcpSurface(cli, cwd) {
+  const requested = '2025-06-18';
+  const input = [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: requested, capabilities: {}, clientInfo: { name: 'verify-personal-install', version: '1' } } },
+    { jsonrpc: '2.0', method: 'notifications/initialized' },
+    { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+  ].map((message) => JSON.stringify(message)).join('\n') + '\n';
+  const served = spawnSync(process.execPath, [cli, 'serve', '--mcp'], {
+    cwd, env, input, encoding: 'utf8', timeout: 30000, windowsHide: true, maxBuffer: 8 * 1024 * 1024,
+  });
+  const replies = new Map();
+  for (const line of (served.stdout ?? '').split(/\r?\n/)) {
+    try { const message = JSON.parse(line); if (message.id !== undefined) replies.set(message.id, message.result); } catch { /* 非 JSON-RPC 行 */ }
+  }
+  if (replies.get(1)?.protocolVersion !== requested) throw new Error(`MCP 握手没有协商到客户端请求的协议版本 ${requested}。`);
+  const listed = replies.get(2)?.tools;
+  if (!Array.isArray(listed)) throw new Error('安装包的 MCP 服务没有返回 tools/list。');
+  for (const name of ['codegraph_explore', 'codegraph_edit']) {
+    const tool = listed.find((entry) => entry.name === name);
+    if (!tool) throw new Error(`默认 MCP 表面缺少 ${name}。`);
+    if (tool._meta?.['anthropic/alwaysLoad'] !== true) throw new Error(`${name} 没有 anthropic/alwaysLoad，Claude Code 会把它延迟加载。`);
+  }
+  for (const tool of listed) {
+    for (const key of ['anyOf', 'oneOf', 'allOf']) {
+      if (key in tool.inputSchema) throw new Error(`${tool.name} 的 inputSchema 顶层含 ${key}，Anthropic API 会拒绝它。`);
+    }
+  }
+}
 
 try {
   // 先构建，再把真实 tarball 装进独立 prefix，避免从工作区借用依赖或产物。
@@ -28,6 +62,7 @@ try {
     throw new Error('安装后运行来源不正确。');
   }
   if (!run([cli, 'ui', '--help'], temporary).includes('codegraph ui')) throw new Error('安装包缺少 ui 命令。');
+  checkMcpSurface(cli, temporary);
   run([path.join(installed, 'scripts/check-ui-build.mjs'), '--root', installed], temporary);
   const project = path.join(temporary, 'project');
   fs.mkdirSync(project);
@@ -52,7 +87,7 @@ try {
   run(['--liftoff-only', '-e', probe, path.join(installed, 'dist/index.js'), project], temporary);
   const edited = fs.readFileSync(path.join(project, 'main.py'), 'utf8');
   if ((edited.match(/# packaged transaction/g) ?? []).length !== 1) throw new Error('事务编辑未应用一次或发生重复写入。');
-  console.log(`安装验证通过：${info.build.buildId}；doctor、UI 资源、Python 图查询、事务编辑与幂等重放。`);
+  console.log(`安装验证通过：${info.build.buildId}；doctor、UI 资源、MCP 工具表面与协议协商、Python 图查询、事务编辑与幂等重放。`);
 } finally {
   // 只删除本次 mkdtemp 创建的验证目录，用户全局安装不在这个 prefix 内。
   const resolved = path.resolve(temporary);

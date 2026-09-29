@@ -1311,7 +1311,6 @@ export interface ToolDefinition {
     type: 'object';
     properties: Record<string, PropertySchema>;
     required?: string[];
-    anyOf?: Array<{ required: string[]; properties?: Record<string, { const: unknown }> }>;
   };
   /** Behavioral hints for clients (see {@link ToolAnnotations}). */
   annotations?: ToolAnnotations;
@@ -1331,8 +1330,8 @@ export interface ToolDefinition {
  * doesn't advertise `readOnlyHint: true` (issue #1018).
  *
  * The field is purely additive — a client that predates annotations ignores it
- * — so codegraph advertises these even though `initialize` still negotiates the
- * 2024-11-05 protocol version.
+ * — so codegraph advertises these regardless of which protocol version the
+ * client negotiated.
  *
  * https://modelcontextprotocol.io/specification/2025-06-18/schema#toolannotations
  */
@@ -1692,10 +1691,8 @@ export const tools: ToolDefinition[] = [
         },
         projectPath: projectPathProperty,
       },
-      anyOf: [
-        { required: ['query'] },
-        { required: ['mode', 'files'], properties: { mode: { const: 'tests' } } },
-      ],
+      // No top-level anyOf/oneOf/allOf: the Anthropic API rejects them in input_schema, which
+      // makes Claude Code drop the tool. The query/files requirement is validated at runtime.
     },
     annotations: READ_ONLY_ANNOTATIONS,
     // Loaded from the first prompt in Claude Code, which otherwise defers every
@@ -1773,8 +1770,7 @@ export const allTools: ToolDefinition[] = [...tools, ...editTools];
  * Pure: clones each tool's schema rather than mutating the shared module-level
  * `tools` array (reused by every session and the static surface). A tool that
  * doesn't expose projectPath, or already requires it, is returned untouched.
- * Explore 的 query/files 条件留在 anyOf，projectPath 作为所有分支共同要求；
- * status/files 等没有 required 的工具则直接获得该必填项。
+ * 没有 required 的工具（status/files 等）直接获得该必填项。
  */
 function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
   return defs.map((tool) => {

@@ -84,6 +84,9 @@ export const editTools: ToolDefinition[] = [
       required: ['operation'],
     },
     annotations: EDIT_TOOL_ANNOTATIONS,
+    // Loaded from the first prompt in Claude Code, like `codegraph_explore`; otherwise the only write
+    // path is hidden behind a ToolSearch step and never gets used.
+    _meta: { 'anthropic/alwaysLoad': true },
   },
 ];
 

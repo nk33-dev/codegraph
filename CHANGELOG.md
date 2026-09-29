@@ -14,6 +14,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- 修复 Claude Code 中看不到 `codegraph_explore` 的问题：其 `inputSchema` 顶层的 `anyOf` 会被 Anthropic API 拒绝，工具因此被丢弃。该条件改由参数描述和运行时校验表达，并增加遍历所有工具的 schema 回归测试。`npm run check:quick` 在缺少 `dist` 时会列出并跳过依赖构建产物的测试，不再把它们当作失败。`codegraph_edit` 增加 `anthropic/alwaysLoad`，避免唯一的写入入口被 Claude Code 延迟加载；MCP 握手改为协议版本协商，不再固定返回 `2024-11-05`；个人安装验证会对安装包做真实握手，检查协商版本、两个默认工具和 schema 顶层关键字。
 - `v1.6.0-personal.10` 增强启动流程问句、模块名称与文件别名检索，空结果给出下一步建议；增加文件全文搜索、分页调用关系和源码行范围视图，并让索引状态显示对应提交及文本索引落后情况。测试进程清理在 Windows 上不再等待共享标准流关闭。升级旧索引后运行 `codegraph sync` 建立文本索引。
 - `v1.6.0-personal.9` 增加统一索引状态、索引生成版本和按文件刷新；查询可显示落后文件、当前阶段与失败原因，并能直接查看尚未索引的新文件。
 - `codegraph_explore` 增加目录、语言、框架、符号类型、排除类型和调用深度过滤，默认收敛低价值符号与 blast radius；断点提示会说明未索引、不支持、动态值或歧义等原因及下一步操作。

@@ -55,8 +55,24 @@ export function initializeInstructions(base: string, notice: string | null = get
   );
 }
 
+/**
+ * MCP protocol versions this server can speak, oldest first. Everything it sends (tool annotations,
+ * `_meta`, text-only results) is additive on top of 2024-11-05, so no version needs its own code path.
+ */
+export const SUPPORTED_PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'] as const;
+
 /** MCP Protocol Version (latest the server claims). */
-export const PROTOCOL_VERSION = '2024-11-05';
+export const PROTOCOL_VERSION: string = SUPPORTED_PROTOCOL_VERSIONS[SUPPORTED_PROTOCOL_VERSIONS.length - 1]!;
+
+/**
+ * Version negotiation per the MCP lifecycle spec: echo the client's requested version when supported,
+ * otherwise answer with the latest one this server supports and let the client decide.
+ */
+export function negotiateProtocolVersion(requested: unknown): string {
+  return typeof requested === 'string' && (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested)
+    ? requested
+    : PROTOCOL_VERSION;
+}
 
 /**
  * How long to wait for the client's `roots/list` response before giving up
@@ -203,6 +219,7 @@ export class MCPSession {
 
   private async handleInitialize(request: JsonRpcRequest): Promise<void> {
     const params = request.params as {
+      protocolVersion?: unknown;
       rootUri?: string;
       workspaceFolders?: Array<{ uri: string; name: string }>;
       capabilities?: { roots?: unknown };
@@ -250,8 +267,7 @@ export class MCPSession {
 
     // Respond to the handshake BEFORE doing any heavy init — see issue #172.
     this.transport.sendResult(request.id, {
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: { tools: {} },
+      protocolVersion: negotiateProtocolVersion(params?.protocolVersion),
       serverInfo: SERVER_INFO,
       instructions: initializeInstructions(indexed ? SERVER_INSTRUCTIONS : SERVER_INSTRUCTIONS_NO_ROOT_INDEX),
     });

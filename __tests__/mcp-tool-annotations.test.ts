@@ -59,11 +59,13 @@ function expectSurface(surface: ToolDefinition[]): void {
   }
 }
 
-/** Assert the explore tool in a `tools/list` surface is marked always-load for Claude Code (#1696). */
-function expectExploreAlwaysLoad(surface: ToolDefinition[]): void {
-  const explore = surface.find((t) => t.name === 'codegraph_explore');
-  expect(explore, 'codegraph_explore is missing from the surface').toBeDefined();
-  expect(explore!._meta).toEqual({ 'anthropic/alwaysLoad': true });
+/** Assert the default-surface tools are marked always-load for Claude Code (#1696); edit is the only write path. */
+function expectExploreAlwaysLoad(surface: ToolDefinition[], names = ['codegraph_explore', 'codegraph_edit']): void {
+  for (const name of names) {
+    const tool = surface.find((t) => t.name === name);
+    expect(tool, `${name} is missing from the surface`).toBeDefined();
+    expect(tool!._meta, name).toEqual({ 'anthropic/alwaysLoad': true });
+  }
 }
 
 describe('Read-only annotations on the codegraph MCP tools (#1018)', () => {
@@ -79,7 +81,7 @@ describe('Read-only annotations on the codegraph MCP tools (#1018)', () => {
     // The mutating tool is defined separately and keeps its own (opposite) contract.
     expect(MUTATING_TOOLS.map((tool) => tool.name)).toEqual(['codegraph_edit']);
     for (const tool of MUTATING_TOOLS) expectMutating(tool);
-    expectExploreAlwaysLoad(tools);
+    expectExploreAlwaysLoad(tools, ['codegraph_explore']);
   });
 
   it('the static proxy surface carries annotations on every exposed tool', () => {

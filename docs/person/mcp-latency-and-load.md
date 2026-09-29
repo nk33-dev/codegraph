@@ -33,7 +33,7 @@ MCP 引擎打开项目后在后台跑一次 catch-up 对账（`MCPEngine.catchUp
 
 ### 保留现状
 
-server 级 `alwaysLoad`（安装器写入，Claude Code 用它免除 ToolSearch 步进）与 explore 工具的 `_meta['anthropic/alwaysLoad']` 都保留：前者保证启动时就绪，后者兼容旧安装和单工具常驻。两者都不是重复的说明注入，不构成「同一契约写三遍」的问题。
+server 级 `alwaysLoad`（安装器写入，Claude Code 用它免除 ToolSearch 步进）与工具的 `_meta['anthropic/alwaysLoad']` 都保留：前者保证启动时就绪，后者兼容旧安装和单工具常驻。`codegraph_explore` 与 `codegraph_edit` 两个默认工具都带该 `_meta`；edit 是唯一的写入入口，若被延迟到 ToolSearch 之后，agent 常在不知道它存在时改用手写编辑。这只是 schema 上的一个固定小字段，不新增说明文字。两者都不是重复的说明注入，不构成「同一契约写三遍」的问题。
 
 ### 固定成本分解（当前构建产物直接序列化，不换算 token）
 

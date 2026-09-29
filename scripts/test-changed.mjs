@@ -93,12 +93,30 @@ for (const file of changed) {
   }
 }
 
+// Tests that spawn the built CLI cannot run without dist/; skip them visibly instead of
+// letting a missing build show up as dozens of unrelated failures.
+const builtCli = path.join(root, 'dist', 'bin', 'codegraph.js');
+const needsBuiltCli = (test) =>
+  /dist[\\/]bin|['"]dist['"]\s*,\s*['"]bin['"]/.test(fs.readFileSync(path.join(root, test), 'utf8'));
+const cliMissing = !fs.existsSync(builtCli);
+const skippedForBuild = cliMissing ? [...selected].filter(needsBuiltCli).sort() : [];
+for (const test of skippedForBuild) selected.delete(test);
+
 const files = [...selected].sort();
 console.log(`[test:changed] 变更文件 ${changed.length} 个，选择测试文件 ${files.length} 个。`);
 for (const file of files) console.log(`  ${file}`);
+if (skippedForBuild.length > 0) {
+  console.log(`[test:changed] 未找到 dist/bin/codegraph.js，跳过 ${skippedForBuild.length} 个依赖构建产物的测试（未运行，不算通过）：`);
+  for (const file of skippedForBuild) console.log(`  - ${file}`);
+  console.log('[test:changed] 这些测试留给 CI，或在本地构建后用 npm run test:focused -- <test files> 运行。');
+}
 
 if (listOnly) process.exit(0);
 if (files.length === 0) {
+  if (skippedForBuild.length > 0) {
+    console.log('[test:changed] 选中的测试都依赖构建产物，本次没有运行任何 Vitest。');
+    process.exit(0);
+  }
   const hasRuntimeChange = changed.some((file) => /^(?:src|ui\/src)\//.test(file));
   if (hasRuntimeChange) {
     console.error('[test:changed] 未找到直接或领域测试，请用 npm run test:focused -- <test files> 明确指定。');

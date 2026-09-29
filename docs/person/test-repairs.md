@@ -363,3 +363,12 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - WAL 缩小先于 checkpoint worker 退出。`healOversizedWal()` 必须先加入现有任务，再判断大小；自动恢复测试在关闭数据库前等待该任务，确定性回归验证缩小后仍等待 worker exit。
 - 本地 Windows 定向 `db-worker-lifecycle`、`wal-heal`、`windows-child-process` 共 12 项通过；类型检查和差异检查通过。临时 vite-node 源码替代编译产物的握手/roots 补验未全通过（首次模块解析失败，指定 root 后 3 项通过、3 项初始化失败），这些不能代替正式产物 CI；临时用例已清理，未执行本地完整构建。
 - 修复提交尚需再次推送并重新通过同提交三平台 CI。此前两次失败不记为通过，不用连续重跑代替修复。
+
+## 2026-09-29 explore schema 顶层 anyOf 修复
+
+- 现象：`.11` 在 Claude Code 中只列出 `codegraph_edit`，`/mcp` 重连无效。直接向已安装服务端发 `tools/list` 两个工具都在，问题不在服务端。
+- 原因：`b2ec2c5` 给 `codegraph_explore` 加了顶层 `anyOf`（query 或 tests 模式的 files）。根据公开 issue，Anthropic API 拒绝顶层 `anyOf`/`oneOf`/`allOf`，客户端随之丢弃该工具。此结论来自这些记录与工具列表对照，尚未抓到 Claude Code 端的报错，需在装上新版本后确认工具出现。
+- 修复：删除 `anyOf`，条件仍写在 `query`/`files` 描述并由运行时校验；新增遍历 `allTools` 及默认、白名单、无默认项目三种表面的顶层关键字断言；`check:quick` 缺少 `dist` 时列出并跳过依赖构建产物的测试。
+- 验证：`npm run typecheck` 通过；`mcp-fixed-surface`、`mcp-require-project-path`、`mcp-tool-annotations` 共 26 项通过。此前 `check:quick` 的 8 个文件 53 项失败均来自缺少 `dist/bin/codegraph.js`，现在这些文件被跳过而非通过，需由 CI 验证。
+- 后续处理：`codegraph_edit` 补 `anthropic/alwaysLoad`；握手改为协议版本协商（见 [MCP 表面](mcp-surface.md)）；`verify:personal-install` 增加对安装包真实握手的检查，覆盖协商版本、两个默认工具的 `alwaysLoad` 和 schema 顶层关键字，使发布流程能拦住同类问题。`mcp-protocol-negotiation` 5 项（含用假 transport 驱动真实 `MCPSession` 的握手）与其余 3 个 MCP 表面测试共 31 项通过，类型检查通过。`verify-personal-install.mjs` 只做了语法检查，按约束未在本地运行，需由 CI 验证。
+- 未做：未发布、未在真实 Claude Code 中确认工具重新出现。

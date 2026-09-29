@@ -192,11 +192,44 @@ describe('结构化模式的可见性（P0 问题 3）', () => {
   it('tests 模式可只传 files，其余模式仍由运行时要求 query', () => {
     const schema = exploreOf(getStaticTools()).inputSchema;
     expect(schema.required).toBeUndefined();
-    expect(schema.anyOf).toEqual([
-      { required: ['query'] },
-      { required: ['mode', 'files'], properties: { mode: { const: 'tests' } } },
-    ]);
+    // Top-level anyOf/oneOf/allOf is rejected by the Anthropic API, so none may appear.
+    expect(schema).not.toHaveProperty('anyOf');
+    expect(schema).not.toHaveProperty('oneOf');
+    expect(schema).not.toHaveProperty('allOf');
     expect(schema.properties.query.description).toMatch(/omit only for tests/i);
+  });
+});
+
+describe('工具 inputSchema 顶层保持 Anthropic API 可接受', () => {
+  // Anthropic 拒绝顶层 oneOf/allOf/anyOf；一个工具带上它，Claude Code 会直接丢掉该工具。
+  const FORBIDDEN_TOP_LEVEL = ['anyOf', 'oneOf', 'allOf'] as const;
+  const original = process.env[ENV];
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV];
+    else process.env[ENV] = original;
+  });
+
+  const expectAccepted = (defs: ToolDefinition[]) => {
+    expect(defs.length).toBeGreaterThan(0);
+    for (const tool of defs) {
+      expect(tool.inputSchema.type, tool.name).toBe('object');
+      for (const key of FORBIDDEN_TOP_LEVEL) {
+        expect(tool.inputSchema, `${tool.name} 的 inputSchema 顶层不能有 ${key}`).not.toHaveProperty(key);
+      }
+    }
+  };
+
+  it('每个已定义工具的顶层 schema 都不含 anyOf/oneOf/allOf', () => {
+    expectAccepted(allTools);
+  });
+
+  it('默认、白名单全开和无默认项目三种表面同样满足', () => {
+    delete process.env[ENV];
+    expectAccepted(getStaticTools());
+    expectAccepted(new ToolHandler(null).getTools());
+    process.env[ENV] = allTools.map((t) => t.name).join(',');
+    expectAccepted(getStaticTools());
+    expectAccepted(new ToolHandler(null).getTools());
   });
 });
 
