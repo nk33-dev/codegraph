@@ -1633,38 +1633,17 @@ export const tools: ToolDefinition[] = [
           description: 'LSP references: include declaration.',
           default: true,
         },
-        offset: { type: 'number', description: 'source: 1-based first line; JSON: 0-based offset.' },
+        startLine: { type: 'number', description: 'source: 1-based line (preferred).' },
+        offset: { type: 'number', description: 'source: 1-based (compat); JSON: 0-based page.' },
         limit: { type: 'number', description: 'source: lines; JSON: page size 1–200.' },
         checkFiles: { type: 'boolean', description: 'Graph status only: scan disk changes without syncing.', default: false },
         query: {
           type: 'string',
-          description: 'Question, symbol, or file. Omit only for tests mode when files is provided.',
+          description: 'Question, symbol, or file. Omit for: tests+files; status; symbols/diagnostics+file.',
         },
         maxFiles: {
           type: 'number',
-          // 公共契约不再声明固定默认值（P0 问题 4）：未指定时由运行时按项目规模分档决定，
-          // getExploreOutputBudget() 是唯一事实来源。写死 12 与实际的 4/5/8 不符。
           description: 'explore file cap; default by project-size tier.',
-        },
-        directory: {
-          type: 'string',
-          description: '',
-        },
-        languages: {
-          type: 'array',
-          description: '',
-        },
-        frameworks: {
-          type: 'array',
-          description: '',
-        },
-        symbolTypes: {
-          type: 'array',
-          description: '',
-        },
-        excludeTypes: {
-          type: 'array',
-          description: '',
         },
         includeChanges: {
           type: 'boolean',
@@ -3932,15 +3911,19 @@ export class ToolHandler {
       if (args.backend !== undefined && args.backend !== 'graph') {
         return this.errorResult('source mode only supports the graph backend');
       }
-      if (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || (args.offset as number) < 1)) {
-        return this.errorResult('source offset must be a 1-based line number');
+      const lineParam = args.startLine ?? args.offset;
+      if (args.offset !== undefined && args.offset === 0) {
+        return this.errorResult('source offset=0 is invalid (lines are 1-based). Use startLine or offset >= 1.');
+      }
+      if (lineParam !== undefined && (!Number.isSafeInteger(lineParam) || (lineParam as number) < 1)) {
+        return this.errorResult('source startLine must be >= 1');
       }
       if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || (args.limit as number) < 1 || (args.limit as number) > 2000)) {
         return this.errorResult('source limit must be between 1 and 2000 lines');
       }
       const file = this.validateString(args.file ?? args.query, 'file');
       if (typeof file !== 'string') return file;
-      return this.handleNode({ file, offset: args.offset, limit: args.limit, projectPath: args.projectPath });
+      return this.handleNode({ file, offset: lineParam, limit: args.limit, projectPath: args.projectPath });
     }
     if (args.mode !== undefined && args.mode !== 'explore') return this.handleCodeQuery(args);
     // backend only means anything for structured modes; silently ignoring the argument
@@ -4051,14 +4034,17 @@ export class ToolHandler {
       } catch { /* path pinning must never fail an explore call */ }
     }
 
-    const startupQuestion = /(?:启动|运行).{0,8}(?:流程|调用链|入口)|(?:项目|应用|服务).{0,8}启动|\b(?:startup|boot(?:strap)?|entry point)\s+(?:flow|process|path)\b/i.test(rawQuery);
+    const startupQuestion = /(?:前端|后端|后台|服务).{0,6}(?:入口|启动|初始化)|(?:启动|运行).{0,8}(?:流程|调用链|入口)|(?:项目|应用|服务).{0,8}启动|(?:entry|main).{0,8}(?:point|file)|(?:application|frontend|backend).{0,8}entry|\b(?:startup|boot(?:strap)?|entry point)\s+(?:flow|process|path)\b/i.test(rawQuery);
     if (startupQuestion && pinnedFiles.length === 0) {
       const entries = cg.getFiles().map((file) => file.path)
         .filter((filePath) => !isTestFile(filePath))
         .map((filePath) => {
-          if (/^(?:src\/)?main\.[^/]+$/i.test(filePath) || /^(?:src\/)?__main__\.py$/i.test(filePath)) return { filePath, priority: 0 };
-          if (/^(?:src\/)?(?:index|app|server|program)\.[^/]+$/i.test(filePath)) return { filePath, priority: 1 };
-          if (/^(?:src\/)?(?:bin|cmd)\/[^/]+(?:\/main)?\.[^/]+$/i.test(filePath)) return { filePath, priority: 2 };
+          // Match main.* at any depth
+          if (/(?:^|\/)(?:src\/)?main\.[^/]+$/i.test(filePath) || /(?:^|\/)(?:src\/)?__main__\.py$/i.test(filePath)) return { filePath, priority: 0 };
+          // Match index|app|server|program at any depth
+          if (/(?:^|\/)(?:src\/)?(?:index|app|server|program)\.[^/]+$/i.test(filePath)) return { filePath, priority: 1 };
+          // Match bin/cmd directories
+          if (/(?:^|\/)(?:src\/)?(?:bin|cmd)\/[^/]+(?:\/main)?\.[^/]+$/i.test(filePath)) return { filePath, priority: 2 };
           return null;
         })
         .filter((entry): entry is { filePath: string; priority: number } => entry !== null)

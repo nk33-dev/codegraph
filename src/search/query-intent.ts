@@ -125,12 +125,20 @@ function containsAny(text: string, words: readonly string[]): boolean {
     : lower.includes(word));
 }
 
+import { expandChineseQuery } from './query-concepts.js';
+
 /**
  * Remove intent words from a query while preserving qualified-name punctuation.
  * `keep` protects real symbols whose names also happen to be intent words.
+ *
+ * Before removing, expand Chinese technical terms to include their English equivalents
+ * so downstream FTS can match on both forms.
  */
 export function removeQueryIntentWords(text: string, keep?: (word: string) => boolean): string {
-  const ascii = text.replace(/[A-Za-z][A-Za-z-]*/g, (word) => {
+  // Expand Chinese concepts first: "前端入口" → "前端 frontend client 入口 entry main"
+  const expanded = expandChineseQuery(text);
+
+  const ascii = expanded.replace(/[A-Za-z][A-Za-z-]*/g, (word) => {
     if (!ASCII_INTENT_WORDS.has(word.toLowerCase())) return word;
     return keep?.(word) ? word : ' ';
   });

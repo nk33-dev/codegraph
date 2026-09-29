@@ -365,9 +365,12 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
     throw new Error('query must be a string of at most 2000 characters');
   }
   // `mode:"tests"` takes the changed files, so a caller may pass them as `files` and leave the
-  // query empty. Every other mode is driven by the query string and must carry one.
+  // query empty. status, symbols+file, and diagnostics+file also don't need query.
   const filesInsteadOfQuery = request.mode === 'tests' && (request.files?.length ?? 0) > 0;
-  if (!request.query.trim() && !filesInsteadOfQuery) {
+  const queryOptional = request.mode === 'status'
+    || (request.mode === 'symbols' && request.file !== undefined)
+    || (request.mode === 'diagnostics' && request.file !== undefined);
+  if (!request.query.trim() && !filesInsteadOfQuery && !queryOptional) {
     throw new Error('query must be a non-empty string of at most 2000 characters');
   }
   if (request.checkFiles !== undefined && typeof request.checkFiles !== 'boolean') throw new Error('checkFiles must be boolean');
