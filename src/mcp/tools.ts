@@ -6289,7 +6289,10 @@ export class ToolHandler {
           return true;
         })
         // Drop whole-file envelope nodes (containers covering >50% of the file).
+        // Exempt focusedNode and explicitly named seeds (namedSeedIds) so matched
+        // .vue components don't get filtered out.
         .filter(n => n.id === focusedNode?.id
+          || flow.namedNodeIds.has(n.id)
           || !(ENVELOPE_KINDS.has(n.kind) && (n.endLine - n.startLine + 1) > fileLines.length * 0.5))
         // For large callers, show this symbol's call sites instead of truncating from the top of an entry such as main.
         .filter(n => !(focusedNode && n.id !== focusedNode.id && (focusedFilePriority.get(filePath) ?? 3) > 0
