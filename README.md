@@ -21,7 +21,7 @@
 
 ```powershell
 npm pack "github:nk33-dev/codegraph#personal"
-npm install -g ".\colbymchenry-codegraph-1.6.0-personal.3.tgz"
+npm install -g ".\colbymchenry-codegraph-1.6.0-personal.11.tgz"
 codegraph doctor
 ```
 
@@ -119,13 +119,13 @@ codegraph edit fetchUser --file src/api.ts --operation rename --new-name loadUse
 
 ## 可视化
 
+上游 v1.6.1 起暂停发布浏览器 viewer：`codegraph ui` 和 `codegraph web` 在启动前就会被拒绝，也不出现在 `--help` 里，除非显式设置 `CODEGRAPH_UI=1`。个人版跟随上游，不改动这个门禁。
+
 ```sh
-codegraph ui
-codegraph ui --no-open
-codegraph ui --port 8080
+CODEGRAPH_UI=1 codegraph ui --port 8080
 ```
 
-`codegraph web` 是 `ui` 的别名。服务默认使用本机端口 `4747`，终端会显示实际地址；按 `Ctrl+C` 退出。**不启动 UI 命令就不会启动可视化 HTTP 服务**；MCP 和按需启动的 LSP 有各自独立的生命周期。
+viewer 资源仍随包发布。服务默认使用本机端口 `4747`，终端会显示实际地址；按 `Ctrl+C` 退出。**不启动 UI 命令就不会启动可视化 HTTP 服务**；MCP 和按需启动的 LSP 有各自独立的生命周期。
 
 可视化来自上游项目，本分支沿用它。主要视图包括符号源码与调用关系、Map 模块地图、Entry points 入口、Steps 执行步骤和 Screens 页面关系；可展示的内容取决于项目语言、框架和索引信息。保存的浏览路径位于 `.codegraph/ui/trails/`。
 

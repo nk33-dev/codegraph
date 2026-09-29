@@ -17,11 +17,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
+import { WASM_RUNTIME_FLAGS } from '../src/extraction/wasm-runtime-flags';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
 function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
-  return spawn(process.execPath, [BIN, 'serve', '--mcp'], {
+  return spawn(process.execPath, [...WASM_RUNTIME_FLAGS, BIN, 'serve', '--mcp'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     // Pin to direct (in-process) mode. #172 is a contract about the in-process

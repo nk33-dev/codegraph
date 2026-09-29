@@ -129,7 +129,10 @@ if (files.length === 0) {
 const vitest = path.join(root, 'node_modules', 'vitest', 'vitest.mjs');
 const result = spawnSync(process.execPath, [vitest, 'run', ...files], {
   cwd: root,
-  env: process.env,
+  // vitest.config.mts runs __tests__/global-setup-dist.ts (which rebuilds the engine and
+  // the viewer when stale) unless this is set. The quick path is deliberately not a build:
+  // suites that need dist/ were listed and skipped above, and the full `npm test` builds.
+  env: { ...process.env, CODEGRAPH_SKIP_TEST_BUILD: '1' },
   stdio: 'inherit',
   windowsHide: true,
 });

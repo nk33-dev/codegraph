@@ -15,12 +15,30 @@ export default defineConfig({
     // 集成测试还会启动解析池和 CLI 子进程，避免按全部逻辑核再次叠加并发。
     maxWorkers: Math.min(4, availableParallelism()),
     minWorkers: 1,
-    // 与 CLI 使用相同的 WASM 编译参数，避免 Node 24 的 Turboshaft Zone OOM。
     pool: 'forks',
+    /**
+     * The same V8 flags every real launch path passes (the bundled launcher,
+     * the CLI's self re-exec, refresh-launcher): keep tree-sitter grammar
+     * compilation on the Liftoff baseline tier. Without them a pool worker
+     * runs the grammars on the turboshaft optimizing tier, and once enough
+     * parses have warmed a grammar function up, its background tier-up job
+     * exhausts a compiler Zone and aborts the worker — `Fatal process out of
+     * memory: Zone`, surfaced by vitest only as "Worker exited unexpectedly"
+     * with the rest of the file's tests silently unrun (#1779; the product-side
+     * story is in wasm-runtime-flags.ts, #293/#298). On Node 24 with a
+     * 660-test extraction suite this reproduced on every run at the same test.
+     * V8 flags are process-global, so the parse worker threads a test spawns
+     * are covered too.
+     */
     poolOptions: { forks: { execArgv: [...WASM_RUNTIME_FLAGS] } },
     globals: true,
     environment: 'node',
     include: ['__tests__/**/*.test.ts'],
+    // Suites that spawn the built CLI need a current dist/ (#1879). The quick path
+    // (npm run check:quick → scripts/test-changed.mjs) sets CODEGRAPH_SKIP_TEST_BUILD so
+    // it stays "typecheck + affected tests": there, dist-dependent suites are listed and
+    // skipped instead of triggering an engine + viewer rebuild (maintenance.md §4).
+    globalSetup: process.env.CODEGRAPH_SKIP_TEST_BUILD ? [] : ['./__tests__/global-setup-dist.ts'],
     /**
      * Several MCP integration tests (mcp-daemon, mcp-initialize, mcp-ppid-watchdog,
      * mcp-roots) spawn `dist/bin/codegraph.js serve --mcp` with `process.execPath`

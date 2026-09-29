@@ -98,9 +98,9 @@ interface Job {
 }
 
 export interface QueryPoolOptions {
-  /** Default project root each worker opens at spawn. */
-  root: string;
-  /** Max worker threads. Defaults to the resource profile's cap (bounded by cores). */
+  /** Default project root each worker opens at spawn, or null for per-call projects. */
+  root: string | null;
+  /** Max worker threads. Defaults to the resource profile's cap (bounded by cores); an explicit CODEGRAPH_QUERY_POOL_SIZE always wins. */
   size?: number;
   /** Workers warmed at construction. Default 1. */
   initialSize?: number;
@@ -176,7 +176,7 @@ export class QueryPool {
   private nextId = 1;
   private totalCrashes = 0;
   private destroyed = false;
-  private readonly root: string;
+  private readonly root: string | null;
   private readonly maxSize: number;
   private readonly minSize: number;
   private readonly idleShrinkMs: number;
@@ -275,11 +275,14 @@ export class QueryPool {
   }
 
   private onMessage(w: PoolWorker, m: WorkerMessage): void {
-    if (!m) return;
+    if (!m || !this.workers.has(w)) return; // ignore late messages from retired workers
     if (m.type === 'ready') {
-      this.pendingWorkers.delete(w);
-      if (m.ok === false) this.totalCrashes++; // hard open failure
-      else this.everReady = true;
+      if (!this.pendingWorkers.delete(w)) return; // already handled this handshake
+      if (m.ok === false) {
+        this.onWorkerGone(w); // failed opens consume the same budget as crashes
+        return;
+      }
+      this.everReady = true;
       this.idle.push(w);
       this.drain();
       return;

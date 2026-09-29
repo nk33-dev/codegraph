@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 10;
+export const CURRENT_SCHEMA_VERSION = 13;
 
 /**
  * Migration definition
@@ -179,6 +179,47 @@ const migrations: Migration[] = [
   },
   {
     version: 10,
+    description: 'Track synthesis inputs and stabilize synthesis traversal for incremental refresh (#1988)',
+    up: (db) => applySynthesisV10(db),
+  },
+  {
+    version: 11,
+    description: 'Guard synthesis metadata lookups against malformed JSON',
+    up: (db) => {
+      // Existing v10 indexes keep their old expression under IF NOT EXISTS.
+      // Rebuild transactionally; the guarded v10 definition also lets older
+      // databases containing malformed metadata reach this migration safely.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_edges_synthesis_site;
+        CREATE INDEX idx_edges_synthesis_site
+          ON edges(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.registeredAt') END)
+          WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END IS NOT NULL;
+      `);
+    },
+  },
+  {
+    version: 12,
+    description: 'Replay the synthesis stage for databases that recorded the fork-owned version 10',
+    up: (db) => {
+      // This fork's `file_text` migration was authored as version 10 before upstream
+      // claimed the same number for the synthesis stage (which now lives at version 13).
+      // A database written by the fork recorded "10" meaning `file_text`, and
+      // `runMigrations` never revisits a number at or below MAX(version) — so the
+      // synthesis stage would be skipped silently, leaving `synthesis_inputs` missing
+      // and every later synthesis query failing. Replay it for exactly those databases;
+      // one that already has the table (upstream, or a fresh index) is left untouched,
+      // which is also what keeps `edges` unchanged when this migration is re-run.
+      const existing = db
+        .prepare(
+          "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'synthesis_inputs'"
+        )
+        .get();
+      if (existing) return;
+      applySynthesisV10(db);
+    },
+  },
+  {
+    version: 13,
     description: 'Add persisted file content for project-wide text search',
     up: (db) => {
       db.exec(`CREATE TABLE IF NOT EXISTS file_text (
@@ -191,6 +232,34 @@ const migrations: Migration[] = [
     },
   },
 ];
+
+/**
+ * The synthesis stage upstream ships as schema version 10.
+ *
+ * Kept in one place because it runs twice by design: once as version 10, and again as
+ * version 12 for databases that recorded the fork's own version 10. Every statement is
+ * idempotent, so a second run is a no-op wherever the first one landed.
+ */
+function applySynthesisV10(db: SqliteDatabase): void {
+  db.exec(`
+    DROP INDEX IF EXISTS idx_nodes_kind;
+    CREATE INDEX idx_nodes_kind ON nodes(kind, file_path, start_line, id);
+    CREATE TABLE IF NOT EXISTS synthesis_inputs (
+      file_path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_edges_synthesis_site ON edges(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.registeredAt') END)
+      WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END IS NOT NULL;
+    UPDATE edges SET metadata = json_set(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.synthesizedBy', 'go-method-contains')
+      WHERE kind = 'contains' AND provenance IS NULL AND EXISTS (
+        SELECT 1 FROM nodes s JOIN nodes t ON t.id = edges.target
+        WHERE s.id = edges.source AND s.language = 'go' AND t.language = 'go'
+          AND s.kind IN ('struct', 'class', 'interface', 'enum', 'type_alias') AND t.kind = 'method'
+          AND s.file_path != t.file_path
+      );
+    INSERT OR REPLACE INTO project_metadata(key, value, updated_at)
+      VALUES ('synthesis_pending', '1', 0);
+  `);
+}
 
 /**
  * Get the current schema version from the database

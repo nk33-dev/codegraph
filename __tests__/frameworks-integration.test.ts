@@ -875,7 +875,6 @@ describe('JVM FQN imports — end-to-end', () => {
       .getIncomingEdges(bar!.id)
       .find((e) => e.kind === 'imports');
     expect(reachesBar, 'an imports edge should resolve to Bar via FQN').toBeDefined();
-
   });
 
   it('resolves a Kotlin top-level function import', async () => {

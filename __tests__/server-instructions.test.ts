@@ -26,9 +26,15 @@ const originalToolEnv = process.env[TOOL_ENV];
  * 因为 explore 的 schema 确实多了一个可发现的可选参数——这是唯一一次有意增长：
  * 参数本身只花 173 字符，描述已经压到最短，语义（默认摘要、可按名再查全文）
  * 由摘要分节自身的表头承载。
+ *
+ * 2026-09-30（合并上游 v1.6.1 之后实测）：常驻说明 2,488；tools/list 4,662；
+ * 合计 7,150。常驻说明的上限由 2,300 调到 2,500，因为上游带来两条必须常驻的事实：
+ * 基于漂移索引的拒答（点名文件 + `changed on disk after the last index sync`），
+ * 以及空结果给出词法匹配与候选名。两条都已压到最短，其余段落未动；
+ * tools/list 反而比上一基线小了，所以合计上限不调。
  */
 const SURFACE_MAX = {
-  instructions: 2_300,
+  instructions: 2_500,
   noRootInstructions: 500,
   toolsList: 5_050,
   explore: 3_280,

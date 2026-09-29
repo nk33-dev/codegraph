@@ -39,8 +39,17 @@ describe('extractionUpgradeScope', () => {
   });
 
   it('treats an upgrade across unrecorded versions as a full rebuild instead of guessing', () => {
-    expect(extractionUpgradeScope(EXTRACTION_VERSION - 2)).toMatchObject({
+    // The registry now records two increments (27 and 28), so the first
+    // unrecorded version sits three back — the assertion is about honesty, not
+    // about which number that is.
+    expect(extractionUpgradeScope(EXTRACTION_VERSION - 3)).toMatchObject({
       scope: 'all', unrecordedHistory: true,
+    });
+  });
+
+  it('uses recorded scope when every crossed version is registered', () => {
+    expect(extractionUpgradeScope(EXTRACTION_VERSION - 2)).toMatchObject({
+      scope: 'all', unrecordedHistory: false,
     });
   });
 

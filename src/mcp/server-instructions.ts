@@ -14,7 +14,7 @@ Codegraph reads an indexed local code graph. Its default MCP surface has two too
 - Call \`codegraph_explore\` first for indexed source or flows. Ask a question or name symbols/files; for a flow, name its endpoints.
 - Default explore returns current, line-numbered source, flow evidence and blast radius. MCP exploration returns text only so clients receive the source. Treat displayed lines as already read. Gap/truncation markers mean omitted code; query the missing symbol or range before editing it. Use \`mode:"source"\` with file, startLine and limit for ranges.
 - Structured modes return versioned JSON for definitions, references, file symbols, diagnostics, impact, tests, status, and file text. Use \`mode:"text"\` for literal strings or configuration keys; Graph is the default backend, while diagnostics auto-routes to LSP.
-- If an answer is incomplete, call explore again with the uncovered exact names.
+- If an answer is empty or incomplete, call explore again with the uncovered exact names; an empty result reports the lexical matches it checked and may name indexed candidates to retry with.
 
 ## Editing
 
@@ -25,7 +25,7 @@ Codegraph reads an indexed local code graph. Its default MCP surface has two too
 ## Boundaries
 
 - Graph relationships are best-effort static evidence; LSP/compiler/tests remain the authority for language correctness. Runtime candidates and inferred edges are labelled, not presented as confirmed calls.
-- Heed pending, stale, or degraded-index warnings. Unflagged displayed source is current; a flagged file may require sync or a direct read.
+- Heed pending, stale, or degraded-index warnings. Unflagged shown source is current; a refusal to answer from changed files, or a \`changed on disk after the last index sync\` flag, means Read that file and retry after sync.
 - Use \`projectPath\` for another indexed project or when this session has no default project.
 - If a project has no \`.codegraph/\`, stop using Codegraph for it and use built-in tools. Indexing is the user's decision; do not run \`codegraph init\` yourself.
 `;

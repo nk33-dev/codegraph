@@ -17,6 +17,7 @@
  */
 import type CodeGraph from '../index';
 import type { LspManager } from '../lsp/manager';
+import { LockUnavailableError } from '../sync';
 import {
   CodeEditRefusal,
   editRequestHash,
@@ -50,8 +51,10 @@ async function syncIndex(cg: CodeGraph, files: EditFilePreview[]): Promise<{ syn
   try {
     if (structural) {
       // A deletion or a moved file needs the incremental sweep (indexFiles only knows "index these paths").
-      const outcome = await cg.sync();
-      if (outcome.lockUnavailable) {
+      try {
+        await cg.sync();
+      } catch (err) {
+        if (!(err instanceof LockUnavailableError)) throw err;
         warnings.push(
           'The files were written, but the index writer lock is busy; run `codegraph sync` so queries see the new paths.',
         );
