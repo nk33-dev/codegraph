@@ -48,7 +48,7 @@ import {
   type QueryLineAnchor,
   type QuerySetAsideMatch,
 } from '../search/query-paths';
-import { parseQueryIntent, removeQueryIntentWords } from '../search/query-intent';
+import { parseQueryIntent, removeQueryIntentWords, removeViewWords } from '../search/query-intent';
 import { collectIncomingRelations } from '../graph/incoming-relations';
 import {
   existsSync,
@@ -5144,6 +5144,15 @@ export class ToolHandler {
       } else {
         // Intent words are still in this string, and path spans are already out.
         const miss = cg.getExploreMissDiagnostics(diagnosticsQuery);
+        // Candidates come from the query WITHOUT its view words: "callers" or
+        // "related" asks for a view rather than naming a topic, and letting them
+        // seed shared-word candidates is the noise the intent vocabulary exists to
+        // remove. Connectors stay (`explain` may well be part of a name here), and
+        // the word report above still covers every word the agent wrote.
+        const viewFree = removeViewWords(diagnosticsQuery).trim();
+        const candidateMiss = viewFree && viewFree !== diagnosticsQuery.trim()
+          ? cg.getExploreMissDiagnostics(viewFree)
+          : miss;
         const list = (words: string[]) => words.map(w => `\`${w}\``).join(', ');
         // Separate caps preserve the retry instruction and complete candidate
         // names even with long queries or generated identifiers.
@@ -5161,8 +5170,8 @@ export class ToolHandler {
         if (miss.matched.length > 0) {
           explanation += `\nMatched indexed words: ${cappedList(miss.matched, 200)}; these did not yield a relevant result after filtering/scoring.`;
         }
-        explanation += miss.candidates.length > 0
-          ? `\nCandidates to retry with codegraph_explore (shared words, not confirmed answers): ${cappedList(miss.candidates, 350)}`
+        explanation += candidateMiss.candidates.length > 0
+          ? `\nCandidates to retry with codegraph_explore (shared words, not confirmed answers): ${cappedList(candidateMiss.candidates, 350)}`
           : '\nNo shared-word symbol candidates found; retry codegraph_explore with literal symbol/file names or code terms.';
       }
       const empty = changeContext

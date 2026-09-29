@@ -150,15 +150,35 @@ function actionOnStore(store: Node, action: string, ref: UnresolvedRef, context:
   };
 }
 
+/**
+ * A HARD refusal: the caller must not let any other strategy resolve this
+ * reference either. Returned when the accessor is itself shadowed by a local
+ * binding (`useSession` as a parameter) — binding it to the file-scope store
+ * would be a fabricated edge, not a guess worth taking.
+ *
+ * Plain `null` keeps its older meaning of "a store reference this pass cannot
+ * prove"; the caller is free to try other strategies on those.
+ */
+export const STORE_BINDING_SHADOWED: unique symbol = Symbol('store-binding-shadowed');
+
 /** undefined 表示不属于已识别的 store 绑定；null 表示有绑定但不能证明目标。 */
-export function resolveStoreBinding(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null | undefined {
+export function resolveStoreBinding(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null | undefined | typeof STORE_BINDING_SHADOWED {
   if (ref.referenceKind !== 'calls' || !JS.has(ref.language)) return undefined;
   const sibling = /^get\(\)\.([\w$]+)$/.exec(ref.referenceName);
   if (sibling) {
     const source = context.readFile(ref.filePath) ?? '';
     const offset = callOffset(source, ref);
-    const getters = bindingsFor(ref, context, source).filter((binding) =>
+    const visibleGetters = bindingsFor(ref, context, source).filter((binding) =>
       binding.name === 'get' && binding.start <= offset && offset < binding.end);
+    // Two visible `get`s means an inner one (a method's own parameter,
+    // `shadowGet: (get: any) => get().reset()`) shadows the store factory's —
+    // indistinguishable from the store's own `get` at this offset, so refuse
+    // hard rather than bind the action through the shadowed accessor.
+    if (visibleGetters.length > 1) return STORE_BINDING_SHADOWED;
+    const getters = visibleGetters;
     if (getters.length !== 1) return null;
     const containers = context.getNodesInFile(ref.filePath).filter((node) =>
       (node.kind === 'constant' || node.kind === 'variable') && node.startLine <= ref.line && node.endLine >= ref.line);
@@ -186,7 +206,9 @@ export function resolveStoreBinding(ref: UnresolvedRef, context: ResolutionConte
   const binding = visible[0];
   if (!binding?.store || !binding.action) return undefined;
   // accessor 本身也可能被参数遮蔽，不能借用文件顶部的同名 import。
-  if (bindings.some((b) => b.name === binding.store && b.local && b.start <= binding.start && b.end >= binding.end)) return null;
+  if (bindings.some((b) => b.name === binding.store && b.local && b.start <= binding.start && b.end >= binding.end)) {
+    return STORE_BINDING_SHADOWED;
+  }
   const store = storeNode(binding.store, ref, context);
   return store ? actionOnStore(store, binding.action, ref, context) : null;
 }

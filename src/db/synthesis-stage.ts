@@ -5,6 +5,24 @@ import { createYielder } from '../resolution/cooperative-yield';
 // Ownership is independent of provenance: Go method containment is structural.
 export const SYNTHESIZED_EDGE = "CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END IS NOT NULL";
 
+/**
+ * Synthesized edges this fork maintains OUTSIDE the synthesis stage.
+ *
+ * The store binding (`src/resolution/store-binding.ts`) is produced by the
+ * RESOLVER, and resolving it CONSUMES the reference that produced it. Replacing
+ * it here would therefore delete it for good: the stage re-runs only the callback
+ * pass, and the next sync has no pending reference left to rebuild it from — the
+ * edge survived the increment that deleted its target and never came back. Kept
+ * out of the replacement instead: deleting the target node, or resolving that
+ * store's own files again, is what keeps it current.
+ */
+export const STAGE_KEPT_SYNTHESIZERS = ['zustand-binding'] as const;
+
+/** {@link SYNTHESIZED_EDGE}, minus the markers the stage must leave in place. */
+const REPLACEABLE_SYNTHESIZED_EDGE =
+  `(${SYNTHESIZED_EDGE} AND CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.synthesizedBy') END`
+  + ` NOT IN (${STAGE_KEPT_SYNTHESIZERS.map((marker) => `'${marker}'`).join(', ')}))`;
+
 /** A private edge overlay: passes see base edges plus their new Go prerequisites. */
 export class SynthesisStage {
   readonly db: SqliteDatabase;
@@ -58,7 +76,7 @@ export class SynthesisStage {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const remove = this.db.prepare(`DELETE FROM main.edges WHERE id IN (
-        SELECT id FROM main.edges WHERE ${SYNTHESIZED_EDGE} LIMIT 2000
+        SELECT id FROM main.edges WHERE ${REPLACEABLE_SYNTHESIZED_EDGE} LIMIT 2000
       )`);
       while (remove.run().changes > 0) await yieldToLoop();
       const insert = this.db.prepare(`INSERT OR IGNORE INTO main.edges

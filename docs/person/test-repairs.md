@@ -388,8 +388,15 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - 契约与预算：常驻说明长度 2,488（上限由 2,300 调到 2,500，理由是上游新增的漂移拒答与空结果诊断两条常驻事实），tools/list 4,662，合计 7,150；初始化响应补上 `capabilities: { tools: {} }`；catch-up 门保持安装到 reconcile 结束，不再由第一个调用消费。
 - 机械修复：上游新带入的 40 处 `child_process` 调用补齐 `windowsHide: true`（`windows-child-process` 契约测试通过）；Git Bash 探测（`__tests__/shell-paths.ts`）让 launcher/installer 用例在缺 bash 时明确跳过、有 bash 时照常执行；Windows 临时目录清理先关闭实例再带重试删除。
 - 验证：`npm run typecheck` 通过；`npm run build` 通过（`check-ui-build` 报告 dist/viewer 与 29 个 grammar 正常）；`doctor --json` 显示入口为本机 `dist/bin/codegraph.js`、版本 `1.6.0-personal.11`、分支 `codex/sync-1.6.1`。逐项定向运行：迁移/桥接、`resolution`、`graph`、`query-paths`、`explore-intent-*`、`explore-empty-diagnostics`、`chinese-filename-retrieval`、`code-query`、`server-instructions`、`mcp-fixed-surface`、遥测两组、`store-binding-cache`、`function-ref`、`explore-test-summary`、`explore-named-file-valve`、MCP 握手与门、Windows 契约等均通过。
-- 未解决（不得写成通过）：
-  - `__tests__/zustand-binding.test.ts` 的「目标删除后恢复」一步：增量同步后 store 绑定边不再重建。已用插桩确认引用在同步中被解析到正确的恢复节点，但该边没有落库（其余三个 store 相关用例已修好：`store-binding-cache` 列号按个人 v27 的标识符列断言，`release-main-regressions` 的访问器解析在「个人拒绝不阻断上游 store 合成器」后通过）。
-  - `__tests__/ui-server-api.test.ts` 的「引擎自身最热符号」断言 `LRUCache.get` 调用方 ≥500，本仓库实测 55。该值取自已合并代码重建的索引，属上游绝对阈值与个人更严格的解析守卫（不猜同名/不降级成员链）之间的口径差异；需要单独裁决是调阈值还是放匹配。
+- 第二轮（同日晚些）修掉的合并回归，均定位到具体机制：
+  - store 绑定边在增量同步后消失：**根因是上游的合成阶段**。`refreshSynthesis` 用独立连接的 `SynthesisStage.publish()` 删掉所有带 `synthesizedBy` 的边，只回写它自己重跑的 callback 边；个人 store 绑定的边由解析器产出、且解析时已消费掉对应引用，被删后没有任何东西能重建。修法：把个人自有的 `synthesizedBy: 'zustand-binding'` 排除在阶段替换之外（`src/db/synthesis-stage.ts` 的 `STAGE_KEPT_SYNTHESIZERS`），它由节点删除与再次解析其自身文件维持。
+  - store 拒绝语义与上游解析的取舍：`resolveStoreBinding` 的 `null`（无法证明）现在允许其他策略继续，只有**参数/局部遮蔽**这一条返回硬拒绝（新导出 `STORE_BINDING_SHADOWED`），于是上游「两种访问器形式都应解析」与个人「遮蔽不猜同名 action」同时成立。
+  - 空结果诊断的候选词：改为只剥离**视图词**（`removeViewWords`：definitions/callers/tests/related…），连接词（`explain`/`how`）保留，既避免用意图词生成候选，也保留「检查过哪些词」的报告。
+  - 影响面把函数当值引用算作调用方（上游 #1820），以及测试摘要里「exercises X, Y」按源码行序输出。
+  - MCP：初始化响应补 `capabilities: { tools: {} }`；catch-up 门保持安装到 reconcile 结束；查询池启动日志改为 `Query pool: up to N worker thread(s)`（保留个人档位范围与来源）。
+  - daemon 版本的自动切换**永不向自身或父进程发信号**（`stopDaemonAt` 的守卫）：锁文件若写着调用方自己的 pid，旧行为会把 MCP 客户端自己杀掉。
+- 仍未解决（不得写成通过）：
+  - `__tests__/ui-server-api.test.ts` 的「引擎自身最热符号」断言 `LRUCache.get` 调用方 ≥500：本仓库实测 55；用合并后的代码索引**基线源码**（`c035e94` 的树）只有 17。两个数都远低于阈值，说明个人更严格的成员解析（不把未知接收者的成员调用按末尾方法名绑定）本就不产生上游那批边——阈值本身是上游匹配口径的产物。需要单独裁决：调低/改写该阈值，还是接受更松的匹配。
   - `__tests__/query-output-indexing.test.ts` 关于 explore schema 暴露 `directory/languages/frameworks/symbolTypes/excludeTypes` 的断言在个人基线上同样失败（用 `git worktree` 在 `c035e94` 上复现），属既有缺口：代码读取这些参数，schema 未声明。
+  - `__tests__/bundle-launcher.test.ts` 与 `installer-targets.test.ts` 中依赖 Git Bash 的用例：本机探测到 Git 装在非默认路径，已改为按真实路径探测；完全没有 bash 的环境会以明确原因跳过（记为本机环境差异，不作为通过证据）。
 - 未做：未推送、未打标签、未触发 Personal Release；未在 Linux/macOS 与真实 Claude Code 宿主上复验；`verify:personal-install`、`npm pack`、发布资产按约束未在本地执行。

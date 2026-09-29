@@ -170,8 +170,8 @@ export class MCPEngine {
       });
       this.toolHandler.setQueryPool(this.queryPool);
       process.stderr.write(
-        `[CodeGraph MCP] Query pool: ${initialSize}..${size} worker thread(s) for concurrent reads ` +
-        `(${sizing.source}, ${describeResourceProfile(profile)}).\n`
+        `[CodeGraph MCP] Query pool: up to ${size} worker thread(s) for concurrent reads ` +
+        `(starts at ${initialSize}, min ${minSize}; ${sizing.source}, ${describeResourceProfile(profile)}).\n`
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

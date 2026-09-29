@@ -39,7 +39,7 @@ import { lexicalPathWithinRoot } from '../utils';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { JS_BUILT_INS } from './js-builtins';
-import { resolveStoreBinding } from './store-binding';
+import { resolveStoreBinding, STORE_BINDING_SHADOWED } from './store-binding';
 import { dynamicNamespaceImportMapping } from '../graph/dynamic-import';
 
 /** Node kinds that can declare supertypes (extends/implements). */
@@ -1002,11 +1002,11 @@ export class ReferenceResolver {
   }
 
   private resolveOneInner(ref: UnresolvedRef): ResolvedRef | null {
-    // `undefined` = not a store ref; `null` = a store ref this fork cannot prove.
-    // A refusal must not end the ref's journey: the upstream store synthesizer
-    // (isStoreFile-gated, evidence-based) can still resolve it, and only a
-    // resolved binding is worth short-circuiting on.
+    // `undefined` = not a store ref; `null` = a store ref this fork cannot prove
+    // (other strategies may still); SHADOWED = the accessor is a shadowed local,
+    // which must stay unresolved rather than bind to a same-named store.
     const storeBinding = resolveStoreBinding(ref, this.context);
+    if (storeBinding === STORE_BINDING_SHADOWED) return null;
     if (storeBinding) return storeBinding;
 
     if (isUnresolvedJsMemberChain(ref)) {

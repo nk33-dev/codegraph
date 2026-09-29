@@ -108,6 +108,38 @@ function buildIntentPattern(): RegExp {
 
 const INTENT_PATTERN = buildIntentPattern();
 
+/** Like {@link buildIntentPattern}, but over the view words only — no connectors. */
+function buildViewPattern(): RegExp {
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const ascii: string[] = [];
+  const cjk: string[] = [];
+  for (const word of Object.values(INTENT_GROUPS).flat()) {
+    if (/^[a-z-]+$/.test(word)) ascii.push(word);
+    else cjk.push(word);
+  }
+  const byLength = (a: string, b: string) => b.length - a.length;
+  const parts: string[] = [];
+  if (ascii.length > 0) parts.push(`\\b(?:${[...ascii].sort(byLength).map(escape).join('|')})\\b`);
+  if (cjk.length > 0) parts.push(`(?:${[...cjk].sort(byLength).map(escape).join('|')})`);
+  return new RegExp(parts.join('|'), 'gi');
+}
+
+const VIEW_PATTERN = buildViewPattern();
+
+/**
+ * Remove the words that ask for a VIEW (definitions, callers, tests, related…)
+ * and keep everything else, connectors included.
+ *
+ * The miss diagnostics use this: a view word must not seed shared-word
+ * candidates — "callers" is a question about the answer, not a topic — while a
+ * word like `explain` may legitimately be part of a name here
+ * (`explainHowVariant3`), so it stays. {@link removeQueryIntentWords} is the
+ * stricter strip used for retrieval.
+ */
+export function removeViewWords(text: string): string {
+  return text.replace(VIEW_PATTERN, ' ').replace(/\s+/g, ' ').trim();
+}
+
 const ASCII_INTENT_WORDS = new Set(INTENT_WORDS.filter((word) => /^[a-z-]+$/.test(word)));
 const CJK_INTENT_PATTERN = new RegExp(
   INTENT_WORDS

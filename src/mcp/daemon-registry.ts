@@ -281,6 +281,14 @@ export async function stopDaemonAt(root: string, options: { preserveUnverified?:
     const removed = cleanupDaemonArtifacts(root, lockContents);
     return { root, pid, outcome: removed ? 'not-running' : 'unverified' };
   }
+  // Never signal OURSELVES or the process that started us: a lockfile naming our
+  // own pid (a client that was itself a daemon once, a recycled pid, a planted
+  // lock) would otherwise turn a version-mismatch fallback into "the MCP server
+  // killed its own client". No version switch is worth that; the session falls
+  // back to serving in-process instead.
+  if (pid === process.pid || pid === process.ppid) {
+    return { root, pid, outcome: 'unverified' };
+  }
   // Never signal a process merely because it reused a stale daemon PID. The
   // daemon's immediate hello is the process-identity proof (#1553).
   if (!identity || !canProbeDaemonIdentity(identity)) {
