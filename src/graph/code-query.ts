@@ -225,6 +225,10 @@ export interface IndexBlock {
   watching: boolean;
   degraded: boolean;
   degradedReason: string | null;
+  /** Why file watching is inactive (when watching=false). */
+  watchPolicy?: 'session-default' | 'unwatched-projectPath' | 'disabled-lock' | 'disabled-env' | 'disabled-wsl' | 'start-failed' | 'never-started';
+  /** Human-readable explanation of watchPolicy. */
+  watchPolicyReason?: string;
   pendingFiles: PendingFile[];
   pendingFileCount: number;
   pendingReferences: number;
@@ -504,6 +508,16 @@ export function indexWarnings(index: IndexBlock): string[] {
     warnings.push('The index was built at a different Git commit; run codegraph sync and check the changed-file list.');
   }
   if (index.degraded) warnings.push('Auto-sync is disabled; indexed results may be stale.');
+
+  // Watch policy warning: explain why file watching is inactive
+  if (!index.watching && !index.degraded && index.watchPolicy) {
+    const reason = index.watchPolicyReason || index.watchPolicy;
+    warnings.push(
+      `File watching is not active (${reason}). ` +
+      `The index will not auto-update; run codegraph sync after code changes.`
+    );
+  }
+
   if (index.pendingReferences) warnings.push('Reference resolution is incomplete; results may omit edges.');
   if (index.freshness !== 'current' && index.freshnessReason) {
     warnings.push(`Index freshness is ${index.freshness}: ${index.freshnessReason}.`);
