@@ -268,6 +268,9 @@ export class MCPSession {
     // Respond to the handshake BEFORE doing any heavy init — see issue #172.
     this.transport.sendResult(request.id, {
       protocolVersion: negotiateProtocolVersion(params?.protocolVersion),
+      // Advertise the tool capability: clients that gate `tools/list` on it
+      // (the spec's expectation) otherwise never ask for the tool surface.
+      capabilities: { tools: {} },
       serverInfo: SERVER_INFO,
       instructions: initializeInstructions(indexed ? SERVER_INSTRUCTIONS : SERVER_INSTRUCTIONS_NO_ROOT_INDEX),
     });

@@ -32,7 +32,23 @@ When refactoring, record the following in the corresponding feature document:
 
 | Old upstream file/symbol | Current module/symbol | Single call or registration entry point | Behavior contract | Regression test |
 | --- | --- | --- | --- | --- |
-| Fill in per the actual refactor | Current runtime location | Who calls it, when it registers | Inputs/outputs and lifecycle | Reproducible behavior check |
+| `src/directory.ts` `STRUCTURAL_*`, `hasStructuralKeyword`, `isStructuralPrompt` | `src/search/query-intent.ts` `parseQueryIntent`, `removeQueryIntentWords`, `stripQueryIntentWords`; the hook itself gates on graph-verified `extractCodeTokens` plus indexed prose segments | `src/mcp/tools.ts` imports the intent vocabulary; it is the only source of those words | An intent word names a view and never seeds a fuzzy match; a word survives only when it is also an indexed symbol name | `__tests__/frontload-hook.test.ts`, `__tests__/explore-intent-*.test.ts` |
+| `src/mcp/index.ts` daemon spawn, wait, version switch | `src/mcp/daemon-spawn.ts` `spawnDetachedDaemon`, `waitForDaemonSocket`, `restartSharedDaemon` | imported once by `src/mcp/index.ts`; the CLI version switch and the handshake proxy share it | one ~6s wait budget and 25ms poll cadence, defined once instead of per caller | `__tests__/mcp-daemon.test.ts`, `__tests__/daemon-registry.test.ts` |
+| `src/mcp/tools.ts` edit tool (upstream ships no edit tool) | `src/mcp/edit-tool.ts` `editTools`, merged into `allTools` in `src/mcp/tools.ts` | `src/mcp/session.ts` looks the tool up in `allTools` and executes it; that is the only dispatch point | preview by default, two-step `previewHash` write, ambiguous or drifted targets refused | `__tests__/edit-*.test.ts` |
+| `src/graph/traversal.ts` recursive impact DFS | same file: `getImpactRadius` expands one level per batch through `getIncomingEdgesTo` / `getOutgoingEdgesFrom` | `GraphTraverser.getImpactRadius`, no other caller | shortest path first; a container's members expand at the same depth; the boundary layer's incoming edges are kept | `__tests__/graph.test.ts` |
+| `MCPEngine.startWatching` calling `cg.watch` directly | `src/mcp/project-lifecycle.ts` `acquireProject` → `activate()` | `MCPEngine.startWatching()` and the explicit-project handler both go through it; it is the only `watch` registration in the tree | one watcher per project; writer lock, then watch plus catch-up sync, then ready | `__tests__/mcp-projectpath-lifecycle.test.ts`, `__tests__/mcp-catchup-gate.test.ts` |
+| `src/mcp/index.ts` direct/proxy `new MCPEngine()` | same file: `readOnlyFallback()`, `DIRECT_QUERY_POOL_MAX`, `new MCPEngine({ readOnly, queryPool, queryPoolDefaultMax })` | the engine constructor is the only place a session's read mode is decided | fall back to read-only only when the writer lock is held or a live daemon answers the socket; a direct session gets a capped pool | `__tests__/query-pool.test.ts`, `__tests__/mcp-daemon.test.ts` |
+| `src/telemetry/index.ts` default-on consent with a first-run notice | fork keeps default-off; `hasExplicitConsent` treats `env` and `default-notice` as non-explicit | `getStatus()` is the only consent decision; `ensureSendingIdentity` mints process-local identities | nothing is recorded, persisted or sent without an explicit choice; an environment override sends with an identity that never counts as a stored choice | `__tests__/telemetry.test.ts`, `__tests__/telemetry-optout.test.ts` |
+
+### 迁移编号纪律
+
+**个人独占迁移与上游共用同一条数字线，不另开高位号段。** 每次同步，如果上游新增了编号低于个人迁移的迁移，必须三件事一起做：
+
+1. 把个人迁移重编号到上游最大值之上；
+2. 在新最大编号之后补一条**条件桥接迁移**，为"MAX 已越过该编号、但从未执行过它"的库重放那条上游迁移；
+3. 补一条伪造旧状态的回归用例，证明桥接真的把它补齐了。
+
+理由与本次实例：个人的 `file_text` 迁移曾占 schema 10，上游 v1.6.1 也用 10 表示 synthesis。`runMigrations` 只跑编号大于 `MAX(schema_versions)` 的迁移，所以个人库会**静默跳过**上游 v10——不报错，只是合成相关的表和回填永远不存在。处理：保留上游 10/11，个人 `file_text` 移到 13，新增 12 号桥接（只在 `synthesis_inputs` 缺失时重放，因此对上游库和全新库是 no-op），`CURRENT_SCHEMA_VERSION` 取 13。同类的提取版本也撞了：两边都是 27 而含义不同，个人进位到 28 并同时登记 27、28 的范围，个人库才会被判定需要重抽取。回归用例见 `__tests__/personal-schema-bridge.test.ts` 与 `__tests__/migrations-synthesis-json.test.ts`。
 
 An old entry point is only the basis for migration. An uncommitted merge can be abandoned with `git merge --abort`; after verification, merge back into personal, keeping the upstream merge ancestor, without squashing the whole sync and without force-resetting shared history.
 

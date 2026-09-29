@@ -196,7 +196,9 @@ describe('结构化模式的可见性（P0 问题 3）', () => {
     expect(schema).not.toHaveProperty('anyOf');
     expect(schema).not.toHaveProperty('oneOf');
     expect(schema).not.toHaveProperty('allOf');
-    expect(schema.properties.query.description).toMatch(/omit only for tests/i);
+    expect(schema.properties.query.description).toMatch(/omit for:/i);
+    // …and names the modes that take files instead of a query.
+    expect(schema.properties.query.description).toMatch(/tests/i);
   });
 });
 
@@ -289,7 +291,8 @@ describe('explore 响应只陈述本次调用的事实（P0 问题 2）', () => 
     try {
       const result = await handler.execute('codegraph_explore', { query: 'Session run helper' });
       const text = result.content?.[0]?.text ?? '';
-      expect(text).toMatch(/> Shown source spans \d+ files/);
+      // 上游 v1.6.1 起这句话按"是否真的完整"分两种措辞；这里只要求它讲本次调用的跨度。
+      expect(text).toMatch(/Complete source for [\d]+ files is included above|Verbatim source for [\d]+ files is included above/);
       expect(text).not.toContain('explore those names before editing');
     } finally {
       spy.mockRestore();

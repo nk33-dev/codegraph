@@ -372,3 +372,24 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
 - 验证：`npm run typecheck` 通过；`mcp-fixed-surface`、`mcp-require-project-path`、`mcp-tool-annotations` 共 26 项通过。此前 `check:quick` 的 8 个文件 53 项失败均来自缺少 `dist/bin/codegraph.js`，现在这些文件被跳过而非通过，需由 CI 验证。
 - 后续处理：`codegraph_edit` 补 `anthropic/alwaysLoad`；握手改为协议版本协商（见 [MCP 表面](mcp-surface.md)）；`verify:personal-install` 增加对安装包真实握手的检查，覆盖协商版本、两个默认工具的 `alwaysLoad` 和 schema 顶层关键字，使发布流程能拦住同类问题。`mcp-protocol-negotiation` 5 项（含用假 transport 驱动真实 `MCPSession` 的握手）与其余 3 个 MCP 表面测试共 31 项通过，类型检查通过。`verify-personal-install.mjs` 只做了语法检查，按约束未在本地运行，需由 CI 验证。
 - 未做：未发布、未在真实 Claude Code 中确认工具重新出现。
+
+## 2026-09-30 首次上游同步（v1.6.1）
+
+- 目标与基线：上游 `f4ddf50`（v1.6.1，113 提交 / 247 文件）合入 `personal`，基线是 fork 点 `3ed73bc`。本地 `main` 快进到 `f4ddf50` 后在 `codex/sync-1.6.1` 上合并；43 个冲突文件全部解完，同步结果**只在本地提交，未推送**，因此三平台 CI 与隔离安装一律记为未验证。
+- 版本撞车（本轮最重要的静默风险）：个人 `file_text` 迁移原占 schema 10，上游 v10 是 synthesis。处理为「上游 10/11 原样 + 个人 `file_text` 移到 13 + 新增 12 号条件桥接迁移」，`CURRENT_SCHEMA_VERSION = 13`；`EXTRACTION_VERSION` 由 27 进位到 28 并在注册表同时登记 27/28。回归用例：`__tests__/personal-schema-bridge.test.ts`（2 项）与上游 `migrations-synthesis-json.test.ts`（10 项）全部通过。
+- 在**索引副本**上实测升级路径：`CODEGRAPH_DIR=.codegraph-check node dist/bin/codegraph.js sync --upgrade-index --yes` 报告「built with extraction version 27 (current: 28)」、范围 all languages、1018 文件与耗时/峰值磁盘估计，随后重建 1,015 文件、15.6 秒完成。原索引未被改动。
+- 合并中修复的真实回归（均已定位到合并引入，非个人既有）：
+  - 意图词剥离把下划线标识符切断（`use_it` → `_it`），触发上游 #1373 宏场景用例；改为整词匹配；
+  - 空结果诊断用了被剥离意图词后的查询（`how` 被移除），且路径跨段被混入词诊断；改为「路径已剥离、意图词保留」的查询；
+  - 结构化模式分派排在 `getCodeGraph` 之后，未索引项目丢了 `structuredContent.status = 'not_indexed'`；把结构化分派提到默认项目打开之前；
+  - 中文文件名被意图词吞掉（`示例模块` → `模块`），拿不到上游 #1372 的精确文件名检索；查询本身就是一个已索引文件名时不做意图词剥离；
+  - 遥测身份语义：`setEnabled` 关闭时清身份、开启时沿用已有身份，环境强制开启时为该进程铸新身份且不落盘显式同意；
+  - 影响面把「函数当值传递」的引用算作引用而非调用方（上游 #1820 的反面），按目标可调用性归类为调用方。
+- 契约与预算：常驻说明长度 2,488（上限由 2,300 调到 2,500，理由是上游新增的漂移拒答与空结果诊断两条常驻事实），tools/list 4,662，合计 7,150；初始化响应补上 `capabilities: { tools: {} }`；catch-up 门保持安装到 reconcile 结束，不再由第一个调用消费。
+- 机械修复：上游新带入的 40 处 `child_process` 调用补齐 `windowsHide: true`（`windows-child-process` 契约测试通过）；Git Bash 探测（`__tests__/shell-paths.ts`）让 launcher/installer 用例在缺 bash 时明确跳过、有 bash 时照常执行；Windows 临时目录清理先关闭实例再带重试删除。
+- 验证：`npm run typecheck` 通过；`npm run build` 通过（`check-ui-build` 报告 dist/viewer 与 29 个 grammar 正常）；`doctor --json` 显示入口为本机 `dist/bin/codegraph.js`、版本 `1.6.0-personal.11`、分支 `codex/sync-1.6.1`。逐项定向运行：迁移/桥接、`resolution`、`graph`、`query-paths`、`explore-intent-*`、`explore-empty-diagnostics`、`chinese-filename-retrieval`、`code-query`、`server-instructions`、`mcp-fixed-surface`、遥测两组、`store-binding-cache`、`function-ref`、`explore-test-summary`、`explore-named-file-valve`、MCP 握手与门、Windows 契约等均通过。
+- 未解决（不得写成通过）：
+  - `__tests__/zustand-binding.test.ts` 的「目标删除后恢复」一步：增量同步后 store 绑定边不再重建。已用插桩确认引用在同步中被解析到正确的恢复节点，但该边没有落库（其余三个 store 相关用例已修好：`store-binding-cache` 列号按个人 v27 的标识符列断言，`release-main-regressions` 的访问器解析在「个人拒绝不阻断上游 store 合成器」后通过）。
+  - `__tests__/ui-server-api.test.ts` 的「引擎自身最热符号」断言 `LRUCache.get` 调用方 ≥500，本仓库实测 55。该值取自已合并代码重建的索引，属上游绝对阈值与个人更严格的解析守卫（不猜同名/不降级成员链）之间的口径差异；需要单独裁决是调阈值还是放匹配。
+  - `__tests__/query-output-indexing.test.ts` 关于 explore schema 暴露 `directory/languages/frameworks/symbolTypes/excludeTypes` 的断言在个人基线上同样失败（用 `git worktree` 在 `c035e94` 上复现），属既有缺口：代码读取这些参数，schema 未声明。
+- 未做：未推送、未打标签、未触发 Personal Release；未在 Linux/macOS 与真实 Claude Code 宿主上复验；`verify:personal-install`、`npm pack`、发布资产按约束未在本地执行。

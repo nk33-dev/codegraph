@@ -138,7 +138,11 @@ export function removeQueryIntentWords(text: string, keep?: (word: string) => bo
   // Expand Chinese concepts first: "前端入口" → "前端 frontend client 入口 entry main"
   const expanded = expandChineseQuery(text);
 
-  const ascii = expanded.replace(/[A-Za-z][A-Za-z-]*/g, (word) => {
+  // Match the WHOLE identifier-shaped run, underscore, digits and `$` included:
+  // splitting at `_` removes `use` from `use_it` and leaves `_it` behind, which
+  // then reads as a missing symbol named `_it` (#1373's macro query is exactly
+  // `use_it get_version helper`). A real intent word is still a whole token.
+  const ascii = expanded.replace(/[A-Za-z][A-Za-z0-9_$-]*/g, (word) => {
     if (!ASCII_INTENT_WORDS.has(word.toLowerCase())) return word;
     return keep?.(word) ? word : ' ';
   });

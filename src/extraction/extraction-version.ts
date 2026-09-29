@@ -26,7 +26,7 @@
  * only when every crossed extraction change has a compatible recorded scope.
  */
 import type { Language } from '../types';
-export const EXTRACTION_VERSION = 27;
+export const EXTRACTION_VERSION = 28;
 
 /**
  * Extraction scope affected by each version increment.
@@ -52,8 +52,24 @@ export interface ExtractionUpgradeScope {
 export const EXTRACTION_UPGRADES: readonly ExtractionUpgradeScope[] = [
   {
     version: 27,
+    // Two changes landed under this number: the fork's own v27 (namespace imports
+    // and identifier-anchored call/constructor edges) and upstream's v27
+    // (method-value receivers). An index stamped 27 by either lineage has one of
+    // them, so the crossed set is only honest if it names both.
     scope: 'all',
-    summary: '补齐动态 namespace import 映射，并把调用与构造边定位到实际标识符列',
+    summary:
+      'Map dynamic namespace imports, anchor call and constructor edges to the identifier '
+      + 'column, and preserve receivers for method values',
+  },
+  {
+    version: 28,
+    // The fork spent 27 on its own change, so an index it stamped 27 never extracted
+    // upstream v1.6.1's method-value receivers. This increment is what makes
+    // `isIndexStale()` report that index and `sync --upgrade-index` rebuild it.
+    scope: 'all',
+    summary:
+      'Re-extract for upstream v1.6.1: method-value receivers, call-graph and Steps coverage '
+      + 'restored by the regression audit, and the v1.6.1 extraction fixes',
   },
 ];
 

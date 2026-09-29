@@ -100,6 +100,12 @@ export interface ResolutionResult {
 export interface ResolutionContext {
   /** Get all nodes in a file */
   getNodesInFile(filePath: string): Node[];
+  /** Whether any node in the file is exported (`getNodesInFile(f).some(n => n.isExported)`), as one indexed probe. */
+  fileHasExportedNode?(filePath: string): boolean;
+  /** `getNodesInFile(f).filter(n => n.isExported)`, without decoding the rest of the file. */
+  getExportedNodesInFile?(filePath: string): Node[];
+  /** `getNodesInFile(f).filter(n => n.name === name)`, without decoding the rest of the file. */
+  getNodesInFileNamed?(filePath: string, name: string): Node[];
   /** Get all nodes by name */
   getNodesByName(name: string): Node[];
   /** Get all nodes by qualified name */
@@ -119,6 +125,8 @@ export interface ResolutionContext {
   fileExists(filePath: string): boolean;
   /** Read file content */
   readFile(filePath: string): string | null;
+  /** `readFile(filePath)?.includes(needle) ?? false` for an ASCII `needle`, without decoding a file that lacks it. */
+  fileContains?(filePath: string, needle: string): boolean;
   /**
    * `readFile(filePath)` split into lines, LRU-cached per file. Receiver-type
    * inference scans source lines for EVERY `receiver.method()` ref; splitting
@@ -129,7 +137,7 @@ export interface ResolutionContext {
    */
   getFileLines?(filePath: string): string[] | null;
   /**
-   * The method-definition nodes matching `typeName::methodName` in `language` —
+   * The method-definition nodes matching `typeName::methodName` in the language family —
    * exactly `resolveMethodOnType`'s kind/language/qualifiedName-suffix filter,
    * LRU-cached per (language, type, method). The uncached path re-fetches every
    * node sharing the METHOD name (unbounded — tens of thousands on a collision-
@@ -164,6 +172,10 @@ export interface ResolutionContext {
   getNodeById?(id: string): Node | null;
   /** Get cached import mappings for a file */
   getImportMappings(filePath: string, language: Language): ImportMapping[];
+  /** Import lookup supplied by the coordinator, keeping name matching from
+   * importing the import resolver (which itself uses name-matching helpers).
+   * Minimal contexts without import resolution may omit this capability. */
+  resolveImport?(ref: UnresolvedRef): ResolvedRef | null;
   /**
    * Project import-path aliases (tsconfig/jsconfig `paths`). Returns
    * `null` when the project doesn't define any. Cached per resolver
@@ -335,6 +347,12 @@ export const SUPERTYPE_TARGET_KINDS = new Set<Node['kind']>([
   'type_alias', 'component', 'module', 'namespace',
 ]);
 
+/** Scala singleton objects are values, unlike inheritable Ruby modules. */
+export function isSupertypeTarget(node: Node): boolean {
+  return SUPERTYPE_TARGET_KINDS.has(node.kind) &&
+    !(node.language === 'scala' && node.kind === 'module');
+}
+
 /** True for the reference kinds that assert an inheritance/conformance relation. */
 export function isInheritanceRef(ref: UnresolvedRef): boolean {
   return ref.referenceKind === 'extends' || ref.referenceKind === 'implements';
@@ -356,3 +374,12 @@ const NON_IMPORTABLE_KINDS = new Set<Node['kind']>([
 export function isImportableKind(kind: Node['kind']): boolean {
   return !NON_IMPORTABLE_KINDS.has(kind);
 }
+
+/**
+ * The signature extraction gives a C/C++ `constant` minted from a
+ * function-like `preproc_function_def` (`#define NAME(args) …`, #1838). A
+ * macro is a value: it is never a `calls` target, and its presence in a
+ * translation unit is what makes `NAME(x)` a macro expansion rather than a
+ * call.
+ */
+export const CPP_DEFINE_SIGNATURE = /^\s*#\s*define\b/;

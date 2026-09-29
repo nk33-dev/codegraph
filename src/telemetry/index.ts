@@ -5,7 +5,7 @@
  * (and user-facing TELEMETRY.md); the ingest endpoint that enforces it is
  * public at telemetry-worker/. This module honors four invariants:
  *
- * 1. Zero hot-path cost: recording is an in-memory increment. Disk writes are
+ * 1. Recording rechecks the small consent file, then increments in memory. Disk writes are
  *    a tiny synchronous append at process exit (works under `process.exit()`,
  *    where `beforeExit` never fires); network sends happen opportunistically
  *    (startup of long-running commands, daemon interval, bounded await at the
@@ -88,7 +88,8 @@ export interface ClientInfo {
 
 interface ConfigFile {
   enabled: boolean;
-  machine_id: string;
+  machine_id: string | null;
+  /** `env` marks an identity minted for an environment-only opt-in; it never counts as a stored choice. */
   consent_source: 'installer' | 'default-notice' | 'cli' | 'env';
   first_run_notice_shown?: boolean;
   updated_at: string;
@@ -165,7 +166,7 @@ export class Telemetry {
   private events: EventLine[] = [];
   private readonly installExitHook: boolean;
   private exitHookInstalled = false;
-  private configCache: ConfigFile | null | undefined; // undefined = not read yet
+  private configCache: ConfigFile | null | undefined; // last observed identity, not a lifetime cache
   private intervalHandle: NodeJS.Timeout | null = null;
 
   constructor(opts: TelemetryOptions = {}) {
@@ -195,14 +196,19 @@ export class Telemetry {
     const machineId = config?.machine_id ?? null;
     const dnt = this.env.DO_NOT_TRACK;
     if (dnt !== undefined && dnt !== '' && dnt !== '0' && dnt.toLowerCase() !== 'false') {
+      this.clearPending();
       return { enabled: false, decidedBy: 'DO_NOT_TRACK', machineId, configPath: this.configPath };
     }
     const forced = this.env.CODEGRAPH_TELEMETRY;
     if (forced !== undefined && forced !== '') {
       const on = forced !== '0' && forced.toLowerCase() !== 'false';
+      if (!on) this.clearPending();
       return { enabled: on, decidedBy: 'CODEGRAPH_TELEMETRY', machineId, configPath: this.configPath };
     }
     if (hasExplicitConsent(config)) {
+      // A stored opt-out drops anything this process buffered before it noticed,
+      // so a running process cannot revive what another one turned off (#1880).
+      if (!config.enabled) this.clearPending();
       return { enabled: config.enabled, decidedBy: 'config', machineId, configPath: this.configPath };
     }
     return { enabled: false, decidedBy: 'default', machineId, configPath: this.configPath };
@@ -221,13 +227,21 @@ export class Telemetry {
     const existing = this.readConfig();
     this.writeConfig({
       enabled,
-      machine_id: existing?.machine_id ?? randomUUID(),
+      machine_id: enabled ? (existing?.machine_id ?? randomUUID()) : null,
       consent_source: source,
       first_run_notice_shown: true,
       updated_at: this.now().toISOString(),
     });
     if (!enabled) {
-      try { fs.rmSync(this.queuePath, { force: true }); } catch { /* fail silent */ }
+      this.clearPending();
+      try {
+        // Claimed data must not reappear on a later opt-in/crash recovery.
+        for (const name of fs.readdirSync(this.dir)) {
+          if (name === 'telemetry-queue.jsonl' || /^telemetry-queue\.sending\.\d+\.jsonl$/.test(name)) {
+            try { fs.rmSync(path.join(this.dir, name), { force: true }); } catch { /* fail silent */ }
+          }
+        }
+      } catch { /* fail silent */ }
     }
   }
 
@@ -238,7 +252,7 @@ export class Telemetry {
 
   // -------------------------------------------------------------- recording
 
-  /** In-memory increment — safe on the MCP tool-call hot path. */
+  /** Recheck shared consent, then increment in memory; no network or writes. */
   recordUsage(kind: UsageKind, name: string, ok: boolean, client?: ClientInfo): void {
     if (!this.isEnabled()) return;
     const day = this.utcDay();
@@ -285,6 +299,7 @@ export class Telemetry {
     try {
       this.persistSync();
       this.recoverStaleClaims();
+      let identity = this.getStatus().machineId;
       const claim = this.claimQueue();
       if (!claim) return;
       const { claimPath, lines } = claim;
@@ -299,14 +314,21 @@ export class Telemetry {
       let failed: BufferLine[] = [];
       if (sendable.length > 0) {
         // An environment-only opt-in may have no saved config yet. Mint a
-        // stable machine ID without persisting telemetry as enabled.
+        // stable machine ID without persisting telemetry as enabled, then let
+        // the cross-process gate decide: a process that turned telemetry off
+        // while this one ran must not be overridden here (#1880).
         this.ensureSendingIdentity();
-        failed = await this.send(sendable, timeoutMs);
+        identity = this.getStatus().machineId;
+        if (!this.canUseIdentity(identity)) {
+          try { fs.rmSync(claimPath, { force: true }); } catch { /* fail silent */ }
+          return;
+        }
+        failed = await this.send(sendable, timeoutMs, identity);
       }
       // Whatever didn't go out returns to the queue (append — writers may
       // have created a fresh queue file while we held the claim).
       const back = [...failed, ...keep];
-      if (back.length > 0) this.appendLines(back);
+      if (back.length > 0) this.appendLines(back, identity);
       try { fs.rmSync(claimPath, { force: true }); } catch { /* fail silent */ }
     } catch {
       /* fail silent */
@@ -337,36 +359,64 @@ export class Telemetry {
     return this.now().toISOString().slice(0, 10);
   }
 
+  private clearPending(): void {
+    this.counts.clear();
+    this.events = [];
+  }
+
+  private canUseIdentity(identity: string | null): boolean {
+    const status = this.getStatus();
+    return status.enabled && status.machineId === identity;
+  }
+
   private readConfig(): ConfigFile | null {
-    if (this.configCache !== undefined) return this.configCache;
+    // A process-lifetime cache misses another CLI's opt-out. Read the tiny file
+    // before recording, persistence and sending, including between HTTP chunks.
+    let config: ConfigFile | null = null;
     try {
       const raw = JSON.parse(fs.readFileSync(this.configPath, 'utf8')) as ConfigFile;
-      this.configCache = typeof raw.machine_id === 'string' && typeof raw.enabled === 'boolean' ? raw : null;
-    } catch {
-      this.configCache = null;
-    }
-    return this.configCache;
+      if (typeof raw.enabled === 'boolean' && (typeof raw.machine_id === 'string' ||
+        (!raw.enabled && raw.machine_id === null))) config = raw;
+    } catch { /* absent config retains the documented default */ }
+    if (this.configCache !== undefined &&
+      (this.configCache?.machine_id !== config?.machine_id ||
+        (this.configCache?.enabled && !config?.enabled))) this.clearPending();
+    this.configCache = config;
+    return config;
   }
 
   private writeConfig(config: ConfigFile): void {
+    const temp = `${this.configPath}.${process.pid}.${randomUUID()}.tmp`;
     try {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-      fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2) + '\n');
+      // Readers must see either complete choice, never a truncated JSON file.
+      fs.writeFileSync(temp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+      fs.renameSync(temp, this.configPath);
       this.configCache = config;
     } catch {
       /* fail silent */
+    } finally {
+      try { fs.rmSync(temp, { force: true }); } catch { /* fail silent */ }
     }
   }
 
   /** Create a stable identity for an environment-only opt-in without persisting opt-in. */
   private ensureSendingIdentity(): void {
     const config = this.readConfig();
-    if (config) return;
+    if (config?.machine_id) return;
+    if (config?.enabled) {
+      // An explicit choice that somehow lost its identity: keep the choice, restore the id.
+      this.writeConfig({ ...config, machine_id: randomUUID(), updated_at: this.now().toISOString() });
+      return;
+    }
+    // No stored choice, or a stored opt-out whose identity was removed. Mint one for
+    // this process only: `enabled` stays as it was, and `env` never counts as an
+    // explicit choice, so no other process is turned on by this.
     this.writeConfig({
       enabled: false,
       machine_id: randomUUID(),
       consent_source: 'env',
-      first_run_notice_shown: true,
+      first_run_notice_shown: config?.first_run_notice_shown ?? true,
       updated_at: this.now().toISOString(),
     });
   }
@@ -376,17 +426,16 @@ export class Telemetry {
    * Runs on `process.on('exit')`, so it must never be async or slow.
    */
   persistSync(): void {
+    const status = this.getStatus();
+    if (!status.enabled) return;
     if (this.counts.size === 0 && this.events.length === 0) return;
     const lines: BufferLine[] = [...this.counts.values(), ...this.events];
-    this.counts.clear();
-    this.events = [];
-    // Re-check at persist time: `codegraph telemetry off` mid-process must not
-    // have its own invocation resurrect the queue file at exit.
-    if (!this.isEnabled()) return;
-    this.appendLines(lines);
+    this.clearPending();
+    this.appendLines(lines, status.machineId);
   }
 
-  private appendLines(lines: BufferLine[]): void {
+  private appendLines(lines: BufferLine[], identity: string | null): void {
+    if (!this.canUseIdentity(identity)) return;
     try {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       const payload = lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
@@ -436,6 +485,8 @@ export class Telemetry {
 
   private recoverStaleClaims(): void {
     try {
+      const identity = this.getStatus().machineId;
+      if (!this.canUseIdentity(identity)) return;
       const cutoff = this.now().getTime() - STALE_CLAIM_MS;
       for (const name of fs.readdirSync(this.dir)) {
         if (!name.startsWith('telemetry-queue.sending.')) continue;
@@ -444,7 +495,7 @@ export class Telemetry {
           if (fs.statSync(full).mtimeMs < cutoff) {
             const content = fs.readFileSync(full, 'utf8');
             fs.rmSync(full, { force: true });
-            if (content.trim()) fs.appendFileSync(this.queuePath, content.endsWith('\n') ? content : content + '\n');
+            if (content.trim() && this.canUseIdentity(identity)) fs.appendFileSync(this.queuePath, content.endsWith('\n') ? content : content + '\n');
           }
         } catch {
           /* fail silent */
@@ -456,9 +507,8 @@ export class Telemetry {
   }
 
   /** Returns the lines that did NOT make it out (to be re-queued). */
-  private async send(lines: BufferLine[], timeoutMs: number): Promise<BufferLine[]> {
-    const config = this.readConfig();
-    if (!config) return [];
+  private async send(lines: BufferLine[], timeoutMs: number, identity: string | null): Promise<BufferLine[]> {
+    if (!identity || !this.canUseIdentity(identity)) return [];
     const events = lines.map((line) =>
       'ev' in line
         ? { event: line.ev, ts: line.ts, props: line.props }
@@ -476,7 +526,7 @@ export class Telemetry {
           },
     );
     const envelope = {
-      machine_id: config.machine_id,
+      machine_id: identity,
       codegraph_version: this.packageVersion(),
       os: process.platform,
       arch: process.arch,
@@ -486,6 +536,7 @@ export class Telemetry {
     };
     const endpoint = this.env.CODEGRAPH_TELEMETRY_ENDPOINT || TELEMETRY_ENDPOINT;
     for (let i = 0; i < events.length; i += MAX_EVENTS_PER_REQUEST) {
+      if (!this.canUseIdentity(identity)) return [];
       const chunk = events.slice(i, i + MAX_EVENTS_PER_REQUEST);
       const body = JSON.stringify({ ...envelope, events: chunk });
       this.debug(`POST ${endpoint} (${chunk.length} events)`);
