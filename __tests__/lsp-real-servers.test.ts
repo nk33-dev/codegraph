@@ -29,7 +29,7 @@ interface Recipe {
   /** 需要验证跨文件重命名的语言，给出调用方文件。 */
   renameFile?: string;
   /** Server command and args for this language; null means no usable server on this machine. */
-  server(): { command: string; args: string[]; env?: Record<string, string> } | null;
+  server(): { command: string; args: string[]; env?: Record<string, string>; initializationOptions?: unknown } | null;
   /** Files that must be written after copying the fixture (clangd's compile_commands.json). */
   prepare?(root: string): void;
   timeoutMs?: number;
@@ -41,6 +41,44 @@ function firstExecutable(candidates: string[]): string | null {
     if (found.path) return found.path;
   }
   return null;
+}
+
+/**
+ * The typescript package the language server should use, or null if there is
+ * none on this machine.
+ *
+ * The fixtures are copied into a bare temp dir with no `node_modules`, so
+ * typescript-language-server resolves `typescript` from the WORKSPACE, finds
+ * nothing, and aborts at initialize: "Could not find a valid TypeScript
+ * installation." That happens even where typescript IS installed — globally in
+ * CI, as a devDependency (`^5.0.0`) here — which is what made the real-lsp job
+ * fail on a healthy install. `lsp.json` already passes `initializationOptions`
+ * through unchanged (`src/lsp/config.ts`), so naming the SDK makes the fixture
+ * self-contained instead of relying on the workspace to carry it.
+ */
+function typescriptSdk(): string | null {
+  const explicit = process.env.CODEGRAPH_LSP_E2E_TYPESCRIPT_SDK;
+  if (explicit && fs.existsSync(path.join(explicit, 'lib', 'tsserver.js'))) return explicit;
+  for (const candidate of [
+    path.join(TOOLS, 'typescript'),
+    path.resolve(__dirname, '..', 'node_modules', 'typescript'),
+  ]) {
+    if (fs.existsSync(path.join(candidate, 'lib', 'tsserver.js'))) return candidate;
+  }
+  return null;
+}
+
+/**
+ * `initializationOptions` naming that SDK.
+ *
+ * Both keys are set because the two accept the same fact under different names
+ * (`typescript-language-server` reads `tsserver.path`, `vtsls` reads
+ * `typescript.tsdk`) and `firstExecutable` may pick either. Each server ignores
+ * the key meant for the other.
+ */
+function typescriptSdkOptions(): unknown {
+  const sdk = typescriptSdk();
+  return sdk ? { tsserver: { path: sdk }, typescript: { tsdk: sdk } } : undefined;
 }
 
 function workspaceTool(relative: string): string | null {
@@ -119,7 +157,7 @@ const RECIPES: Recipe[] = [
       const command = process.env.CODEGRAPH_LSP_E2E_TYPESCRIPT_COMMAND
         ?? firstExecutable(['typescript-language-server', 'vtsls']);
       if (!command) return null;
-      return { command, args: [command.includes('vtsls') ? '--stdio' : '--stdio'] };
+      return { command, args: ['--stdio'], initializationOptions: typescriptSdkOptions() };
     },
     timeoutMs: 300_000,
   },
@@ -132,7 +170,9 @@ const RECIPES: Recipe[] = [
     server: () => {
       const command = process.env.CODEGRAPH_LSP_E2E_TYPESCRIPT_COMMAND
         ?? firstExecutable(['typescript-language-server', 'vtsls']);
-      return command ? { command, args: ['--stdio'] } : null;
+      return command
+        ? { command, args: ['--stdio'], initializationOptions: typescriptSdkOptions() }
+        : null;
     },
     timeoutMs: 300_000,
   },

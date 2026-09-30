@@ -34,6 +34,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm install --global pyright typescript typescript-language-server
+      # rust-analyzer proxied by rustup resolves on PATH even when the component
+      # is absent, so the test does NOT skip — it starts the proxy, gets
+      # "Unknown binary 'rust-analyzer' in official toolchain", and fails. The
+      # component has to be installed, not just the toolchain.
+      - run: rustup component add rust-analyzer
       - run: npm run build
       - run: npx vitest run --project engine __tests__/lsp-real-servers.test.ts
         env:
