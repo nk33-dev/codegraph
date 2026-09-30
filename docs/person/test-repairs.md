@@ -29,7 +29,9 @@
 ### 仍未解决（不得写成通过）
 
 - **剩余 8 条属于上游测试自身过期，不是内核分歧**：`kernel-tsjs-parity.test.ts` 的 `#1566` 与 `peels transparent receivers`（各 ts/tsx/js/jsx）。两边都会多产出 `holder['values'].get`——`assertParity` 返回 wasm，该用例断言的是 wasm 结果；而我们的 `TS_JS_CHAIN_RECEIVER_TYPES` 与上游逐字符相同、触发它的分支条件在 `b39fade` 里只改了注释、写该期望的提交 `cabe319` 属于上游且晚于 `b39fade`。结论是上游自己的测试与其自身行为不符，按用户决定**不动这份上游测试**，保持与官方分支一致。
-- **动态 namespace import 未移植**：`const ns = await import('./x')` 在 wasm 侧会多产出一个 `import` 节点与一条 `imports` 引用（`emitDynamicNamespaceImport`），内核侧不存在。`kernel-*.test.ts` 的 fixture 不覆盖它，所以 CI 绿；但 `scripts/kernel-parity.mjs` 在真实仓库上会暴露。
+- **动态 namespace import 已移植**：`const ns = await import('./x')` 在 wasm 侧会多产出一个 `import` 节点与一条 `imports` 引用（`emitDynamicNamespaceImport`）。**影响不止测试**：发布包带原生内核 prebuilds（`release.yml`），内核不产出该节点时 `ns.foo()` 建不出命名空间映射——正则兜底路径（`import-resolver.ts` 的 `blockImportRegex`）推的是模块 basename `x` 而不是真实变量名 `ns`，对 `ns.foo()` 用不上。结果是这些入口的 import 边在带内核的平台上丢失、走 wasm 回退时正常，同一版本跨平台行为不一致。移植含节点、引用与签名序列化（手写 `JSON.stringify` 等价的转义，因为内核没有 serde_json 依赖），两个调用点的**先后顺序不同**也照原样镜像（模块作用域先 emit 再 type annotation，函数体反之）。
+  - 新增 `__tests__/kernel-dynamic-import-parity.test.ts`（14 项）。独立的门而不是塞进上游 `kernel-tsjs-parity`，因为 checked-in fixture 里没有这个形状——这也是它长期没被发现的原因。
+  - 过程中探明一个既有差异并如实镜像：**函数体那条调用点受 `TYPE_ANNOTATION_LANGUAGES` 限制**（含 typescript/tsx 等 12 种，**不含 javascript/jsx**），所以 `.js` 文件在函数体里的 `await import()` 不产出节点；模块作用域那条不受限制。内核按同样条件实现，是否会放开留给上游口径决定，不在这轮"对齐 parity"的范围内。
 
 同一轮另有三处 CI/工具修复，见 CHANGELOG：`codegraph_explore` 补声明显示过滤参数（`docs/person/mcp-surface.md`）、macOS 安装校验按 realpath 比较、real-lsp 补 rust-analyzer 组件与 TypeScript SDK。
 

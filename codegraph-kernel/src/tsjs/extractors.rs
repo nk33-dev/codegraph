@@ -441,6 +441,9 @@ impl<'t> Walker<'t> {
                 },
             );
             if let Some(row) = var_row {
+                // wasm emits the dynamic-import node BEFORE the type annotation
+                // here — the body walker in tsjs/mod.rs does it after.
+                self.emit_dynamic_namespace_import(child, row);
                 self.extract_variable_type_annotation(child, row);
             }
 

@@ -143,6 +143,45 @@ struct Scope {
     name: String,
 }
 
+/// `JSON.stringify` for one string, escaping exactly what it escapes.
+///
+/// The signature below is compared against the wasm path's bytes, so this has
+/// to agree with JS to the character: the seven short escapes, `\uXXXX`
+/// (lowercase) for the remaining C0 controls, and NOTHING else — `JSON.stringify`
+/// leaves U+2028/U+2029 and every other non-ASCII character verbatim.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Mirrors `dynamicNamespaceImportSignature` (src/graph/dynamic-import.ts).
+///
+/// Key order (`localName`, then `source`) matches `JSON.stringify`'s insertion
+/// order because the resolver parses this back on the TS side
+/// (`dynamicNamespaceImportMapping`) to build the namespace mapping.
+fn dynamic_namespace_import_signature(local_name: &str, source: &str) -> String {
+    format!(
+        "codegraph:dynamic-namespace-import:{{\"localName\":{},\"source\":{}}}",
+        json_string(local_name),
+        json_string(source)
+    )
+}
+
 /// Extra node properties, per-extract-site (mirrors createNode's `extra`).
 #[derive(Default)]
 struct Extra {
@@ -354,6 +393,82 @@ impl<'t> Walker<'t> {
 
     fn push_call_ref(&mut self, name: &str, node: Node) {
         self.push_ref(self.top_row(), name, edge_kind_index("calls").unwrap(), node);
+    }
+
+    /// `dynamicNamespaceImport` (src/extraction/tree-sitter.ts): the AST shape of
+    /// `await import('./module')`. Only a static string specifier counts.
+    fn dynamic_namespace_import(&self, value: Node<'t>) -> Option<String> {
+        if value.kind() != "await_expression" {
+            return None;
+        }
+        let expression = value.named_child(0)?;
+        if expression.kind() != "call_expression" {
+            return None;
+        }
+        let callee = expression
+            .child_by_field_name("function")
+            .or_else(|| expression.named_child(0))?;
+        if self.text(callee) != "import" {
+            return None;
+        }
+        let args = expression.child_by_field_name("arguments")?;
+        let source_node = args.named_child(0)?;
+        if source_node.kind() != "string" {
+            return None;
+        }
+        let raw = self.text(source_node);
+        let bytes = raw.as_bytes();
+        if bytes.len() < 2 {
+            return None;
+        }
+        let quote = bytes[0];
+        if (quote != b'\'' && quote != b'"') || bytes[bytes.len() - 1] != quote {
+            return None;
+        }
+        // TS: `match?.[2] ? … : null` — an empty specifier is falsy, so
+        // `import('')` emits nothing. Quote bytes are ASCII, so the slice is on
+        // char boundaries.
+        let inner = &raw[1..raw.len() - 1];
+        if inner.is_empty() {
+            return None;
+        }
+        Some(inner.to_string())
+    }
+
+    /// `emitDynamicNamespaceImport` (src/extraction/tree-sitter.ts).
+    ///
+    /// A dynamic `import('./x')` is a runtime call, so the static
+    /// `import_statement` pass never sees it and `ns.foo()` had nothing to
+    /// resolve against. The `import` node carries the binding in its signature
+    /// (`dynamicNamespaceImportMapping` reads it back), and the `imports` ref
+    /// names the LOCAL binding — which is what makes it usable, since the regex
+    /// fallback in `import-resolver.ts` can only guess the module's basename.
+    ///
+    /// The node is named after the MODULE and anchored on the declarator,
+    /// matching the wasm path; the ref is anchored on the binding identifier.
+    fn emit_dynamic_namespace_import(&mut self, declarator: Node<'t>, from_row: u32) {
+        if declarator.kind() != "variable_declarator" {
+            return;
+        }
+        let Some(name_node) = declarator.child_by_field_name("name") else { return };
+        if name_node.kind() != "identifier" {
+            return;
+        }
+        let Some(value) = declarator.child_by_field_name("value") else { return };
+        let Some(source) = self.dynamic_namespace_import(value) else { return };
+        let local_name = self.text(name_node).to_string();
+        // Unconditional, like the wasm path: `createNode` no-ops on an empty
+        // name, but the ref is pushed either way.
+        self.create_node(
+            "import",
+            &source,
+            declarator,
+            Extra {
+                signature: Some(dynamic_namespace_import_signature(&local_name, &source)),
+                ..Extra::default()
+            },
+        );
+        self.push_ref(from_row, &local_name, edge_kind_index("imports").unwrap(), name_node);
     }
 
     // --- createNode -----------------------------------------------------------
@@ -754,6 +869,9 @@ impl<'t> Walker<'t> {
         if self.variant.is_ts() && kind == "variable_declarator" {
             let owner = self.top_row();
             self.extract_variable_type_annotation(node, owner);
+            // After the type annotation here, before it at module scope — the
+            // wasm call sites disagree, so this mirrors rather than tidies.
+            self.emit_dynamic_namespace_import(node, owner);
         }
 
         // Nested NAMED functions become their own nodes — and so does the
