@@ -367,7 +367,16 @@ describe('MCP query pool with real projects (#1465)', () => {
     const args = { projectPath: beta, query: 'betaSymbol' };
     const pooled = await handler.execute('codegraph_explore', args);
     handler.setQueryPool(null);
-    expect(await handler.execute('codegraph_explore', args)).toEqual(pooled);
+    const direct = await handler.execute('codegraph_explore', args);
+    const pooledEvidence = pooled.structuredContent?.evidence as Record<string, unknown>;
+    expect(pooledEvidence.elapsedMs).toEqual(expect.any(Number));
+    expect(direct).toEqual({
+      ...pooled,
+      structuredContent: {
+        ...pooled.structuredContent,
+        evidence: { ...pooledEvidence, elapsedMs: expect.any(Number) },
+      },
+    });
     handler.setQueryPool(pool);
     if (!hasDefault) {
       const missing = await handler.execute('codegraph_explore', { query: 'alphaSymbol' });
