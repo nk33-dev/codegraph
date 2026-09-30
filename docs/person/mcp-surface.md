@@ -37,6 +37,8 @@
 
 补声明 explore 的显示过滤参数后的实测（2026-09-30）：初始化说明 2,488、默认 tools/list 5,304、合计 7,792，上限调整为 explore 3,610、toolsList 5,410、combined 7,950。这是固定表面第二次有意增长，理由与上一次同类——**参数原本不可达**：`handleExplore` 一直在读 `directory` / `languages` / `frameworks` / `symbolTypes` / `excludeTypes`，但工具 schema 从未声明它们，按 schema 校验的客户端发不出去，过滤功能在 MCP 上等于不存在。五个参数共 642 字符，描述已压到一句；单数别名（`language`、`symbolType`、`excludeType`、`framework`）刻意不声明，省下的正是它们的份额。
 
+重排常驻说明后的实测（2026-09-30）：初始化说明 2,635、默认 tools/list 5,304、合计 7,939，上限调整为 instructions 2,700、combined 8,050。这次不是纯新增，是**把选择规则挪到截断打不到的位置**：真实客户端会截断过长的 MCP `instructions`（本轮在 Claude Code 里实测到 codegraph 说明的结尾被截掉，尾部整段 Boundaries 没送到模型），而「项目没有 `.codegraph/` 就别用 Codegraph」原本压在最后一段——被截掉就等于没写，已前移到 How to use。同时补上 LSP 的**选择**依据：原文只有「diagnostics 自动走 LSP」和「LSP 是语言正确性的权威」，没有任何一句告诉模型该主动索要 LSP，于是 `backend:"lsp"` 事实上不可发现。Boundaries 里压缩了一句冗余以抵消部分增量，净增 147 字符。
+
 `codegraph_explore` 现有 25 个字段（`includeTestSource`，以及 `directory` / `languages` / `frameworks` / `symbolTypes` / `excludeTypes`），`codegraph_edit` 有 12 个字段（`verbosePreview` 只控制文本展示）。字符预算测试固定初始化说明、无根说明、默认 tools/list、合计，以及 explore/edit 单个工具定义的序列化上限；同一个量在不同用例里共用同一组常量，避免只撞破其中一个阈值；工具注解测试同时固定已索引项目的 explore 描述与静态定义一致。
 
 ## 验证

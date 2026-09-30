@@ -39,14 +39,22 @@ const originalToolEnv = process.env[TOOL_ENV];
  * 但 schema 从未声明，按 schema 校验的客户端根本发不出这些参数——过滤功能在 MCP 上
  * 等于不存在。五个参数共 642 字符，描述已压到一句；单数别名（`language`、
  * `symbolType`、`excludeType`、`framework`）刻意不声明，省下的正是它们的份额。
+ *
+ * 2026-09-30（同一轮重排常驻说明）：说明 2,635；tools/list 5,304；合计 7,939。
+ * 这次不是纯新增，是**把选择规则挪到截断打不到的位置**：真实客户端会对过长的
+ * MCP instructions 截断（本轮在 Claude Code 里实测到 codegraph 说明的结尾被截掉），
+ * 而「项目没有 `.codegraph/` 就别用 Codegraph」原本压在最后一段，被截掉就等于没写——
+ * 它已前移到 How to use。同时补上 LSP 的**选择**依据（原先只说了「diagnostics 走
+ * LSP」和「LSP 是权威」，没有任何一句告诉 AI 该主动要 LSP）。压缩了 Boundaries 里
+ * 一句冗余，净增 147 字符。
  */
 const SURFACE_MAX = {
-  instructions: 2_500,
+  instructions: 2_700,
   noRootInstructions: 500,
   toolsList: 5_410,
   explore: 3_610,
   edit: 2_100,
-  combined: 7_950,
+  combined: 8_050,
 } as const;
 
 afterEach(() => {

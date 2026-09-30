@@ -14,6 +14,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- 重排 MCP 常驻说明，让「怎么选」在截断下也能活下来。真实客户端会截断过长的 `instructions`（本轮在 Claude Code 里实测到 codegraph 说明的结尾被截掉，尾部整段 Boundaries 没送到模型），而「项目没有 `.codegraph/` 就别用 Codegraph」原本压在最后一段——被截掉等于没写，已前移到 How to use。同时补上 LSP 的选择依据：原文只有「diagnostics 自动走 LSP」和「LSP 是语言正确性的权威」，没有任何一句告诉模型该主动索要 LSP，`backend:"lsp"` 事实上不可发现；现在写明图答案有歧义、仅按名字跨文件、或需要类型精确的定义/引用时显式要 LSP。Boundaries 压缩一句冗余，净增 147 字符，上限相应调整为 instructions 2,700、combined 8,050。
+
 - 补声明 `codegraph_explore` 的显示过滤参数。`handleExplore` 一直在读 `directory`、`languages`、`frameworks`、`symbolTypes`、`excludeTypes`，但工具 schema 从未声明它们——按 schema 校验的客户端发不出这些参数，CHANGELOG 里宣传的过滤功能在 MCP 上等于不存在。五个参数共 642 字符，固定表面上限相应调整（`explore` 3,280→3,610、`toolsList` 5,050→5,410、`combined` 7,300→7,950），单数别名（`language`、`symbolType`、`excludeType`、`framework`）刻意不声明以省下份额。
 - 修 macOS 上 `npm run verify:personal-install` 的误报：脚本用字符串比较 `doctor` 报的 `packageRoot` 与拼出来的安装路径，而 macOS 的 `/var` 是 `/private/var` 的符号链接、Node 又默认对主模块做 realpath，两个字符串必然不同——只有 macos-latest 会挂。改为 `fs.realpathSync` 比较（`src/bin/codegraph.ts` 的升级路径早就这么做），并把三合一断言拆成两条可诊断的报错。
 - 修 `Hardening` 的 real-lsp 作业：工作流只装了 `typescript`/`pyright`，没有 `rust-analyzer` 组件——而 rustup 的 proxy 在 PATH 上会命中，测试因此不跳过、真启动、失败。补 `rustup component add rust-analyzer`。同时测试侧通过 `lsp.json` 的 `initializationOptions.tsserver.path` 指定 TypeScript SDK：fixture 复制到没有 `node_modules` 的临时目录，`typescript-language-server` 从 workspace 解析不到 typescript，initialize 阶段就中止。
