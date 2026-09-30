@@ -24,7 +24,7 @@ export function classifyEdgeProvenance(
   lspVerified?: boolean,
 ): { tier: ProvenanceTier; label: string; detail?: string } {
   if (lspVerified) {
-    return { tier: 'lsp', label: 'lsp' };
+    return { tier: 'lsp', label: 'resolved', detail: 'lsp' };
   }
 
   const meta = (edge.metadata ?? {}) as Record<string, unknown>;
@@ -69,10 +69,16 @@ export function classifyEdgeProvenance(
     return { tier: 'resolved', label: 'resolved', detail: 'scip' };
   }
 
-  // Tree-sitter provenance without synthesis/inference is explicit
-  if (edge.provenance === 'tree-sitter' || edge.provenance === undefined) {
-    // If no resolvedBy and no synthesis, this is an extraction-time edge
-    return { tier: 'explicit', label: '', detail: 'syntax' };
+  // A parser-origin edge or a stored syntax site proves an explicit relation.
+  if (
+    edge.provenance === 'tree-sitter' ||
+    (edge.provenance === undefined && typeof edge.line === 'number' && edge.line > 0)
+  ) {
+    return { tier: 'explicit', label: 'resolved', detail: 'syntax' };
+  }
+
+  if (edge.provenance === undefined) {
+    return { tier: 'candidate', label: 'candidate', detail: 'unknown provenance' };
   }
 
   // Default: treat as structural inference

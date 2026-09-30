@@ -43,6 +43,7 @@ describe('field-channel registration scope (#1355)', () => {
     expect(edges).toHaveLength(1);
     expect(cg!.getNode(edges[0]!.target)).toMatchObject({ qualifiedName: 'Real::triggerRender', filePath: file });
     expect(edges[0]).toMatchObject({ provenance: 'heuristic', metadata: { registeredAt: `${file}:4` } });
+    expect(edges[0]!.line).toBeUndefined();
     const result = await new ToolHandler(cg!).execute('codegraph_explore', { query: 'Store.emit Real.triggerRender' });
     const text = result.content?.[0]?.text ?? '';
     expect(text).toContain(`emit → triggerRender   [dynamic: callback via \`subscribe\` @${file}:4]`);

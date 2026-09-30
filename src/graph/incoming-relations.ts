@@ -17,13 +17,14 @@ export function collectIncomingRelations(
   kinds?: Edge['kind'][],
 ): IncomingGraphRelation[] {
   const targetsById = new Map(targets.map((node) => [node.id, node]));
-  return cg.getIncomingEdgesTo([...targetsById.keys()], kinds)
-    .map((edge) => {
-      const source = cg.getNode(edge.source);
+  const edges = cg.getIncomingEdgesTo([...targetsById.keys()], kinds);
+  const sources = cg.getNodesByIds([...new Set(edges.map((edge) => edge.source))]);
+  return edges
+    .flatMap((edge) => {
+      const source = sources.get(edge.source);
       const target = targetsById.get(edge.target);
-      return source && target ? { edge, source, target } : null;
+      return source && target ? [{ edge, source, target }] : [];
     })
-    .filter((relation): relation is IncomingGraphRelation => relation !== null)
     .sort((a, b) => a.source.filePath.localeCompare(b.source.filePath)
       || a.source.startLine - b.source.startLine
       || (a.edge.line ?? 0) - (b.edge.line ?? 0)

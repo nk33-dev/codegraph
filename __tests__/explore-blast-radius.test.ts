@@ -2,7 +2,7 @@
  * codegraph_explore blast-radius section.
  *
  * explore now appends a compact, always-on "Blast radius" for the entry
- * symbols: who depends on each (locations only — no source) and which test
+ * symbols: who depends on each (relation locations, no source bodies) and which test
  * files cover it, so the agent knows what to update/verify before editing
  * without a separate impact call. Symbols with no dependents are skipped, and
  * the section is omitted entirely when nothing qualifies.
@@ -73,6 +73,15 @@ describe('codegraph_explore — blast radius', () => {
       path.join(src, 'importer-only.ts'),
       `import { widgetRender } from './shared';\nexport const keep = 1;\n`,
     );
+    fs.writeFileSync(path.join(src, 'hot.ts'), 'export function hotTarget() { return 1; }\n');
+    fs.writeFileSync(
+      path.join(src, 'hot-callers.ts'),
+      `import { hotTarget } from './hot';\n` +
+      `export function hotCaller1() { return hotTarget(); }\n` +
+      `export function hotCaller2() { return hotTarget(); }\n` +
+      `export function hotCaller3() { return hotTarget(); }\n` +
+      `export function hotCaller4() { return hotTarget(); }\n`,
+    );
 
     cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
     await cg.indexAll();
@@ -97,6 +106,31 @@ describe('codegraph_explore — blast radius', () => {
     expect(text).toMatch(/tests:.*feature\.test\.ts/);
     const line = text.split('\n').find((value) => value.startsWith('- `target`'))!;
     expect(line).toMatch(/1 production dependent \+ 1 test file/);
+    expect(text).toContain('caller (src/feature.ts:2) -[calls, inferred]-> target (src/feature.ts:1) @ src/feature.ts:2');
+  });
+
+  it('shows call sites and provenance on node trails', async () => {
+    const res = await handler.execute('codegraph_node', { symbol: 'target' });
+    const text = res.content[0].text;
+
+    expect(text).toContain('**Trail');
+    expect(text).toContain('caller (src/feature.ts:2) -[calls, inferred]-> target (src/feature.ts:1) @ src/feature.ts:2');
+  });
+
+  it('adds bounded relation details to file dependents', async () => {
+    const res = await handler.execute('codegraph_node', { file: 'src/feature.ts' });
+    const text = res.content[0].text;
+
+    expect(text).toContain('used by 1 file');
+    expect(text).toContain('checkTarget (src/feature.test.ts:2) -[calls, resolved]-> target (src/feature.ts:1) @ src/feature.test.ts:2');
+  });
+
+  it('caps blast-radius relation details at three per dependent file', async () => {
+    const res = await handler.execute('codegraph_explore', { query: 'hotTarget' });
+    const detail = res.content[0].text.split('\n').find((line) => line.includes('`src/hot-callers.ts`:'));
+
+    expect(detail).toBeDefined();
+    expect(detail!.match(/ -\[calls,/g)).toHaveLength(3);
   });
 
   it('surfaces tests that cover a symbol transitively through its callers (#1475)', async () => {

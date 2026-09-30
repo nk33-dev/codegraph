@@ -50,6 +50,7 @@ import {
 } from '../search/query-paths';
 import { parseQueryIntent, removeQueryIntentWords, removeViewWords } from '../search/query-intent';
 import { collectIncomingRelations } from '../graph/incoming-relations';
+import { classifyEdgeProvenance, extractEdgeSourceLocation } from '../graph/edge-provenance';
 import {
   existsSync,
   readFileSync,
@@ -2387,6 +2388,13 @@ function canonicalPath(p: string): string {
  */
 export const MAX_CACHED_PROJECTS = 8;
 
+function formatDetailedRelation(edge: Edge, source: Node, target: Node): string {
+  const sourceSite = extractEdgeSourceLocation(edge, source.filePath, source.startLine);
+  const provenance = classifyEdgeProvenance(edge);
+  return `${source.name} (${source.filePath}:${source.startLine}) -[${edge.kind}, ${provenance.label || 'inferred'}]-> `
+    + `${target.name} (${target.filePath}:${target.startLine}) @ ${sourceSite.file}:${sourceSite.line}`;
+}
+
 /**
  * Engine-side lifecycle for a project the ToolHandler opened for an explicit
  * `projectPath` (#1835). `activate` gives it the same treatment the default
@@ -3627,8 +3635,9 @@ export class ToolHandler {
             seen.add(c.node.id);
             callers.push(c.node);
             answerPaths.add(c.node.filePath);
+            const relation = formatDetailedRelation(c.edge, c.node, node);
             const label = this.edgeLabel(c.edge);
-            if (label) labels.set(c.node.id, label);
+            labels.set(c.node.id, relation + (label ? ` — via ${label}` : ''));
           }
         }
       }
@@ -3669,7 +3678,7 @@ export class ToolHandler {
       for (const node of callers.slice(0, limit)) {
         const location = node.startLine ? `:${node.startLine}` : '';
         const label = labels.get(node.id);
-        lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}`);
+        lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — ${label}` : ''}`);
       }
       if (callers.length > limit) {
         lines.push(`- … +${callers.length - limit} more (pass \`limit\` to widen)`);
@@ -3710,8 +3719,9 @@ export class ToolHandler {
             seen.add(c.node.id);
             callees.push(c.node);
             answerPaths.add(c.node.filePath);
+            const relation = formatDetailedRelation(c.edge, node, c.node);
             const label = this.edgeLabel(c.edge);
-            if (label) labels.set(c.node.id, label);
+            labels.set(c.node.id, relation + (label ? ` — via ${label}` : ''));
           }
         }
       }
@@ -3749,7 +3759,7 @@ export class ToolHandler {
       for (const node of callees.slice(0, limit)) {
         const location = node.startLine ? `:${node.startLine}` : '';
         const label = labels.get(node.id);
-        lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}`);
+        lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — ${label}` : ''}`);
       }
       if (callees.length > limit) {
         lines.push(`- … +${callees.length - limit} more (pass \`limit\` to widen)`);
@@ -4264,14 +4274,16 @@ export class ToolHandler {
       const out: string[] = [];
       if (showMain) {
         out.push('**Flow (call path among the symbols you queried)**', '');
-        for (let i = 0; i < best!.length; i++) {
+        const first = best![0]!;
+        out.push(`1. ${first.node.name} (${first.node.filePath}:${first.node.startLine})`);
+        for (let i = 1; i < best!.length; i++) {
           const step = best![i]!;
-          if (step.edge) {
-            const sy = this.synthEdgeNote(step.edge);
-            const when = i > 0 ? this.whenLabel(cg, best![i - 1]!.node, step.edge) : '';
-            out.push(`   ↓ ${sy ? sy.compact : step.edge.kind}${when ? ` (when ${when})` : ''}`);
-          }
-          out.push(`${i + 1}. ${step.node.name} (${step.node.filePath}:${step.node.startLine})`);
+          const previous = best![i - 1]!;
+          if (!step.edge) continue;
+          const synth = this.synthEdgeNote(step.edge);
+          const when = this.whenLabel(cg, previous.node, step.edge);
+          const relation = formatDetailedRelation(step.edge, previous.node, step.node);
+          out.push(`${i + 1}. ${relation}${when ? ` (when ${when})` : ''}${synth ? ` [${synth.compact}]` : ''}`);
         }
         out.push('');
       }
@@ -4679,6 +4691,21 @@ export class ToolHandler {
       entries.push(
         `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${breakdown}${segmentsText}${testTail}`,
       );
+      const productionIds = new Set(Object.values(byKind).flatMap((nodes) =>
+        nodes.filter((node) => !isTestFile(rel(node.filePath))).map((node) => node.id)));
+      const relationsByFile = new Map<string, string[]>();
+      for (const item of incoming) {
+        if (!productionIds.has(item.node.id)) continue;
+        const file = rel(item.node.filePath);
+        const relations = relationsByFile.get(file) ?? [];
+        if (relations.length < 3) {
+          relations.push(formatDetailedRelation(item.edge, item.node, root));
+          relationsByFile.set(file, relations);
+        }
+      }
+      for (const [file, relations] of relationsByFile) {
+        entries.push('  - `' + file + '`: ' + relations.join('; '));
+      }
     }
     if (entries.length === 0) return '';
 
@@ -6343,7 +6370,7 @@ export class ToolHandler {
     if (changeContextText) lines.push(changeContextText, '');
 
     // Blast radius (always-on, compact): for the entry symbols, who depends on
-    // them + which tests cover them — locations only, no source — so the agent
+    // them + which tests cover them — relation locations, no source bodies — so the agent
     // knows what to update/verify before editing without a separate call.
     // 普通探索保留紧凑影响面；明确流程问句已有主路径，不再重复列依赖与测试扇出。
     const blastRadius = flowQueryRequested ? '' : this.buildBlastRadiusSection(cg, subgraph, exactNodeIds);
@@ -6359,14 +6386,14 @@ export class ToolHandler {
       lines.push('');
 
       // Group edges by kind for readability
-      const byKind = new Map<string, Array<{ source: string; target: string }>>();
+      const byKind = new Map<string, Array<{ edge: Edge; source: Node; target: Node }>>();
       for (const edge of significantEdges) {
         const sourceNode = subgraph.nodes.get(edge.source);
         const targetNode = subgraph.nodes.get(edge.target);
         if (!sourceNode || !targetNode) continue;
 
         const group = byKind.get(edge.kind) || [];
-        group.push({ source: sourceNode.name, target: targetNode.name });
+        group.push({ edge, source: sourceNode, target: targetNode });
         byKind.set(edge.kind, group);
       }
 
@@ -6375,7 +6402,7 @@ export class ToolHandler {
         const shown = edges.slice(0, cap);
         lines.push(`**${kind}:**`);
         for (const e of shown) {
-          lines.push(`- ${e.source} → ${e.target}`);
+          lines.push(`- ${formatDetailedRelation(e.edge, e.source, e.target)}`);
         }
         if (edges.length > cap) {
           lines.push(`- ... and ${edges.length - cap} more`);
@@ -9330,10 +9357,16 @@ export class ToolHandler {
       .filter((n) => n.kind !== 'file' && n.kind !== 'import' && n.kind !== 'export')
       .sort((a, b) => a.startLine - b.startLine);
     const dependents = cg.getFileDependents(filePath);
+    const dependentRelations = collectIncomingRelations(cg, cg.getNodesInFile(filePath))
+      .filter(({ edge, source }) => edge.kind !== 'contains' && source.filePath !== filePath);
 
     // Compact, one-line blast radius (codegraph's value-add over a plain Read).
+    const dependentDetails = dependentRelations.slice(0, 6)
+      .map(({ edge, source, target }) => formatDetailedRelation(edge, source, target));
     const depSummary = dependents.length
       ? `used by ${dependents.length} file${dependents.length === 1 ? '' : 's'}: ${dependents.slice(0, 8).join(', ')}${dependents.length > 8 ? `, +${dependents.length - 8} more` : ''}`
+        + (dependentDetails.length > 0 ? `; relations: ${dependentDetails.join('; ')}` : '')
+        + (dependentRelations.length > dependentDetails.length ? `; +${dependentRelations.length - dependentDetails.length} more relations` : '')
       : 'no other indexed file depends on it';
 
     // Symbol-map renderer — for symbolsOnly, the config fallback, and read errors.
@@ -9560,10 +9593,12 @@ export class ToolHandler {
    */
   private formatTrail(cg: CodeGraph, node: Node): string {
     const TRAIL_CAP = 12;
-    const fmt = (e: { node: Node; edge: Edge }) => {
-      const base = `${e.node.name} (${e.node.filePath}:${e.node.startLine})`;
+    const fmt = (e: { node: Node; edge: Edge }, outgoing: boolean) => {
+      const source = outgoing ? node : e.node;
+      const target = outgoing ? e.node : node;
+      const detail = formatDetailedRelation(e.edge, source, target);
       const synth = this.synthEdgeNote(e.edge);
-      return synth ? `${base} [${synth.compact}]` : base;
+      return synth ? `${detail} [${synth.compact}]` : detail;
     };
     const collect = (edges: Array<{ node: Node; edge: Edge }>): Array<{ node: Node; edge: Edge }> => {
       const seen = new Set<string>([node.id]);
@@ -9580,10 +9615,10 @@ export class ToolHandler {
     if (callees.length === 0 && callers.length === 0) return '';
     const lines: string[] = ['', `**Trail — codegraph_explore any of these to follow it (no Read needed; index ${cg.getIndexVersion() ?? 'unknown'})**`];
     if (callees.length > 0) {
-      lines.push(`**Calls →** ${callees.slice(0, TRAIL_CAP).map(fmt).join(', ')}${callees.length > TRAIL_CAP ? `, +${callees.length - TRAIL_CAP} more` : ''}`);
+      lines.push(`**Calls →** ${callees.slice(0, TRAIL_CAP).map((edge) => fmt(edge, true)).join('; ')}${callees.length > TRAIL_CAP ? `, +${callees.length - TRAIL_CAP} more` : ''}`);
     }
     if (callers.length > 0) {
-      lines.push(`**Called by ←** ${callers.slice(0, TRAIL_CAP).map(fmt).join(', ')}${callers.length > TRAIL_CAP ? `, +${callers.length - TRAIL_CAP} more` : ''}`);
+      lines.push(`**Called by ←** ${callers.slice(0, TRAIL_CAP).map((edge) => fmt(edge, false)).join('; ')}${callers.length > TRAIL_CAP ? `, +${callers.length - TRAIL_CAP} more` : ''}`);
     }
     return lines.join('\n');
   }
@@ -10181,7 +10216,7 @@ export class ToolHandler {
       // isn't a plain call (callback registration, instantiation, …).
       const label = labels?.get(node.id);
       lines.push(
-        `- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}`
+        `- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — ${label}` : ''}`
       );
     }
 

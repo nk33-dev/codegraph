@@ -197,7 +197,7 @@ async function fieldChannelEdges(queries: QueryBuilder, ctx: ResolutionContext, 
         if (seen.has(key)) continue;
         seen.add(key);
         edges.push({
-          source: disp.node.id, target: fn.id, kind: 'calls', line: disp.node.startLine,
+          source: disp.node.id, target: fn.id, kind: 'calls',
           provenance: 'heuristic',
           metadata: {
             synthesizedBy: 'callback', via: reg.node.name, field: reg.field,

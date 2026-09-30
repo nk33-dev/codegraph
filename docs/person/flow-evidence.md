@@ -16,6 +16,10 @@
 
 每条证据包含稳定 ID、置信度、来源、定义位置、调用位置、注册位置与说明。断链原因统一为 `unindexed`、`no_syntax_edge`、`dynamic_key`、`ambiguous_candidates`、`language_boundary`、`lsp_unavailable`。运行时候选始终标为候选，不表述为已确认调用。
 
+MCP 文本中的关系统一使用 `resolved`、`inferred`、`candidate` 三档标签：显式语法边、强解析器和 SCIP 边为 `resolved`；名称匹配和结构合成边为 `inferred`；显式候选、低置信度及缺少来源依据的旧边为 `candidate`。Relationships、Flow、node Trail、文件 `used by` 与 Blast radius 同时显示关系两端定义位置及关系发生位置；合成边优先使用 `registeredAt`，不把分派符号声明行冒充调用点。Blast radius 仍按文件聚合，每个生产依赖文件最多列三条关系。
+
+关系详情复用批量入边查询和 `getNodesByIds`，不再逐边读取源节点，也不新增专用 JOIN 查询。`collectIncomingRelations` 是多个图查询、编辑覆盖检查与 Explore 文件依赖共用的解析入口。
+
 自然语言流程查询会先区分流程意图与代码形状。多词查询中的普通产品名、格式名和标题词不会仅凭 PascalCase/全大写形态生成 `unindexed` 断点；未连通时模型可见文本优先给出英文不完整结论，并省略自动推导的影响面噪声。结构化 `evidence.status` 仍保留 `connected`、`partial`、`unconnected`，供调用方稳定判断。
 
 当流程问句包含 `codegraph_*` MCP 工具名时，Explore 会尝试唯一映射 `handleXxx` 或 `handleCodeXxx`，再沿同文件、同所有者的真实 calls 入边向入口回溯，最多四跳。只有 handler 唯一、每一跳有图边且没有同分歧义时才把它提升为 `confirmed dispatch path`；否则继续普通检索或返回未连通，不从字符串注册关系伪造调用边。明确流程问句只展示主路径、证据和相关源码，默认隐藏重复的 blast radius、关系扇出与未请求的改动上下文。
@@ -39,9 +43,11 @@
 | --- | --- |
 | `src/graph/flow-evidence.ts` | 证据分类、断链归一、实现者展开、数量/字符/时间预算 |
 | `src/graph/named-symbol-flow.ts` | 单符号类型解析、命名方法与类型种子 |
+| `src/graph/edge-provenance.ts` | 关系来源分级与调用点位置提取 |
+| `src/graph/incoming-relations.ts` | 批量入边解析与端点节点关联 |
 | `src/mcp/tools.ts` | 文本渲染与 `structuredContent` 适配 |
 | `src/mcp/explore-session-state.ts` | 证据跨轮去重与会话字节预算 |
 
 ## 验证
 
-阶段专项测试覆盖五类证据、六类断链、接口与抽象方法展开、候选裁剪、跨轮去重、字节预算和 MCP structured content。历史阶段验证的完整数字记录在开发计划中；后续新增的自然语言失败优先与 MCP 调度链回归记录在[开发验证记录](test-repairs.md)，不覆盖历史基线。
+阶段专项测试覆盖五类证据、六类断链、接口与抽象方法展开、候选裁剪、跨轮去重、字节预算、MCP structured content，以及关系来源层级、调用点和注册点位置。历史阶段验证的完整数字记录在开发计划中；后续新增的自然语言失败优先与 MCP 调度链回归记录在[开发验证记录](test-repairs.md)，不覆盖历史基线。
