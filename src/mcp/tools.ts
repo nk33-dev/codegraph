@@ -2214,19 +2214,19 @@ export const tools: ToolDefinition[] = [
     name: 'codegraph_explore',
     // 「已展示源码视为已读取」只在初始化说明里声明一次（P0 问题 2）：工具描述保持
     // 「一句话定位 + 何时使用」，参数行为只写在 schema 里，两处措辞不会再各自漂移。
-    description: 'Primary read tool for indexed code: ask a question or name symbols/files for current line-numbered source, flow evidence, and blast radius. Other modes return structured JSON.',
+    description: 'Read indexed code by question, symbol, or file; returns line-numbered source, flow evidence, blast radius, or JSON.',
     inputSchema: {
       type: 'object',
       properties: {
         mode: {
           type: 'string',
-          description: 'explore/source, or a structured mode from the enum.',
+          description: CODE_QUERY_MODES.join(','),
           enum: ['explore', 'source', ...CODE_QUERY_MODES],
           default: 'explore',
         },
         backend: {
           type: 'string',
-          description: 'JSON backend: graph, lsp, auto, both. Omit for graph; diagnostics automatically uses auto so an available LSP can answer.',
+          description: 'Backend: graph,lsp,auto,both. Default graph; diagnostics defaults to auto.',
           enum: [...CODE_QUERY_BACKENDS],
         },
         file: {
@@ -9875,6 +9875,7 @@ export class ToolHandler {
       } catch { /* closed instance — leave as is */ }
     }
     const stats = cg.getStats();
+    const pendingAtStart = cg.getPendingFiles();
     const indexStatus = cg.getIndexStatus();
     const indexView = buildIndexBlock(cg, { checkFiles: false, includeStats: false });
     const runtime = runtimeBuildIdentity();
@@ -10025,10 +10026,9 @@ export class ToolHandler {
     // (issue #403). Surfacing it inside `status` gives the agent a single
     // place to ask "is the index caught up?" rather than inferring from
     // banners on other tool calls.
-    const pending = cg.getPendingFiles();
-    if (pending.length > 0) {
+    if (pendingAtStart.length > 0) {
       lines.push('', '**Pending sync:**');
-      for (const p of sortPendingFiles(pending)) {
+      for (const p of sortPendingFiles(pendingAtStart)) {
         lines.push(`- ${p.path} (${pendingFileState(p)})`);
       }
     }

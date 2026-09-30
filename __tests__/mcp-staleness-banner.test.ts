@@ -94,7 +94,7 @@ describe('MCP staleness banner', () => {
 
   it('prepends a stale banner when the response references a pending file', async () => {
     // Long debounce so the edit lingers in pendingFiles while we query.
-    cg.watch({ debounceMs: 4000, inertForTests: true });
+    cg.watch({ debounceMs: 30_000, inertForTests: true });
     await cg.waitUntilWatcherReady();
 
     // Real disk write so a later sync (if it fires) sees the new content,

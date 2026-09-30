@@ -37,6 +37,8 @@ function filesFromWorkspaceEdit(root: string, operations: LspWorkspaceEditOperat
       'Apply this action in an IDE, or choose an action that returns ordinary text edits.',
     );
   }
+  const canonicalRoot = validatePathWithinRoot(root, '.');
+  if (!canonicalRoot) throw new CodeEditRefusal('the project root is no longer available', 'conflict');
   const grouped = new Map<string, InternalTextEdit[]>();
   for (const operation of operations) {
     const current = grouped.get(operation.uri) ?? [];
@@ -55,7 +57,7 @@ function filesFromWorkspaceEdit(root: string, operations: LspWorkspaceEditOperat
     if (!absolutePath) throw new CodeEditRefusal(`the code action edits a non-file document: ${uri}`);
     const safePath = validatePathWithinRoot(root, absolutePath);
     if (!safePath) throw new CodeEditRefusal(`the code action would edit a file outside the project root: ${absolutePath}`);
-    const relative = path.relative(root, safePath).replace(/\\/g, '/');
+    const relative = path.relative(canonicalRoot, safePath).replace(/\\/g, '/');
     const text = readFileText(safePath);
     const eol = detectEol(text);
     const normalized = edits.map((edit) => ({ ...edit, newText: normalizeEol(edit.newText, eol) }));

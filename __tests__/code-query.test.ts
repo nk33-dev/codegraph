@@ -272,7 +272,7 @@ describe('structured graph queries', () => {
       second = CodeGraph.initSync(other);
       await second.indexAll();
       const result = await handler.execute('codegraph_explore', { mode: 'definitions', query: 'onlyOther', projectPath: other });
-      expect(result.structuredContent!.projectRoot).toBe(other);
+      expect(result.structuredContent!.projectRoot).toBe(fs.realpathSync(other));
       expect(result.structuredContent!.items).toHaveLength(1);
       expect((await handler.execute('codegraph_explore', { mode: 'definitions', query: 'onlyOther' })).structuredContent!.status).toBe('not_found');
     } finally {

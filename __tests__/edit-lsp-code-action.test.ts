@@ -56,6 +56,29 @@ describe('LSP code-action preview and apply', () => {
     expect(applied.applied?.indexSynced).toBe(true);
   });
 
+  it.runIf(process.platform !== 'win32')('applies through a symlinked project root', async () => {
+    project = createFakeProject({ 'a.ts': FILE_CONTENT }, { serverArgs: ['--semantic-tools'] });
+    const alias = `${project.root}-alias`;
+    fs.symlinkSync(project.root, alias, 'dir');
+    try {
+      cg = CodeGraph.initSync(alias);
+      await cg.indexAll();
+      const preview = await cg.editCode({
+        operation: 'code-action', file: 'a.ts', line: 1, column: 2, actionKinds: ['quickfix'],
+      });
+      const applied = await cg.editCode({
+        operation: 'code-action', file: 'a.ts', line: 1, column: 2, actionKinds: ['quickfix'],
+        apply: true, expectPreviewHash: preview.previewHash!, operationId: preview.operationId!,
+      });
+
+      expect(applied.status).toBe('applied');
+      expect(read()).toContain("import { Missing } from './missing';");
+    } finally {
+      try { cg?.close(); } catch { /* already closed */ }
+      fs.unlinkSync(alias);
+    }
+  });
+
   it('passes source action filters and can organize imports', async () => {
     await setup();
     const result = await cg.editCode({
