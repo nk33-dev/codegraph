@@ -21,6 +21,7 @@
 - 首次推送的 CI `36702267632` 在三平台全量测试发现四类确定性问题：MCP `mode` 描述未列出结构化模式；macOS 临时目录 canonical path 与词法路径不同，导致 Code Action 事务使用错误的相对路径，跨项目 `projectRoot` 断言也比较了未 canonicalize 的测试路径；`status` 采集期间 watcher 可能已清空 pending 文件。修复后 `mode` 描述直接由 `CODE_QUERY_MODES` 生成，Workspace Edit 相对 canonical root 计算，测试按 `realpath` 比较项目根，并在状态采集开始时快照 pending 文件。Windows 同轮另有一个 15 秒超时和一个数据库清理 `EBUSY`，均发生在高并发全量测试且没有独立业务断言失败，保留为下一轮同提交 CI 的复验项，不记为已通过。
 - 纠正提交在 Windows 本地完成三层验证：四个直接回归文件 77 项通过、1 项按平台条件跳过；MCP 固定表面与上下文预算 21 项通过；最终 `npm run check:quick` 的类型检查和 100 个受影响测试文件通过，共 2239 项通过、17 项按既有条件跳过。完整构建、全量测试和三平台结论仍以纠正提交的 GitHub CI 为准。
 - 第二轮 CI `36706996893` 中，Ubuntu 与 macOS 都只因 query-pool 的 direct/worker 深比较包含运行时 `elapsedMs` 而失败，业务文本、结构化证据和会话状态一致；修复后两条路径仍完整深比较，但各自的耗时只要求为数字。Windows 同轮再次出现共享 runner 资源争用：stale 状态测试清理 SQLite 时 `EBUSY`，MPEG-TS 测试超时后清理同样 `EBUSY`，没有业务断言失败。CI 因此保留 Linux/macOS 4 workers，将 Windows 降为 2 workers，避免并行 watcher、LSP 和 SQLite 夹具争抢句柄；query-pool 专项与最终 `npm run check:quick` 连续四轮共 100 项通过，类型检查通过。
+- 第三轮 CI `36709179429` 在提交 `73f1b4a` 上三平台全部通过：Ubuntu、macOS 使用 4 workers，Windows 使用 2 workers；构建、版本镜像与全量测试均成功。首次 `Personal Release` `36712014645` 随后通过同提交 CI 门禁并完成安装包构建，但隔离安装验证仍以未设置 `CODEGRAPH_UI=1` 的 `ui --help` 检查命令存在，与上游 v1.6.1 的 viewer 默认关闭契约冲突。修复为只在该命令存在性检查中显式 opt-in，不改变安装包的默认门禁。
 
 ## 2026-09-30：前端入口与路径词检索收束
 

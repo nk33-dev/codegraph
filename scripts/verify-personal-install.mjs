@@ -10,8 +10,8 @@ const npm = process.env.npm_execpath;
 if (!npm) throw new Error('请通过 npm run verify:personal-install 执行。');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-package-check-'));
 const env = { ...process.env, CODEGRAPH_TELEMETRY: '0', CODEGRAPH_NO_UPDATE_CHECK: '1', CODEGRAPH_NO_DAEMON: '1' };
-const run = (args, cwd = root) => execFileSync(process.execPath, args, {
-  cwd, env, encoding: 'utf8', windowsHide: true, maxBuffer: 8 * 1024 * 1024,
+const run = (args, cwd = root, envOverrides = {}) => execFileSync(process.execPath, args, {
+  cwd, env: { ...env, ...envOverrides }, encoding: 'utf8', windowsHide: true, maxBuffer: 8 * 1024 * 1024,
 });
 
 /**
@@ -84,7 +84,7 @@ try {
   if (info.distribution !== 'personal' || !info.build?.buildId) {
     throw new Error(`安装后运行来源不正确：distribution=${info.distribution}，buildId=${info.build?.buildId ?? 'null'}。`);
   }
-  if (!run([cli, 'ui', '--help'], temporary).includes('codegraph ui')) throw new Error('安装包缺少 ui 命令。');
+  if (!run([cli, 'ui', '--help'], temporary, { CODEGRAPH_UI: '1' }).includes('codegraph ui')) throw new Error('安装包缺少 ui 命令。');
   checkMcpSurface(cli, temporary);
   run([path.join(installed, 'scripts/check-ui-build.mjs'), '--root', installed], temporary);
   const project = path.join(temporary, 'project');
