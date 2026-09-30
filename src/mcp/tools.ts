@@ -2174,6 +2174,18 @@ export const tools: ToolDefinition[] = [
           description: 'explore: temporary baseRef index for edge comparison.',
           default: false,
         },
+        // Display filters. `handleExplore` has always READ these (`parseExplore-
+        // LanguageList` / `parseExploreKindList` / the framework list); they were
+        // just never declared here, so a client that validates against the schema
+        // could not send them and the filtering was invisible over MCP (#2133).
+        // Singular aliases (`language`, `symbolType`, `excludeType`, `framework`)
+        // stay undeclared on purpose: the surface is a fixed byte budget and the
+        // plural form is the documented one.
+        directory: { type: 'string', description: 'explore: restrict to a project-relative subdirectory.' },
+        languages: { type: 'array', items: { type: 'string', description: 'Language name.' }, description: 'explore: only these languages.' },
+        frameworks: { type: 'array', items: { type: 'string', description: 'Framework name.' }, description: 'explore: only these frameworks.' },
+        symbolTypes: { type: 'array', items: { type: 'string', description: 'Symbol kind.' }, description: 'explore: only these symbol kinds.' },
+        excludeTypes: { type: 'array', items: { type: 'string', description: 'Symbol kind.' }, description: 'explore: drop these symbol kinds.' },
         projectPath: projectPathProperty,
       },
       // No top-level anyOf/oneOf/allOf: the Anthropic API rejects them in input_schema, which

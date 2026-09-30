@@ -32,14 +32,21 @@ const originalToolEnv = process.env[TOOL_ENV];
  * 基于漂移索引的拒答（点名文件 + `changed on disk after the last index sync`），
  * 以及空结果给出词法匹配与候选名。两条都已压到最短，其余段落未动；
  * tools/list 反而比上一基线小了，所以合计上限不调。
+ *
+ * 2026-09-30（补声明 explore 的显示过滤参数之后实测）：explore 3,540；tools/list
+ * 5,304；合计 7,792。这是第二处有意增长，理由是**功能原本不可达**：`handleExplore`
+ * 一直在读 `directory` / `languages` / `frameworks` / `symbolTypes` / `excludeTypes`，
+ * 但 schema 从未声明，按 schema 校验的客户端根本发不出这些参数——过滤功能在 MCP 上
+ * 等于不存在。五个参数共 642 字符，描述已压到一句；单数别名（`language`、
+ * `symbolType`、`excludeType`、`framework`）刻意不声明，省下的正是它们的份额。
  */
 const SURFACE_MAX = {
   instructions: 2_500,
   noRootInstructions: 500,
-  toolsList: 5_050,
-  explore: 3_280,
+  toolsList: 5_410,
+  explore: 3_610,
   edit: 2_100,
-  combined: 7_300,
+  combined: 7_950,
 } as const;
 
 afterEach(() => {

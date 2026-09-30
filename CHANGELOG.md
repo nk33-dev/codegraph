@@ -14,6 +14,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- 补声明 `codegraph_explore` 的显示过滤参数。`handleExplore` 一直在读 `directory`、`languages`、`frameworks`、`symbolTypes`、`excludeTypes`，但工具 schema 从未声明它们——按 schema 校验的客户端发不出这些参数，CHANGELOG 里宣传的过滤功能在 MCP 上等于不存在。五个参数共 642 字符，固定表面上限相应调整（`explore` 3,280→3,610、`toolsList` 5,050→5,410、`combined` 7,300→7,950），单数别名（`language`、`symbolType`、`excludeType`、`framework`）刻意不声明以省下份额。
 - 明确点名的文件不再静默丢区域。修一处按路径点名 `.vue` 组件时的头部丢失：SFC 的 `component` 节点覆盖整份文件，会命中 envelope 过滤的「容器超过半文件就丢弃」规则，而按路径点名时它既不是 `focusedNode` 也不在 `flow.namedNodeIds` 里——而它恰好是唯一覆盖文件顶部的节点（`<template>` 和 `<style>` 都在 `<script setup>` 之前），于是 1..N 行整段不渲染，`Panel.vue` 只回 159-353 行，且没有 gap 标记（gap 只标注两个已渲染片段之间的洞）。现在被 pin 的文件会为头部补一个有界范围（上限 200 行，与脊窗口同量级），低于合并阈值的小缺口不补。另为点名文件加续读脚注：section 未覆盖到文件末尾时，在围栏外给出未覆盖行段并指明 `codegraph_explore mode:"source", file, startLine, limit` 取法（不引导 Read）。脚注由该文件自己的额度支付——`fileBudget` 与 `SPINE_CEILING` 同时扣除预留守恒，限定名查询走的是后者，只扣前者等于没扣，脚注会吃掉下层文件的预留。
 
 - 合并上游 **v1.6.1**（`f4ddf50`，113 个提交 / 247 个文件），基线为 fork 点 `3ed73bc`。个人侧功能保持不变，重点是把上游改动落到个人模块上：schema 版本撞车改为「官方 10/11 原样 + 个人 `file_text` 移到 13 + 12 号条件桥接迁移」，旧库打开即自动补齐 synthesis 相关表和回填，不需要重建；`EXTRACTION_VERSION` 从 27 进位到 28（两边同号但含义不同），旧库会被判定需要一次重抽取。同步结果只在本地提交，未推送，三平台 CI 与隔离安装记为未验证；重叠模块取舍见 `docs/person/maintenance.md`。
