@@ -310,6 +310,112 @@ function filesDefiningSymbol(cg: CodeGraph, symbol: string): string[] {
   }
 }
 
+interface StartupEntryCandidate {
+  filePath: string;
+  priority: number;
+}
+
+function normalizeStartupPath(filePath: string): string {
+  const parts: string[] = [];
+  for (const part of filePath.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return parts.join('/');
+}
+
+function startupFileMatches(
+  target: string,
+  indexedFiles: Map<string, string>,
+): string | null {
+  const normalized = normalizeStartupPath(target);
+  if (!normalized) return null;
+  const exact = indexedFiles.get(normalized.toLowerCase());
+  if (exact) return exact;
+
+  const lowerTarget = normalized.toLowerCase();
+  const indexPrefix = `${lowerTarget}/index.`;
+  const extensionless = [...indexedFiles.entries()]
+    .filter(([filePath]) => filePath.startsWith(`${lowerTarget}.`) || filePath.startsWith(indexPrefix))
+    .sort((left, right) => left[0].length - right[0].length || left[0].localeCompare(right[0]));
+  return extensionless[0]?.[1] ?? null;
+}
+
+function startupEntryCandidates(
+  projectRoot: string,
+  files: readonly { path: string }[],
+): StartupEntryCandidate[] {
+  const indexedFiles = new Map(files.map((file) => [normalizeStartupPath(file.path).toLowerCase(), file.path]));
+  const candidates = new Map<string, StartupEntryCandidate>();
+  const add = (filePath: string | null, priority: number): void => {
+    if (!filePath) return;
+    const current = candidates.get(filePath);
+    if (!current || priority < current.priority) candidates.set(filePath, { filePath, priority });
+  };
+  const readProjectText = (filePath: string): string | null => {
+    try {
+      const absolute = validatePathWithinRoot(projectRoot, filePath);
+      return absolute ? readFileSync(absolute, 'utf-8') : null;
+    } catch {
+      return null;
+    }
+  };
+
+  for (const file of files) {
+    const normalizedPath = normalizeStartupPath(file.path);
+    const lowerPath = normalizedPath.toLowerCase();
+    if (/(?:^|\/)(?:src\/)?main\.[^/]+$/i.test(normalizedPath)
+      || /(?:^|\/)(?:src\/)?__main__\.py$/i.test(normalizedPath)) {
+      add(file.path, 0);
+    } else if (/(?:^|\/)(?:src\/)?(?:index|app|server|program)\.[^/]+$/i.test(normalizedPath)) {
+      add(file.path, 1);
+    } else if (/(?:^|\/)(?:src\/)?(?:bin|cmd)\/[^/]+(?:\/main)?\.[^/]+$/i.test(normalizedPath)) {
+      add(file.path, 2);
+    }
+
+    if (lowerPath.endsWith('/package.json') || lowerPath === 'package.json') {
+      const content = readProjectText(file.path);
+      if (!content) continue;
+      try {
+        const parsed = JSON.parse(content) as { main?: unknown };
+        if (typeof parsed.main === 'string' && parsed.main.trim()) {
+          const packageDir = normalizedPath.includes('/')
+            ? normalizedPath.slice(0, normalizedPath.lastIndexOf('/'))
+            : '';
+          add(startupFileMatches(`${packageDir}/${parsed.main}`, indexedFiles), 0);
+        }
+      } catch {
+        // Invalid package metadata must not hide convention-based entries.
+      }
+    }
+
+    if (lowerPath.endsWith('/index.html') || lowerPath === 'index.html') {
+      const content = readProjectText(file.path);
+      if (!content) continue;
+      const scriptPattern = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi;
+      let match: RegExpExecArray | null;
+      while ((match = scriptPattern.exec(content)) !== null) {
+        const source = match[1]?.trim();
+        if (!source || /^(?:[a-z][a-z0-9+.-]*:|\/\/|data:|#)/i.test(source)) continue;
+        const cleanSource = source.split(/[?#]/, 1)[0]!;
+        const baseDir = normalizedPath.includes('/')
+          ? normalizedPath.slice(0, normalizedPath.lastIndexOf('/'))
+          : '';
+        add(startupFileMatches(`${baseDir}/${cleanSource}`, indexedFiles), 1);
+      }
+    }
+
+    if (lowerPath.endsWith('.java') && readProjectText(file.path)?.includes('@SpringBootApplication')) {
+      add(file.path, 0);
+    }
+  }
+
+  return [...candidates.values()].sort(
+    (left, right) => left.priority - right.priority || left.filePath.localeCompare(right.filePath),
+  );
+}
+
 /**
  * Calculate the recommended number of codegraph_explore calls based on project size.
  * Larger codebases need more exploration calls to cover their surface area,
@@ -4990,19 +5096,8 @@ export class ToolHandler {
 
     const startupQuestion = /(?:前端|后端|后台|服务).{0,6}(?:入口|启动|初始化)|(?:启动|运行).{0,8}(?:流程|调用链|入口)|(?:项目|应用|服务).{0,8}启动|(?:entry|main).{0,8}(?:point|file)|(?:application|frontend|backend).{0,8}entry|\b(?:startup|boot(?:strap)?|entry point)\s+(?:flow|process|path)\b/i.test(rawQuery);
     if (startupQuestion && pinnedFiles.length === 0) {
-      const entries = cg.getFiles().map((file) => file.path)
-        .filter((filePath) => !isTestFile(filePath))
-        .map((filePath) => {
-          // Match main.* at any depth
-          if (/(?:^|\/)(?:src\/)?main\.[^/]+$/i.test(filePath) || /(?:^|\/)(?:src\/)?__main__\.py$/i.test(filePath)) return { filePath, priority: 0 };
-          // Match index|app|server|program at any depth
-          if (/(?:^|\/)(?:src\/)?(?:index|app|server|program)\.[^/]+$/i.test(filePath)) return { filePath, priority: 1 };
-          // Match bin/cmd directories
-          if (/(?:^|\/)(?:src\/)?(?:bin|cmd)\/[^/]+(?:\/main)?\.[^/]+$/i.test(filePath)) return { filePath, priority: 2 };
-          return null;
-        })
-        .filter((entry): entry is { filePath: string; priority: number } => entry !== null)
-        .sort((left, right) => left.priority - right.priority || left.filePath.localeCompare(right.filePath));
+      const entries = startupEntryCandidates(projectRoot, cg.getFiles())
+        .filter((entry) => !isTestFile(entry.filePath));
       pinnedFiles = entries.slice(0, 3).map((entry) => entry.filePath);
       matchQuery = 'main bootstrap initialize start';
     }

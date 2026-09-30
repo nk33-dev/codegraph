@@ -62,6 +62,11 @@ describe('scorePathRelevance per-word scoring (#720)', () => {
       scorePathRelevance('src/auth/login_handler.go', 'auth')
     );
   });
+
+  it('down-weights common workspace directories when they are the only path evidence', () => {
+    expect(scorePathRelevance('frontend/components/AdminDashboard.vue', 'frontend entry')).toBe(1.5);
+    expect(scorePathRelevance('src/frontend/components/AdminDashboard.vue', 'frontend entry')).toBe(1.5);
+  });
 });
 
 // The project name is context, not a discriminator: dropping it from path

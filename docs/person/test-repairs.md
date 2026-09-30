@@ -1,5 +1,24 @@
 # 个人版开发验证记录
 
+## 2026-09-30：前端入口与路径词检索收束
+
+### 结论
+
+- 问题 1 的中文概念扩展、英文/中文启动问句和嵌套 `main.*` 识别此前已经落地；原有正则本身已支持 `packages/frontend/src/main.js`，不是根目录限定。
+- 问题 2 的低置信度 score floor、提示和最终渲染符号计数此前已经落地；剩余噪声来自公共目录词的路径加分，不能只靠提高全局阈值解决。
+
+### 本轮实现
+
+- 启动入口候选增加 `package.json#main`、`index.html` 的相对 `script[src]` 和 Java `@SpringBootApplication` 文件，并统一做项目内路径归一化与索引存在性校验。
+- `frontend`、`src`、`components`、`utils`、`lib` 等公共目录词只保留 0.3 倍路径证据；文件名命中和显式路径点名不受影响。
+- 新增嵌套 monorepo、`package.json`、HTML 脚本、Spring Boot 和公共目录词回归测试。
+
+### 验证
+
+- 定向测试：4 个测试文件、26 项通过（包含新增 3 项入口测试和公共目录词评分测试）。
+- `git diff --check` 通过。
+- `npm run check:quick` 未能作为完整门禁：首次执行环境缺少 worktree 依赖，接入现有依赖后类型检查仍缺少 `@types/node`；未将该结果记为通过。
+
 ## 2026-09-30：原生内核引用坐标对齐（上游 v1.6.1 同步后）
 
 上游同步后本地构建内核跑 parity，17 个 suite 里 9 个失败、75 项，全部是 `refs: expected [ …(N) ] to deeply equal [ …(N) ]`——**条数相同、内容不同**。

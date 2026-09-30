@@ -13,6 +13,17 @@ export function normalizeNameToken(raw: string): string {
   return raw.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/** Directory names that describe a layout rather than a specific feature. */
+const COMMON_DIRECTORY_TERMS = new Set([
+  'app', 'apps', 'backend', 'build', 'client', 'common', 'components', 'core',
+  'dist', 'frontend', 'lib', 'libs', 'modules', 'packages', 'server', 'shared',
+  'source', 'src', 'test', 'tests', 'utils', 'vendor',
+]);
+
+function isCommonDirectoryTerm(term: string): boolean {
+  return COMMON_DIRECTORY_TERMS.has(normalizeNameToken(term));
+}
+
 /**
  * Tokens that name the PROJECT as a whole — its `go.mod` module, `package.json`
  * name, or repo root directory — rather than any specific symbol. A user
@@ -259,10 +270,13 @@ export function scorePathRelevance(
     if (subtokens.length === 0) continue;
     // Exact filename match (strongest)
     if (subtokens.some((t) => fileName.includes(t))) score += 10;
-    // Directory match
-    if (subtokens.some((t) => dirName.includes(t))) score += 5;
+    const commonDirectory = subtokens.some(isCommonDirectoryTerm);
+    const pathWeight = commonDirectory ? 0.3 : 1;
+    // Directory match. Common layout names are weak evidence because they
+    // frequently occur on every file in one workspace or package.
+    if (subtokens.some((t) => dirName.includes(t))) score += 5 * pathWeight;
     // General path match
-    else if (subtokens.some((t) => pathLower.includes(t))) score += 3;
+    else if (subtokens.some((t) => pathLower.includes(t))) score += 3 * pathWeight;
   }
 
   // Deprioritize test files unless the query is explicitly about tests, and
