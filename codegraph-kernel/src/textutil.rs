@@ -104,6 +104,53 @@ pub fn col16(src: &str, starts: &[usize], row: usize, byte_pos: usize) -> u32 {
     utf16_len(&src[ls..byte_pos]) as u32
 }
 
+/// Port of `TreeSitterExtractor.referencePositionInNode`
+/// (src/extraction/tree-sitter.ts): 1-based line and column of `name` inside
+/// `node_text`, falling back to the node's own start when it is absent.
+///
+/// The column is MIXED on purpose and must stay that way: the node's start
+/// column in UTF-16 code units (`start_col`, i.e. what `col16` returns) plus the
+/// UTF-8 BYTE length of the same-line text before the match. The wasm path
+/// computes exactly this (`node.startPosition.column + Buffer.byteLength(tail,
+/// 'utf8')`), so "normalizing" it to one unit here would break the parity gate
+/// on any non-ASCII prefix. ASCII prefixes — every current fixture — make the
+/// two agree.
+///
+/// Line breaks count as `split(/\r\n|\r|\n/)` does: a CRLF is ONE break.
+pub fn ref_position_in_node(
+    node_text: &str,
+    start_row: usize,
+    start_col: u32,
+    name: &str,
+) -> (u32, u32) {
+    let Some(offset) = node_text.find(name) else {
+        return (start_row as u32 + 1, start_col);
+    };
+    let bytes = node_text.as_bytes();
+    let mut parts: usize = 1;
+    let mut tail_start: usize = 0;
+    let mut i = 0usize;
+    while i < offset {
+        match bytes[i] {
+            b'\r' => {
+                if i + 1 < offset && bytes[i + 1] == b'\n' {
+                    i += 1;
+                }
+                parts += 1;
+                tail_start = i + 1;
+            }
+            b'\n' => {
+                parts += 1;
+                tail_start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let base = if parts == 1 { start_col } else { 0 };
+    (start_row as u32 + parts as u32, base + (offset - tail_start) as u32)
+}
+
 /// JS `String.prototype.slice(0, n)` in UTF-16 units, without splitting a
 /// surrogate pair (when the cut would split one, we stop one code unit short —
 /// a lone surrogate isn't representable in Rust and never round-trips through

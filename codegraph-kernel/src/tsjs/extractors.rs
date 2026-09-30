@@ -1166,6 +1166,10 @@ impl<'t> Walker<'t> {
             .child_by_field_name("function")
             .or_else(|| node.named_child(0));
         let mut callee_name = String::new();
+        // Where the ref is anchored. The wasm path records `callSite`, which the
+        // member branch below moves to the member identifier — the ref names
+        // `obj.method`, and the anchor belongs on `method`, not on `obj`.
+        let mut site = func.unwrap_or(node);
 
         if let Some(func) = func {
             if func.kind() == "member_expression" {
@@ -1175,6 +1179,7 @@ impl<'t> Walker<'t> {
                     .or_else(|| func.named_child(1));
                 if let Some(property) = property {
                     let method_name = self.text(property);
+                    site = property;
                     let receiver = func
                         .child_by_field_name("object")
                         .or_else(|| func.child_by_field_name("operand"))
@@ -1243,7 +1248,7 @@ impl<'t> Walker<'t> {
         }
 
         if !callee_name.is_empty() {
-            self.push_call_ref(&callee_name.clone(), node);
+            self.push_call_ref(&callee_name.clone(), site);
         }
     }
 
@@ -1319,7 +1324,15 @@ impl<'t> Walker<'t> {
         let class_name = class_name.trim().to_string();
         if !class_name.is_empty() {
             let from = self.top_row();
-            self.push_ref(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+            // Anchored on the constructor NAME, not on `new` — the wasm path
+            // switched to referencePositionInNode (src/extraction/tree-sitter.ts).
+            let (line, column) = util::ref_position_in_node(
+                self.text(ctor),
+                ctor.start_position().row,
+                self.col_of(ctor),
+                &class_name,
+            );
+            self.push_ref_pos(from, &class_name, edge_kind_index("instantiates").unwrap(), line, column);
         }
     }
 

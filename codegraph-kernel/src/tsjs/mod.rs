@@ -315,13 +315,22 @@ impl<'t> Walker<'t> {
             .unwrap_or(false)
     }
 
-    fn push_ref(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
+    /// Push a ref at an explicit (line, column) rather than deriving them from
+    /// a node.
+    ///
+    /// The wasm path records several refs at a position INSIDE the node it
+    /// matched — the callee's member identifier for `calls`
+    /// (`TreeSitterExtractor.callSite`), the constructor name for
+    /// `instantiates` (`referencePositionInNode`) — so the kernel has to be able
+    /// to emit a position its node doesn't start at. See `push_ref`, which is
+    /// this with the node's own start.
+    fn push_ref_pos(&mut self, from_row: u32, name: &str, kind_code: u8, line: u32, column: u32) {
         let name_ref = self.arena.put(name);
         self.tables.push_ref(&RefRow {
             from_idx: from_row,
             kind: kind_code,
-            line: self.line_of(node),
-            column: self.col_of(node),
+            line,
+            column,
             reference_name: name_ref,
             candidates: NONE_STR,
             from_id_str: NONE_STR,
@@ -335,6 +344,12 @@ impl<'t> Walker<'t> {
                 self.imported_names.insert(c[1].to_string());
             }
         }
+    }
+
+    fn push_ref(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
+        let line = self.line_of(node);
+        let column = self.col_of(node);
+        self.push_ref_pos(from_row, name, kind_code, line, column);
     }
 
     fn push_call_ref(&mut self, name: &str, node: Node) {

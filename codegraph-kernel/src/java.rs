@@ -847,8 +847,13 @@ impl<'t> Walker<'t> {
             .or_else(|| node.child_by_field_name("scope"));
 
         let mut callee_name = String::new();
+        // wasm's `callSite`: `nameField` for a member call. The static-factory
+        // early-return below deliberately keeps the node's own start, matching
+        // the wasm branch that pushes without moving the site.
+        let mut site = node;
         if let (Some(name_field), Some(object_field)) = (name_field, object_field) {
             let method_name = self.text(name_field);
+            site = name_field;
 
             // Static-factory / fluent chain: `Foo.getInstance().bar()` →
             // `<inner-receiver>.<inner-method>().<method>` (#645/#608).
@@ -900,7 +905,7 @@ impl<'t> Walker<'t> {
             if let Some(c) = util::paren_conversion().captures(&callee_name) {
                 callee_name = c[1].to_string();
             }
-            self.push_ref_at(caller, &callee_name.clone(), edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(caller, &callee_name.clone(), edge_kind_index("calls").unwrap(), site);
         }
     }
 
@@ -917,7 +922,13 @@ impl<'t> Walker<'t> {
         let class_name = strip_generic_and_qualifier(self.text(ctor));
         if !class_name.is_empty() {
             let from = self.top_row();
-            self.push_ref_at(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+            let (line, column) = util::ref_position_in_node(
+                self.text(ctor),
+                ctor.start_position().row,
+                self.col_of(ctor),
+                &class_name,
+            );
+            self.push_ref(from, &class_name, edge_kind_index("instantiates").unwrap(), line, column);
         }
     }
 

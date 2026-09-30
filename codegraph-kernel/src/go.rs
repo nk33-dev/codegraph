@@ -202,12 +202,21 @@ impl<'t> Walker<'t> {
     }
 
     fn push_ref_at(&mut self, from_row: u32, name: &str, kind_code: u8, node: Node) {
+        let line = self.line_of(node);
+        let column = self.col_of(node);
+        self.push_ref_pos(from_row, name, kind_code, line, column);
+    }
+
+    /// `push_ref_at` at an explicit position — the wasm path anchors some refs
+    /// INSIDE the node it matched (`referencePositionInNode`), which a node's own
+    /// start cannot express.
+    fn push_ref_pos(&mut self, from_row: u32, name: &str, kind_code: u8, line: u32, column: u32) {
         let name_ref = self.arena.put(name);
         self.tables.push_ref(&RefRow {
             from_idx: from_row,
             kind: kind_code,
-            line: self.line_of(node),
-            column: self.col_of(node),
+            line,
+            column,
             reference_name: name_ref,
             candidates: NONE_STR,
             from_id_str: NONE_STR,
@@ -736,6 +745,9 @@ impl<'t> Walker<'t> {
             .child_by_field_name("function")
             .or_else(|| node.named_child(0));
         let mut callee_name = String::new();
+        // wasm's `callSite`: the member branch below moves it onto the selector,
+        // so the ref anchors on the method name rather than on the receiver.
+        let mut site = func.unwrap_or(node);
 
         if let Some(func) = func {
             if func.kind() == "selector_expression" {
@@ -744,6 +756,7 @@ impl<'t> Walker<'t> {
                     .or_else(|| func.child_by_field_name("field"));
                 if let Some(property) = property {
                     let method_name = self.text(property);
+                    site = property;
                     let receiver = func
                         .child_by_field_name("object")
                         .or_else(|| func.child_by_field_name("operand"))
@@ -814,7 +827,7 @@ impl<'t> Walker<'t> {
                 callee_name = c[1].to_string();
             }
             let from = self.top_row();
-            self.push_ref_at(from, &callee_name.clone(), edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(from, &callee_name.clone(), edge_kind_index("calls").unwrap(), site);
         }
     }
 
@@ -842,7 +855,13 @@ impl<'t> Walker<'t> {
         }
         if !go_type.is_empty() {
             let from = self.top_row();
-            self.push_ref_at(from, &go_type, edge_kind_index("instantiates").unwrap(), node);
+            let (line, column) = util::ref_position_in_node(
+                self.text(ctor),
+                ctor.start_position().row,
+                self.col_of(ctor),
+                &go_type,
+            );
+            self.push_ref_pos(from, &go_type, edge_kind_index("instantiates").unwrap(), line, column);
         }
     }
 

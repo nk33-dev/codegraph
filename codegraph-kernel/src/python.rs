@@ -693,6 +693,8 @@ impl<'t> Walker<'t> {
             .child_by_field_name("function")
             .or_else(|| node.named_child(0));
         let mut callee_name = String::new();
+        // wasm's `callSite`: the attribute branch moves it onto the attr name.
+        let mut site = func.unwrap_or(node);
 
         if let Some(func) = func {
             if func.kind() == "attribute" {
@@ -704,6 +706,7 @@ impl<'t> Walker<'t> {
                     .or_else(|| func.named_child(1));
                 if let Some(property) = property {
                     let method_name = self.text(property);
+                    site = property;
                     let receiver = func
                         .child_by_field_name("object")
                         .or_else(|| func.child_by_field_name("operand"))
@@ -745,7 +748,7 @@ impl<'t> Walker<'t> {
                 callee_name = c[1].to_string();
             }
             let from = self.top_row();
-            self.push_ref_at(from, &callee_name.clone(), edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(from, &callee_name.clone(), edge_kind_index("calls").unwrap(), site);
         }
     }
 

@@ -1003,6 +1003,9 @@ impl<'t> Walker<'t> {
         }
         let caller = self.top_row();
         let mut callee_name = String::new();
+        // wasm's `callSite`: `nameField` for a member/scoped call. The static-
+        // factory early-return below keeps the node's own start.
+        let mut site = node;
 
         let name_field = node.child_by_field_name("name");
         let object_field = node
@@ -1012,6 +1015,7 @@ impl<'t> Walker<'t> {
         if let (Some(name_field), Some(object_field)) = (name_field, object_field) {
             // member_call_expression / scoped_call_expression.
             let method_name = self.text(name_field);
+            site = name_field;
 
             // Fluent static-factory `Cls::factory($x)->method()` — encode
             // `Cls::factory().method` (inner args dropped) and return; the
@@ -1061,7 +1065,7 @@ impl<'t> Walker<'t> {
             if let Some(c) = util::paren_conversion().captures(&callee_name) {
                 callee_name = c[1].to_string();
             }
-            self.push_ref_at(caller, &callee_name.clone(), edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(caller, &callee_name.clone(), edge_kind_index("calls").unwrap(), site);
         }
     }
 
@@ -1083,7 +1087,13 @@ impl<'t> Walker<'t> {
         let class_name = strip_generic_and_qualifier(self.text(ctor));
         if !class_name.is_empty() {
             let from = self.top_row();
-            self.push_ref_at(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+            let (line, column) = util::ref_position_in_node(
+                self.text(ctor),
+                ctor.start_position().row,
+                self.col_of(ctor),
+                &class_name,
+            );
+            self.push_ref(from, &class_name, edge_kind_index("instantiates").unwrap(), line, column);
         }
     }
 

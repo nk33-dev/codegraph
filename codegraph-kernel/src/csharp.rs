@@ -1029,10 +1029,15 @@ impl<'t> Walker<'t> {
         let Some(func) = func else { return };
 
         let mut callee_name: String;
+        // wasm's `callSite`: the member branch moves it onto the member name.
+        let mut site = func;
         if func.kind() == "member_access_expression" {
             let recv = func.child_by_field_name("expression");
             let name_node = func.child_by_field_name("name");
             let method_name = name_node.map(|n| self.text(n)).unwrap_or("");
+            if let Some(n) = name_node {
+                site = n;
+            }
             let chained = recv
                 .map(|r| r.kind() == "invocation_expression" && !method_name.is_empty())
                 .unwrap_or(false);
@@ -1070,7 +1075,7 @@ impl<'t> Walker<'t> {
         // (template strip + fn-ptr fan-out are c/cpp-gated — not C#.)
 
         if !callee_name.is_empty() {
-            self.push_ref_at(caller, &callee_name.clone(), edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(caller, &callee_name.clone(), edge_kind_index("calls").unwrap(), site);
         }
     }
 
@@ -1090,7 +1095,13 @@ impl<'t> Walker<'t> {
         let class_name = strip_generic_and_qualifier(self.text(ctor));
         if !class_name.is_empty() {
             let from = self.top_row();
-            self.push_ref_at(from, &class_name, edge_kind_index("instantiates").unwrap(), node);
+            let (line, column) = util::ref_position_in_node(
+                self.text(ctor),
+                ctor.start_position().row,
+                self.col_of(ctor),
+                &class_name,
+            );
+            self.push_ref(from, &class_name, edge_kind_index("instantiates").unwrap(), line, column);
         }
     }
 

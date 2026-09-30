@@ -238,12 +238,20 @@ impl<'t> Walker<'t> {
     }
 
     fn push_ref_at(&mut self, from_row: u32, name: &str, kind: &str, node: Node) {
+        let line = self.line_of(node);
+        let column = self.col_of(node);
+        self.push_ref_pos(from_row, name, kind, line, column);
+    }
+
+    /// `push_ref_at` at an explicit position — `referencePositionInNode` anchors
+    /// `instantiates` on the type name rather than on `new`.
+    fn push_ref_pos(&mut self, from_row: u32, name: &str, kind: &str, line: u32, column: u32) {
         let name_ref = self.arena.put(name);
         self.tables.push_ref(&RefRow {
             from_idx: from_row,
             kind: edge_kind_index(kind).unwrap(),
-            line: self.line_of(node),
-            column: self.col_of(node),
+            line,
+            column,
             reference_name: name_ref,
             candidates: NONE_STR,
             from_id_str: NONE_STR,
@@ -939,7 +947,13 @@ impl<'t> Walker<'t> {
         if class_name.is_empty() {
             return;
         }
-        self.push_ref_at(from_row, &class_name, "instantiates", node);
+        let (line, column) = util::ref_position_in_node(
+            self.text(ctor),
+            ctor.start_position().row,
+            self.col_of(ctor),
+            &class_name,
+        );
+        self.push_ref_pos(from_row, &class_name, "instantiates", line, column);
     }
 
     // --- extractBareCall (dart.ts:305-379) --------------------------------

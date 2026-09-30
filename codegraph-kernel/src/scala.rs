@@ -271,12 +271,21 @@ impl<'t> Walker<'t> {
     }
 
     fn push_ref_at(&mut self, from_row: u32, name: &str, kind: &str, node: Node) {
+        let line = self.line_of(node);
+        let column = self.col_of(node);
+        self.push_ref_pos(from_row, name, kind, line, column);
+    }
+
+    /// `push_ref_at` at an explicit position — the wasm path anchors some refs
+    /// INSIDE the node it matched (`referencePositionInNode`), which the node's
+    /// own start cannot express.
+    fn push_ref_pos(&mut self, from_row: u32, name: &str, kind: &str, line: u32, column: u32) {
         let name_ref = self.arena.put(name);
         self.tables.push_ref(&RefRow {
             from_idx: from_row,
             kind: edge_kind_index(kind).unwrap(),
-            line: self.line_of(node),
-            column: self.col_of(node),
+            line,
+            column,
             reference_name: name_ref,
             candidates: NONE_STR,
             from_id_str: NONE_STR,
@@ -884,6 +893,8 @@ impl<'t> Walker<'t> {
         let Some(func) = func else { return };
 
         let mut callee: Option<String> = None;
+        // wasm's `callSite`: the member branch moves it onto the member name.
+        let mut site = func;
         if func.kind() == "field_expression" {
             // Member branch (:4364): property = `field` field for scala.
             let property = func
@@ -892,6 +903,7 @@ impl<'t> Walker<'t> {
                 .or_else(|| func.named_child(1));
             if let Some(property) = property {
                 let method_name = self.text(property);
+                site = property;
                 let receiver = func
                     .child_by_field_name("object")
                     .or_else(|| func.child_by_field_name("operand"))
@@ -948,7 +960,7 @@ impl<'t> Walker<'t> {
         if callee.is_empty() {
             return;
         }
-        self.push_ref_at(caller_row, &callee, "calls", node);
+        self.push_ref_at(caller_row, &callee, "calls", site);
     }
 
     // --- extractInstantiation (:4610, scala arm :4647-4662) ---------------
@@ -965,7 +977,13 @@ impl<'t> Walker<'t> {
             .or_else(|| node.named_child(0));
         let Some(ctor) = ctor else { return };
         if let Some(name) = self.scala_base_type_name(Some(ctor)) {
-            self.push_ref_at(from_row, &name, "instantiates", node);
+            let (line, column) = util::ref_position_in_node(
+                self.text(ctor),
+                ctor.start_position().row,
+                self.col_of(ctor),
+                &name,
+            );
+            self.push_ref_pos(from_row, &name, "instantiates", line, column);
         }
     }
 

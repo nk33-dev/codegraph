@@ -1,5 +1,38 @@
 # 个人版开发验证记录
 
+## 2026-09-30：原生内核引用坐标对齐（上游 v1.6.1 同步后）
+
+上游同步后本地构建内核跑 parity，17 个 suite 里 9 个失败、75 项，全部是 `refs: expected [ …(N) ] to deeply equal [ …(N) ]`——**条数相同、内容不同**。
+
+### 根因
+
+不是上游问题，是个人提交 `b39fade fix(retrieval): 补齐动态引用并收束检索意图` 改了 wasm 侧引用的锚点，内核侧从未镜像（`git show --stat b39fade | grep codegraph-kernel` 为空）。内核是「逐条镜像 wasm」的契约（`codegraph-kernel/src/tsjs/mod.rs` 头部写明 bug-for-bug fidelity），所以这是真实分歧。
+
+两处口径：
+
+- **calls**：wasm 新增 `callSite`，成员调用时把锚点从整个被调表达式移到成员标识符本身（`obj.method()` 记 `method` 的列，而不是 `obj` 的）。fixture 实测：`  return values.get(readKey());` wasm 记 column 16（`get`），内核记 9（`values`）。
+- **instantiates**：wasm 新增 `referencePositionInNode()`，把锚点从 `new` 移到构造类型名。同例：`  const values = new Map();` wasm 记 21（`Map`），内核记 17（`new`）。
+
+同时核实了两件**不能想当然**的事：两边列口径**本来就都是 UTF-16**（`textutil::col16` 注释与 `tsjs/mod.rs` 头部都写明「byte-identical to the wasm path's」），所以不需要任何字节列换算；而 `referencePositionInNode` 内部是**故意混用**的——UTF-16 基准列 + `Buffer.byteLength(tail,'utf8')` 的 UTF-8 字节偏移，内核必须逐字节照抄这个混用，单独"修正"会在非 ASCII 前缀上炸掉 parity。
+
+### 实现
+
+- `codegraph-kernel/src/textutil.rs` 新增 `ref_position_in_node()`：镜像 `referencePositionInNode`，含 CRLF 算一次断行、找不到名字回退到节点起点。
+- 各语言 Walker 的 `calls`：引入 `site`，成员分支（`field_expression` / `member_expression` / `attribute` / `selector_expression` / `navigation_expression` / `member_access_expression`）把 `site` 移到成员名，结尾用它推送；原本就以 `node` 推送的分支（C++ operator、局部函数指针、Java/PHP 静态工厂早退、Dart bare call、Ruby）**保持原样**。
+- 各语言 `instantiates`：改用 `ref_position_in_node`。只有位置口径推送函数的模块（go / dart / python / rustlang / scala / ccpp / tsjs）加 `push_ref_pos`，已有 `push_ref(line, column)` 的模块（java / php / csharp / kotlin / swift）直接复用。
+- 覆盖：tsjs、go、python、java、scala、dart、csharp、ccpp、swift、rustlang、php、kotlin。
+
+### 验证
+
+`bash scripts/build-kernel.sh` 后 `CODEGRAPH_KERNEL_EXPECT=1 npx vitest run __tests__/kernel-*.test.ts`：**75 项失败 → 8 项**，17 个 suite 里 16 个全绿。
+
+### 仍未解决（不得写成通过）
+
+- **剩余 8 条属于上游测试自身过期，不是内核分歧**：`kernel-tsjs-parity.test.ts` 的 `#1566` 与 `peels transparent receivers`（各 ts/tsx/js/jsx）。两边都会多产出 `holder['values'].get`——`assertParity` 返回 wasm，该用例断言的是 wasm 结果；而我们的 `TS_JS_CHAIN_RECEIVER_TYPES` 与上游逐字符相同、触发它的分支条件在 `b39fade` 里只改了注释、写该期望的提交 `cabe319` 属于上游且晚于 `b39fade`。结论是上游自己的测试与其自身行为不符，按用户决定**不动这份上游测试**，保持与官方分支一致。
+- **动态 namespace import 未移植**：`const ns = await import('./x')` 在 wasm 侧会多产出一个 `import` 节点与一条 `imports` 引用（`emitDynamicNamespaceImport`），内核侧不存在。`kernel-*.test.ts` 的 fixture 不覆盖它，所以 CI 绿；但 `scripts/kernel-parity.mjs` 在真实仓库上会暴露。
+
+同一轮另有三处 CI/工具修复，见 CHANGELOG：`codegraph_explore` 补声明显示过滤参数（`docs/person/mcp-surface.md`）、macOS 安装校验按 realpath 比较、real-lsp 补 rust-analyzer 组件与 TypeScript SDK。
+
 ## 2026-09-18：explore 依赖分类、测试摘要与固定表面预算
 
 用户报告两项 explore 输出问题；本批同时修掉它引入的固定表面超限。契约见[结构化查询](structured-queries.md#blast-radius-依赖分类)与 [MCP 表面与缓存稳定性](mcp-surface.md#固定表面测量)。

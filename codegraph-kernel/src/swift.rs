@@ -1006,6 +1006,8 @@ impl<'t> Walker<'t> {
             .or_else(|| node.named_child(0));
         let Some(func) = func else { return };
         let mut callee_name = String::new();
+        // wasm's `callSite`: the navigation branch moves it onto the member name.
+        let mut site = func;
 
         if func.kind() == "navigation_expression" {
             // property = property/field fields (null) → namedChild(1), with
@@ -1025,6 +1027,7 @@ impl<'t> Walker<'t> {
                 });
             if let Some(property) = property {
                 let method_name = self.text(property);
+                site = property;
                 let receiver = func
                     .child_by_field_name("object")
                     .or_else(|| func.child_by_field_name("operand"))
@@ -1078,7 +1081,7 @@ impl<'t> Walker<'t> {
             if let Some(c) = util::paren_conversion().captures(&callee_name) {
                 callee_name = c[1].to_string();
             }
-            self.push_ref_at(caller, &callee_name.clone(), edge_kind_index("calls").unwrap(), node);
+            self.push_ref_at(caller, &callee_name.clone(), edge_kind_index("calls").unwrap(), site);
         }
     }
 
