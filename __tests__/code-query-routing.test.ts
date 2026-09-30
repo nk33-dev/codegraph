@@ -341,7 +341,7 @@ describe('phase-three argument validation', () => {
     await expect(cg.queryCodeWithBackend({ mode: 'tests', query: 'a.ts', file: 'a.ts' }))
       .rejects.toThrow(/not a single file/);
     await expect(cg.queryCodeWithBackend({ mode: 'impact', query: 'Widget', line: 3, file: 'a.ts' }))
-      .rejects.toThrow(/line\/column are only supported in definitions or references mode/);
+      .rejects.toThrow(/line\/column are not supported in impact mode/);
     await expect(cg.queryCodeWithBackend({ mode: 'definitions', query: 'Widget', backend: 'sometimes' as never }))
       .rejects.toThrow(/backend must be "graph", "lsp", "auto", or "both"/);
   }, 30_000);

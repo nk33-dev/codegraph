@@ -1147,7 +1147,7 @@ function numberSourceLines(slice: string, firstLineNumber: number): string {
  */
 const FILE_SECTION_PREFIX = '**`';
 // Placeholder for the answer block filled after final truncation.
-const ANSWER_SENTINEL = '[[codegraph-explore-answer]]';
+const SUMMARY_SENTINEL = '[[codegraph-explore-summary]]';
 // Extra room for bounded key-file/key-symbol lists and capability caveats.
 const ANSWER_RESERVE = 1600;
 function fileSectionHeader(filePath: string, suffix: string): string {
@@ -4694,6 +4694,7 @@ export class ToolHandler {
      * the agent took that as the tool having found the wrong method.
      */
     leadingIds: Iterable<string> = [],
+    detailQuery: string | null = null,
   ): string {
     const ROOT_CAP = 5; // only the symbols the query actually targeted
     const FILE_CAP = 4; // dependent files listed per kind before "+N more"
@@ -4703,7 +4704,8 @@ export class ToolHandler {
     ]);
     const rel = (p: string) => p.replace(/\\/g, '/');
 
-    const roots = [...new Set([...leadingIds, ...subgraph.roots])]
+    const leading = new Set(leadingIds);
+    const roots = [...new Set([...leading, ...subgraph.roots])]
       .map((id) => subgraph.nodes.get(id))
       .filter((n): n is Node => !!n && MEANINGFUL.has(n.kind))
       .slice(0, ROOT_CAP);
@@ -4795,6 +4797,13 @@ export class ToolHandler {
       entries.push(
         `- \`${root.name}\` (${rel(root.filePath)}:${root.startLine}) — ${breakdown}${segmentsText}${testTail}`,
       );
+      // Broad questions can surface several high-fan-in roots. Expanding every
+      // call site there consumes the source budget; exact targets get the
+      // detailed provenance, while broad roots keep the compact summary.
+      const rootMatchesDetailQuery = detailQuery !== null
+        && (root.name.toLowerCase() === detailQuery
+          || root.qualifiedName?.toLowerCase() === detailQuery);
+      if (!leading.has(root.id) && !rootMatchesDetailQuery) continue;
       const productionIds = new Set(Object.values(byKind).flatMap((nodes) =>
         nodes.filter((node) => !isTestFile(rel(node.filePath))).map((node) => node.id)));
       const relationsByFile = new Map<string, string[]>();
@@ -6436,7 +6445,7 @@ export class ToolHandler {
     const lines: string[] = [
       `**Exploration: ${query}**`,
       `**Index generation:** ${cg.getIndexVersion() ?? 'unknown'} (all symbols, line numbers, source slices, and trail edges below use this generation)`,
-      ANSWER_SENTINEL,
+      SUMMARY_SENTINEL,
       // Curated summary — filled in after the source loop (see below). We do NOT
       // report `subgraph.nodes.size` / `fileGroups.size` here: that's the raw
       // candidate gather, which a broad natural-language query inflates wildly
@@ -6469,7 +6478,12 @@ export class ToolHandler {
     // them + which tests cover them — relation locations, no source bodies — so the agent
     // knows what to update/verify before editing without a separate call.
     // 普通探索保留紧凑影响面；明确流程问句已有主路径，不再重复列依赖与测试扇出。
-    const blastRadius = flowQueryRequested ? '' : this.buildBlastRadiusSection(cg, subgraph, exactNodeIds);
+    const exactDetailQuery = /^[A-Za-z_$][A-Za-z0-9_$.:#-]*$/.test(query.trim())
+      ? query.trim().toLowerCase()
+      : null;
+    const blastRadius = flowQueryRequested
+      ? ''
+      : this.buildBlastRadiusSection(cg, subgraph, exactNodeIds, exactDetailQuery);
     if (blastRadius) lines.push(blastRadius);
 
     // Relationship map — show how symbols connect
@@ -8927,7 +8941,7 @@ export class ToolHandler {
     // truncation (see end of method) — `filesIncluded` can over-count when the
     // hard ceiling drops trailing sections — so leave a sentinel here and fill it
     // in once the output is final.
-    lines[summaryLineIdx] = ANSWER_SENTINEL;
+    lines[summaryLineIdx] = SUMMARY_SENTINEL;
 
     // Add remaining files as references (from both relevant and peripheral files).
     // Small projects (per budget) skip this — the relevant story already fits
@@ -9015,7 +9029,7 @@ export class ToolHandler {
     const roomFor = roomForLines;
     // Less what the final answer block can grow by when its sentinel is filled in.
     let room = hardCeiling - (flow.text.length + lines.join('\n').length)
-      - Math.max(0, answerReserve - ANSWER_SENTINEL.length);
+      - Math.max(0, answerReserve - SUMMARY_SENTINEL.length);
 
     const fitted = fitExploreEpilogue({
       room,
@@ -9176,7 +9190,7 @@ export class ToolHandler {
           : []),
       ].join('\n')
       : summaryLine;
-    finalText = finalText.replace(ANSWER_SENTINEL, answerLines);
+    finalText = finalText.replace(SUMMARY_SENTINEL, answerLines);
     if (summaryQuery) {
       const answerIndex = finalText.indexOf(answerLines);
       if (answerIndex > 0) {

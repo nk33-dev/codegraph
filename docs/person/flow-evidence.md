@@ -16,7 +16,7 @@
 
 每条证据包含稳定 ID、置信度、来源、定义位置、调用位置、注册位置与说明。断链原因统一为 `unindexed`、`no_syntax_edge`、`dynamic_key`、`ambiguous_candidates`、`language_boundary`、`lsp_unavailable`。运行时候选始终标为候选，不表述为已确认调用。
 
-MCP 文本中的关系统一使用 `resolved`、`inferred`、`candidate` 三档标签：显式语法边、强解析器和 SCIP 边为 `resolved`；名称匹配和结构合成边为 `inferred`；显式候选、低置信度及缺少来源依据的旧边为 `candidate`。Relationships、Flow、node Trail、文件 `used by` 与 Blast radius 同时显示关系两端定义位置及关系发生位置；合成边优先使用 `registeredAt`，不把分派符号声明行冒充调用点。Blast radius 仍按文件聚合，每个生产依赖文件最多列三条关系。
+MCP 文本中的关系统一使用 `resolved`、`inferred`、`candidate` 三档标签：显式语法边、强解析器和 SCIP 边为 `resolved`；名称匹配和结构合成边为 `inferred`；显式候选、低置信度及缺少来源依据的旧边为 `candidate`。Relationships、Flow、node Trail、文件 `used by` 与 Blast radius 同时显示关系两端定义位置及关系发生位置；合成边优先使用 `registeredAt`，不把分派符号声明行冒充调用点。Blast radius 仍按文件聚合，每个生产依赖文件最多列三条关系；调用点明细只对精确符号或限定目标展开，宽问句保留紧凑汇总，把响应预算留给源码。
 
 关系详情复用批量入边查询和 `getNodesByIds`，不再逐边读取源节点，也不新增专用 JOIN 查询。`collectIncomingRelations` 是多个图查询、编辑覆盖检查与 Explore 文件依赖共用的解析入口。
 
