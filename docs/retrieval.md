@@ -39,7 +39,7 @@ Every tier at 500+ indexed files now caps `maxOutputChars` at 24,000 — the ~25
 - `getExploreBudget(fileCount)` → **call** budget: `<500→1, <5000→2, <15000→3, <25000→4, ≥25000→5` (max 5).
 - `getExploreOutputBudget(fileCount)` → **per-call** output (chars / files / per-file). **Invariant: a larger tier must never get a smaller `maxCharsPerFile` than a smaller tier.** (Regression that motivated this doc: the `<5000` tier's 2500 was *below* the `<500` tier's 3800, so on a god-file repo — excalidraw's 415 KB `App.tsx` — one explore returned <1% of the file and forced a Read.)
 - 这个分档也是 `codegraph_explore.maxFiles` **未指定时**的唯一事实来源：schema 刻意不再声明 `default`，实际默认值随档位取 4 / 5 / 8 / 8 / 8，写死任何一个数字都会与运行时不一致。
-- Explore output must **never tell the agent to "use Read"** — steer to another `codegraph_explore` and "treat returned source as already Read."
+- Explore output must **never tell the agent to "use Read"** — steer to another `codegraph_explore` and "treat returned source as already Read." When a section stops short of the end of a file the query NAMED, the response must say so inline: the uncovered line range plus the `mode:"source"` + `startLine` + `limit` call that fetches it. A silent stop is the insufficiency that sends the agent to Read.
 
 ### Dynamic-dispatch coverage — the flow must EXIST in the graph end-to-end
 

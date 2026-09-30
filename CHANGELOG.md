@@ -14,6 +14,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- 明确点名的文件不再静默丢区域。修一处按路径点名 `.vue` 组件时的头部丢失：SFC 的 `component` 节点覆盖整份文件，会命中 envelope 过滤的「容器超过半文件就丢弃」规则，而按路径点名时它既不是 `focusedNode` 也不在 `flow.namedNodeIds` 里——而它恰好是唯一覆盖文件顶部的节点（`<template>` 和 `<style>` 都在 `<script setup>` 之前），于是 1..N 行整段不渲染，`Panel.vue` 只回 159-353 行，且没有 gap 标记（gap 只标注两个已渲染片段之间的洞）。现在被 pin 的文件会为头部补一个有界范围（上限 200 行，与脊窗口同量级），低于合并阈值的小缺口不补。另为点名文件加续读脚注：section 未覆盖到文件末尾时，在围栏外给出未覆盖行段并指明 `codegraph_explore mode:"source", file, startLine, limit` 取法（不引导 Read）。脚注由该文件自己的额度支付——`fileBudget` 与 `SPINE_CEILING` 同时扣除预留守恒，限定名查询走的是后者，只扣前者等于没扣，脚注会吃掉下层文件的预留。
+
 - 合并上游 **v1.6.1**（`f4ddf50`，113 个提交 / 247 个文件），基线为 fork 点 `3ed73bc`。个人侧功能保持不变，重点是把上游改动落到个人模块上：schema 版本撞车改为「官方 10/11 原样 + 个人 `file_text` 移到 13 + 12 号条件桥接迁移」，旧库打开即自动补齐 synthesis 相关表和回填，不需要重建；`EXTRACTION_VERSION` 从 27 进位到 28（两边同号但含义不同），旧库会被判定需要一次重抽取。同步结果只在本地提交，未推送，三平台 CI 与隔离安装记为未验证；重叠模块取舍见 `docs/person/maintenance.md`。
 - 同时修掉一个个人实现里的缺陷：意图词剥离把 `use_it` 这类下划线标识符切成 `use` + `it`，删掉 `use` 后留下 `_it`，被当成缺失符号（上游 #1373 的宏场景用例暴露）。
 - 跟随上游撤回浏览器 viewer：`codegraph ui` / `codegraph web` 在启动前即被拒绝，也不出现在 `--help` 里，除非显式设置 `CODEGRAPH_UI=1`。

@@ -101,6 +101,7 @@ import {
   formatBackReference,
   mergeRanges,
   servedRangesForFile,
+  subtractRange,
   symbolsInSpans,
 } from './explore-dedup';
 
@@ -1060,6 +1061,38 @@ const POINTER_MAX_FILES = 10;
  * meta-text rivals the source it is pointing at.
  */
 const ELIDED_SYMBOL_CAP = 6;
+/**
+ * Line ceiling on the file head a PINNED file's section is forced to cover (see
+ * the head-cover rule in the cluster path).
+ *
+ * A .vue SFC's head is its `<template>` + `<style>` — the whole file up to the
+ * `<script setup>`, routinely a few hundred lines — so a small ceiling would
+ * simply reproduce the loss it exists to prevent. 200 is the same order as a
+ * spine window (`OVERSIZE_SPINE_LINES`): enough for a component's markup, small
+ * enough that a pinned god-file cannot spend its whole section on the top.
+ */
+const PINNED_HEAD_MAX_LINES = 200;
+/**
+ * Shortest run of undelivered lines a section's continuation note reports.
+ *
+ * Below this it is not a lost region but the ordinary spacing between a
+ * section's own slices — the per-symbol view holes a signature or a focused
+ * body already accounts for — and naming it would turn every section into a
+ * list of its own trimming.
+ */
+const MIN_UNCOVERED_RUN = 12;
+/** Uncovered runs a continuation note names before folding the rest into a count. */
+const CONTINUATION_NOTE_MAX_RUNS = 3;
+/**
+ * Room reserved for a section's continuation note, in chars.
+ *
+ * Charged to the NOTE-BEARING file's own section budget (`fileBudget`) rather
+ * than to the response pool, so pointing at the missing lines can never take
+ * bytes a lower-ranked file was promised. A note that will not fit in this
+ * falls back to a shorter wording, and then to nothing — the section's source
+ * is never traded for the note about it.
+ */
+const CONTINUATION_NOTE_MAX_CHARS = 240;
 
 /**
  * Header tag for a compact test-file section, and the size below which a test
@@ -1312,6 +1345,76 @@ export function joinPartsWithNamedGaps(
     out += next.text;
   }
   return out;
+}
+
+/**
+ * The runs of lines a section did NOT deliver.
+ *
+ * Gap markers only ever describe the holes BETWEEN two rendered slices, so the
+ * top and the tail of a file are the two places a render can lose whole regions
+ * without saying so — a pinned .vue whose `<template>` precedes every indexed
+ * symbol came back with lines 1-385 simply absent. This is the complement of
+ * what the section actually carried: the one view that sees head, middle and
+ * tail the same way.
+ *
+ * The algebra is `subtractRange` from the dedup module — same question there
+ * ("what of this span is not covered"), same merge-and-clamp behaviour. Runs
+ * shorter than `MIN_UNCOVERED_RUN` are dropped: at that size it is the section's
+ * own spacing, not a lost region.
+ */
+export function uncoveredRuns(
+  delivered: ReadonlyArray<ExploreLineRange>,
+  lastLine: number,
+): ExploreLineRange[] {
+  if (lastLine < 1) return [];
+  return subtractRange({ start: 1, end: lastLine }, delivered)
+    .filter((r) => r.end - r.start + 1 >= MIN_UNCOVERED_RUN);
+}
+
+/** `mode:"source"`'s own `limit` ceiling (`handleExplore`); a note must not exceed it. */
+const SOURCE_MODE_MAX_LIMIT = 2000;
+
+/**
+ * The note that tells the agent a section stopped short, and how to get the
+ * rest without Read.
+ *
+ * `mode:"source"` with `startLine`/`limit` is the call this tool already
+ * accepts (`handleExplore`), so the note spends its chars naming a follow-up
+ * that exists rather than repeating the generic "explore the names again". The
+ * `do NOT Read` clause keeps it consistent with every other explore prompt: a
+ * Read of what explore already indexed is the round-trip this tool exists to
+ * prevent.
+ *
+ * Returns '' when there is nothing worth reporting. Never returns more than
+ * `CONTINUATION_NOTE_MAX_CHARS` — the caller reserves exactly that much, and a
+ * note that would overrun its own reservation degrades to a shorter wording.
+ */
+export function formatContinuationNote(
+  filePath: string,
+  runs: ReadonlyArray<ExploreLineRange>,
+): string {
+  if (runs.length === 0) return '';
+  const first = runs[0]!;
+  const firstLen = first.end - first.start + 1;
+  const limit = Math.min(firstLen, SOURCE_MODE_MAX_LIMIT);
+  // `mode:"source"` refuses `limit` over its ceiling, so a longer run names the
+  // callable first slice and says where to resume.
+  const resume = firstLen > limit ? `, then repeat from ${first.start + limit}` : '';
+  const shown = runs.slice(0, CONTINUATION_NOTE_MAX_RUNS);
+  const more = runs.length - shown.length;
+  const total = runs.reduce((sum, r) => sum + (r.end - r.start + 1), 0);
+  const where = shown.map((r) => `${r.start}-${r.end}`).join(', ')
+    + (more > 0 ? `, +${more} more` : '');
+
+  const full = `> Not shown for \`${filePath}\`: lines ${where} (${total} lines).`
+    + ` Fetch with codegraph_explore mode:"source", file:"${filePath}",`
+    + ` startLine:${first.start}, limit:${limit}${resume} — do NOT Read.`;
+  if (full.length <= CONTINUATION_NOTE_MAX_CHARS) return full;
+
+  // Shorter wording, same call. Anything longer than this means the path alone
+  // is most of the budget; the caller then drops the note rather than overrun.
+  return `> Not shown for \`${filePath}\`: lines ${first.start}-${first.end}.`
+    + ` codegraph_explore mode:"source" file:"${filePath}" startLine:${first.start} limit:${limit}${resume}.`;
 }
 
 /**
@@ -6424,6 +6527,11 @@ export class ToolHandler {
     // (`elidedWantedSpans`), not from the trim sites. Drives the completeness
     // note: "complete" is claimed only for sections that are.
     const trimmedFiles = new Map<string, ExploreWantedSpan[]>();
+    // Last content line of every file the cluster path rendered (trailing blank
+    // lines dropped). The hard-ceiling cut below can slice a section mid-body,
+    // and this is the only place the file's true end is still known — the cut
+    // itself only sees text.
+    const contentLastLine = new Map<string, number>();
     // Files that changed on disk after their last index sync (#1474). Their
     // indexed line ranges are untrustworthy, so sliced renders (adaptive /
     // skeleton / clusters) are OFF for them: a small drifted file still ships
@@ -6788,6 +6896,13 @@ export class ToolHandler {
         mode: 'whole' | 'clusters' | 'focused' | 'skeleton' | 'test-summary';
         clipped: boolean;
         /**
+         * Where the section stopped short, when the query named this file.
+         * Written AFTER the closing fence so it reads as a note about the
+         * section rather than as source, and so it is priced by the caller's
+         * fit test rather than sneaking past it (see `formatContinuationNote`).
+         */
+        footer?: string;
+        /**
          * The symbols this section set out to deliver. Any not covered by what
          * is sent (`ranges`, after the fold) plus `covered` marks the file
          * trimmed for the completeness note.
@@ -6834,6 +6949,14 @@ export class ToolHandler {
           lines.push('```' + lang, body, '```', '');
           // ```lang \n body \n ``` \n '' \n — exact, same as the header above.
           totalChars += body.length + lang.length + 11;
+          // Outside the fence, so it is a note about the section, not part of
+          // its source. It IS charged to `totalChars` — the ceiling counts
+          // everything that ships — but not to `sourceSpent`/`newSourceChars`,
+          // which are the source-bytes ledger the allocation invariants read.
+          if (opts.footer) {
+            lines.push(opts.footer, '');
+            totalChars += opts.footer.length + 2;
+          }
           sourceSpent += body.length;
           newSourceChars += body.length;
           diag?.recordRender(filePath, opts.mode, body.length, opts.clipped || opts.covered.length > 0);
@@ -7631,6 +7754,36 @@ export class ToolHandler {
         ranges.push({ start: span.start, end, name: `lines ${span.start}-${end}`, kind: 'range', importance: EXACT_IMPORTANCE, spine: false });
       }
 
+      // A file the query pinned by PATH is the answer itself, so its head must
+      // not be the one thing the render leaves out. The envelope filter above
+      // drops any container spanning the file — the `component` node of a .vue
+      // SFC, a file-wide class — and on a .vue that container was the ONLY node
+      // covering the top: `<template>` and `<style>` precede the `<script
+      // setup>`, so every surviving range starts hundreds of lines in and lines
+      // 1..N are never rendered at all. `Panel.vue` came back as lines 159-353
+      // with the whole template gone and no marker for it, because gap markers
+      // only label holes BETWEEN two rendered slices — never the top or the tail.
+      //
+      // Cover the head with its own range rather than exempting the container.
+      // Exempting it would merge the file into one giant cluster whose members
+      // then lose the per-cluster budget to the container itself (importance 1),
+      // so the head would be dropped anyway — and it would undo the rule the
+      // whole-file-container guard exists for.
+      //
+      // Labelled `lines 1-N` / kind `range`, the same shape the anchored spans
+      // above use: it is a SPAN of the file, not a symbol, and must not pass
+      // itself off as one in the header or the blast-radius lines.
+      //
+      // A head shorter than the cluster merge's own `gapThreshold` is ordinary
+      // spacing the merge would have bridged anyway, not a lost region.
+      if (pinnedSet.has(filePath) && ranges.length > 0) {
+        const headGap = Math.min(...ranges.map((r) => r.start)) - 1;
+        if (headGap > budget.gapThreshold) {
+          const end = Math.min(headGap, PINNED_HEAD_MAX_LINES);
+          ranges.push({ start: 1, end, name: `lines 1-${end}`, kind: 'range', importance: EXACT_IMPORTANCE, spine: false });
+        }
+      }
+
       ranges.sort((a, b) => a.start - b.start);
 
       if (ranges.length === 0) {
@@ -8083,7 +8236,20 @@ export class ToolHandler {
       // ceiling includes every unreached file's reservation, and spending that
       // is how one clustered file zeroed five admitted peers. It is ≤ `headroom`
       // by construction, so it is the only bound these three lines need.
-      const fileBudget = Math.min(allowance, fundedHeadroom);
+      // A section that will stop short of the file's end carries a continuation
+      // note, and the note is paid for out of THIS file's own budget — never the
+      // response pool — so pointing at the missing lines can never take bytes a
+      // lower-ranked file was promised (`explore-named-file-valve` guards exactly
+      // that trade). Reserved up front because the note's length is not known
+      // until the clusters are chosen, so selection has to leave room for it.
+      // Only a file the query NAMED gets one: telling the agent where a file it
+      // never asked about was cut is noise, and the completeness note already
+      // covers that case. A file small enough to ship whole cannot need one.
+      const CONTINUATION_RESERVE =
+        isNamedFile(filePath) && fileLines.length > WHOLE_FILE_MAX_LINES
+          ? CONTINUATION_NOTE_MAX_CHARS
+          : 0;
+      const fileBudget = Math.max(0, Math.min(allowance, fundedHeadroom) - CONTINUATION_RESERVE);
       // Spine ceiling: a flow-path cluster may exceed the reservation (the call path
       // IS the answer and clipping it forces the Read), but bounded — 1.5x the
       // reservation and never past the ceiling — so a pathological long in-file
@@ -8094,7 +8260,17 @@ export class ToolHandler {
       // file's spare-room extension is already the budget's last spare byte, and
       // half again of it ran a 13K-budget response to 19.3K of its 19.5K ceiling.
       //
-      const SPINE_CEILING = Math.min(Math.max(Math.round(ruleAllowance * 1.5), allowance), fundedHeadroom);
+      // Less the continuation reserve, which `fileBudget` above is NOT enough
+      // for: a cluster holding an exact target is capped by THIS bound instead
+      // (`maxImportance >= EXACT_IMPORTANCE`), so reserving only in `fileBudget`
+      // left the note's bytes coming out of the room the files below had been
+      // promised — the precise displacement `explore-named-file-valve` guards,
+      // and it went red by the note's own length. Charged here, the note is paid
+      // for by this file's own source, which is the point: the file that ran
+      // long is the one that gives up the chars saying where the rest of it is.
+      const SPINE_CEILING = Math.max(0,
+        Math.min(Math.max(Math.round(ruleAllowance * 1.5), allowance), fundedHeadroom)
+        - CONTINUATION_RESERVE);
       const chosenIndices = new Set<number>();
       // Final renders (deduped, shrunk where oversize) by cluster index. Computed
       // during selection and reused at emission so the two never disagree.
@@ -8295,8 +8471,33 @@ export class ToolHandler {
       // that one is never sliced mid-method.
       let fileHeader = headerFor(assembled.symbols, assembled.elided);
       let chosenNow = chosenIndices;
+      // Where this section stopped short. Recomputed every time the clusters
+      // move — the shrink loop below changes `assembled.ranges`, and a note
+      // naming the wrong span is worse than none. Priced INTO `costOfSection`
+      // so the trim loop pays for it out of this file's own clusters rather
+      // than letting it push the response past the ceiling.
+      let fileFooter = '';
+      const refreshFooter = (): void => {
+        fileFooter = '';
+        // Line count with the trailing blank lines dropped, matching the
+        // whole-file arm's `fileContent.replace(/\n+$/, '')`: a note about the
+        // blank tail of a file is not about anything the agent needs.
+        let lastLine = fileLines.length;
+        while (lastLine > 0 && fileLines[lastLine - 1]!.trim() === '') lastLine--;
+        contentLastLine.set(filePath, lastLine);
+        if (CONTINUATION_RESERVE === 0 || assembled.text.length === 0) return;
+        fileFooter = formatContinuationNote(
+          filePath,
+          uncoveredRuns([...assembled.ranges, ...assembled.covered], lastLine),
+        );
+        // Never overrun the reservation: the note degrades to nothing rather
+        // than take source bytes it was not funded for.
+        if (fileFooter.length > CONTINUATION_RESERVE) fileFooter = '';
+      };
+      refreshFooter();
       const costOfSection = (header: string, body: string) =>
-        header.length + 2 + (body.length > 0 ? body.length + lang.length + 11 : 0);
+        header.length + 2 + (body.length > 0 ? body.length + lang.length + 11 : 0)
+        + (body.length > 0 && fileFooter ? fileFooter.length + 2 : 0);
       // Every file was funded for SOURCE against an ESTIMATED header
       // (`sectionOverhead`: the file's symbol names), and the real one also lists
       // the edge lines' targets (`filter(calls)`, `QuerySet(imports)`), so it can
@@ -8354,6 +8555,7 @@ export class ToolHandler {
         }
         assembled = assembleSection(chosenNow);
         fileHeader = headerFor(assembled.symbols, assembled.elided, headerLimit);
+        refreshFooter();
         anyFileTrimmed = true;
       }
       // One cluster left and still over — by the header estimate's error, at
@@ -8389,6 +8591,7 @@ export class ToolHandler {
           renderedClusters.set(idx, reshrunk);
           anyClusterShrunk = anyClusterShrunk || reshrunk.shrunk;
           assembled = assembleSection(chosenNow);
+          refreshFooter();
           anyFileTrimmed = true;
         }
       }
@@ -8421,6 +8624,7 @@ export class ToolHandler {
         // Every member of every cluster, chosen or not: a dropped cluster, a
         // shrunk one and a windowed spine all leave a member short.
         wanted: ranges,
+        footer: fileFooter,
         fullBody: sectionText(fullClusterParts),
         fullRanges: fullClusterParts.map((p) => p.range),
       });
@@ -8618,6 +8822,36 @@ export class ToolHandler {
       lines.push('', lostNote);
     }
 
+    /**
+     * What the hard-ceiling cut sliced off the section it landed INSIDE.
+     *
+     * The cut prefers a file-section boundary, but when no header sits in the
+     * back half it falls back to the last newline — through a method body. A
+     * continuation note placed in that file's section is gone with the rest of
+     * it, so the cut has to name what it took: the alternative is the generic
+     * "output truncated to budget" note standing in for a file whose top half
+     * is on screen and whose bottom half is silently absent. That is the exact
+     * silent-loss shape the section footers exist to remove, one level up.
+     *
+     * Returns '' when the cut kept whole sections (nothing to name).
+     */
+    const cutMidSectionNote = (safe: string): string => {
+      const headers = [...safe.matchAll(/\n\*\*`([^`]+)`\*\*/g)];
+      const last = headers[headers.length - 1];
+      if (!last) return '';
+      const path = last[1]!;
+      const total = contentLastLine.get(path);
+      if (!total) return '';
+      const numbered = [...safe.matchAll(/^(\d+)\t/gm)];
+      const lastShown = numbered.length > 0 ? Number(numbered[numbered.length - 1]![1]) : 0;
+      if (lastShown <= 0 || lastShown >= total) return '';
+      const note = formatContinuationNote(
+        path,
+        uncoveredRuns([{ start: 1, end: lastShown }], total),
+      );
+      return note ? `\n\n${note}` : '';
+    };
+
     const output = flow.text + lines.join('\n');
     let finalText: string;
     // The epilogue costs less than a file section, so it is cut FIRST (CG-31).
@@ -8647,7 +8881,8 @@ export class ToolHandler {
       const lastSection = cut.lastIndexOf('\n' + FILE_SECTION_PREFIX);
       const boundary = lastSection > hardCeiling * 0.5 ? lastSection : cut.lastIndexOf('\n');
       const safe = boundary > 0 ? cut.slice(0, boundary) : cut;
-      finalText = safe + EXPLORE_FALLBACK_NOTES.truncated[trimmedIn(safe) ? 'trimmed' : 'complete'];
+      finalText = safe + cutMidSectionNote(safe)
+        + EXPLORE_FALLBACK_NOTES.truncated[trimmedIn(safe) ? 'trimmed' : 'complete'];
     } else {
       finalText = output;
     }
