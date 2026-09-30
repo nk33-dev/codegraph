@@ -22,6 +22,7 @@
 - 纠正提交在 Windows 本地完成三层验证：四个直接回归文件 77 项通过、1 项按平台条件跳过；MCP 固定表面与上下文预算 21 项通过；最终 `npm run check:quick` 的类型检查和 100 个受影响测试文件通过，共 2239 项通过、17 项按既有条件跳过。完整构建、全量测试和三平台结论仍以纠正提交的 GitHub CI 为准。
 - 第二轮 CI `36706996893` 中，Ubuntu 与 macOS 都只因 query-pool 的 direct/worker 深比较包含运行时 `elapsedMs` 而失败，业务文本、结构化证据和会话状态一致；修复后两条路径仍完整深比较，但各自的耗时只要求为数字。Windows 同轮再次出现共享 runner 资源争用：stale 状态测试清理 SQLite 时 `EBUSY`，MPEG-TS 测试超时后清理同样 `EBUSY`，没有业务断言失败。CI 因此保留 Linux/macOS 4 workers，将 Windows 降为 2 workers，避免并行 watcher、LSP 和 SQLite 夹具争抢句柄；query-pool 专项与最终 `npm run check:quick` 连续四轮共 100 项通过，类型检查通过。
 - 第三轮 CI `36709179429` 在提交 `73f1b4a` 上三平台全部通过：Ubuntu、macOS 使用 4 workers，Windows 使用 2 workers；构建、版本镜像与全量测试均成功。首次 `Personal Release` `36712014645` 随后通过同提交 CI 门禁并完成安装包构建，但隔离安装验证仍以未设置 `CODEGRAPH_UI=1` 的 `ui --help` 检查命令存在，与上游 v1.6.1 的 viewer 默认关闭契约冲突。修复为只在该命令存在性检查中显式 opt-in，不改变安装包的默认门禁。
+- 最终发布提交 `bb10a99` 的 CI `36712729827` 三平台全部通过；`Personal Release` `36715433429` 完成隔离安装、打包、GitHub artifact、标签与 prerelease。远端标签 `v1.6.0-personal.12` 直接指向该提交，`.tgz` 包内版本为 `1.6.0-personal.12`、CLI 入口为 `./dist/bin/codegraph.js`；归档 SHA-256 `a34177120cd01576df7b11864d3d7b3965f40d5948f29de2f1590b0f479a9c52` 与 `SHA256SUMS` 和 GitHub 资产 digest 一致。
 
 ## 2026-09-30：前端入口与路径词检索收束
 
