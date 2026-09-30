@@ -20,7 +20,7 @@ export {
   sortPendingFiles,
   type PendingFileStateName,
 } from './watcher';
-export { watchDisabledReason, detectWsl } from './watch-policy';
+export { watchDisabledReason, watchDisabledPolicy, detectWsl, type WatchPolicy, type WatchDisabledDecision } from './watch-policy';
 export {
   installGitSyncHook,
   removeGitSyncHook,

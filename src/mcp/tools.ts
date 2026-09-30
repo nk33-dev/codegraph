@@ -34,9 +34,9 @@ import {
   worktreeMismatchNotice,
   type WorktreeIndexMismatch,
 } from '../sync/worktree';
-import { pendingFileState, sortPendingFiles, type PendingFile } from '../sync';
+import { pendingFileState, sortPendingFiles, type PendingFile, type WatchPolicy } from '../sync';
 import { indexedFileFreshness } from '../sync/file-freshness';
-import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, buildIndexBlock, emptyCodeQueryResult, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
+import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, buildIndexBlock, emptyCodeQueryResult, watchInactiveWarning, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
 import { NODE_KINDS, LANGUAGES, type Node, type Edge, type EdgeKind, type SearchResult, type Subgraph, type NodeKind, type Language } from '../types';
 import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, formatCodeEditText, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
 import { editTools } from './edit-tool';
@@ -1770,6 +1770,27 @@ export function formatStaleFooter(stale: PendingFile[]): string {
 }
 
 /**
+ * The closing sentence of a disk-drift notice: what happens to the file next.
+ *
+ * Both drift notices used to promise the change "is picked up automatically on
+ * that project's next index sync". That is only true where a watcher (or a
+ * daemon owning the index) is running — on a connection with no watcher the
+ * user has to run `codegraph sync` themselves, and telling them otherwise is
+ * how a stale index stays stale.
+ */
+export function staleRecoveryNote(cg: CodeGraph): string {
+  let watching = false;
+  try {
+    watching = cg.isWatching();
+  } catch {
+    watching = false;
+  }
+  return watching
+    ? "the change is picked up automatically on that project's next index sync."
+    : 'this session has no live watcher for that project, so nothing will pick the change up by itself — run codegraph sync after your edits.';
+}
+
+/**
  * Whole-index degradation banner (issue #876). Emitted at the top of a read
  * tool response when live watching has permanently stopped — at which point
  * `getPendingFiles()` is empty, so the per-file banner above can't fire even
@@ -2651,6 +2672,42 @@ export class ToolHandler {
    * similar to how git finds .git/ directories.
    */
   private getCodeGraph(projectPath?: string): CodeGraph {
+    const cg = this.resolveCodeGraph(projectPath);
+    this.noteWatchPolicy(cg);
+    return cg;
+  }
+
+  /**
+   * Classify a connection that has no live watcher, so index status can say WHY
+   * instead of reporting a bare `watching: false`.
+   *
+   * The precise policies (foreign writer lock, environment opt-out, WSL /mnt)
+   * are recorded by the engine, the project lifecycle, and `CodeGraph.watch()`
+   * itself. This is the fallback for the paths none of them own — chiefly the
+   * one-shot CLI/library handler, which never wires a watcher at all. A live or
+   * degraded watcher is left untouched: degraded has a more specific notice of
+   * its own, and reclassifying it here would overwrite that.
+   */
+  private noteWatchPolicy(cg: CodeGraph): void {
+    try {
+      if (cg.isWatching() || cg.isWatcherDegraded?.() || cg.getWatchPolicy?.()) return;
+      if (this.projectLifecycle) {
+        // A lifecycle exists, so a watcher may still be starting. Say that,
+        // rather than claiming none will ever run.
+        cg.setWatchPolicy('never-started', 'the file watcher has not started for this project in this session');
+      } else {
+        cg.setWatchPolicy(
+          'unwatched-projectPath',
+          'this connection has no file watcher (one-shot CLI or library handler)',
+        );
+      }
+    } catch {
+      /* a closed or test-stubbed instance has no watch state to record */
+    }
+  }
+
+  /** Resolve (and cache) a project connection. See {@link getCodeGraph}. */
+  private resolveCodeGraph(projectPath?: string): CodeGraph {
     if (!projectPath) {
       if (!this.cg) {
         if (this.defaultOpenFailure) throw this.defaultOpenFailure;
@@ -3013,6 +3070,24 @@ export class ToolHandler {
     return result;
   }
 
+  /**
+   * Should an inactive watcher be announced in the TEXT response?
+   *
+   * Two policies stay silent here on purpose:
+   *  - `disabled-lock`: another process owns the index and is syncing it, so
+   *    "it will not auto-update" would be false;
+   *  - `unwatched-projectPath` on a handler with no project lifecycle: that is
+   *    the one-shot CLI/library path, where no watcher was ever expected. The
+   *    structured block still reports the policy — a diagnostic belongs there —
+   *    but repeating it in every text response of a process that exits
+   *    immediately is noise, and it would break the explore emission contract
+   *    (the recorded `rendered.text` is checked against what the agent saw).
+   */
+  private shouldAnnounceIdleWatch(policy: WatchPolicy): boolean {
+    if (policy === 'disabled-lock') return false;
+    return !(policy === 'unwatched-projectPath' && !this.projectLifecycle);
+  }
+
   private withStalenessNotice(result: ToolResult, projectPath?: string): ToolResult {
     if (result.isError) return result;
 
@@ -3066,6 +3141,20 @@ export class ToolHandler {
       }
       const composed = `${formatDegradedBanner(reason)}\n\n${head.text}`;
       return { ...result, content: [{ type: 'text', text: composed }, ...tail] };
+    }
+
+    // No watcher at all: unlike the degraded case above, `getPendingFiles()`
+    // stays EMPTY forever here — nothing is recording events — so the per-file
+    // banner below can never fire while the index drifts silently. Name the
+    // reason instead. A foreign writer lock is excluded on purpose: another
+    // process owns that index and is still syncing it for us, so a
+    // "not updating" warning would be false.
+    const idlePolicy = cg.isWatching?.() ? null : cg.getWatchPolicy?.() ?? null;
+    if (idlePolicy && this.shouldAnnounceIdleWatch(idlePolicy)) {
+      const [idleHead, ...idleTail] = result.content;
+      if (!idleHead || idleHead.type !== 'text') return result;
+      const notice = watchInactiveWarning(idlePolicy, cg.getWatchPolicyReason?.() ?? null);
+      return { ...result, content: [{ type: 'text', text: `${notice}\n\n${idleHead.text}` }, ...idleTail] };
     }
 
     // Defensive: some test fakes inject a partial CodeGraph stub without the
@@ -7653,7 +7742,7 @@ export class ToolHandler {
       // never render a possibly-wrong slice.
       if (fileStale) {
         staleOmitted.push(filePath);
-        const staleHeader = fileSectionHeader(filePath, '⚠ changed on disk after the last index sync — source omitted (indexed line ranges no longer match, so a slice could show the wrong code). Read this file directly for current content; the change is picked up on that project\'s next index sync.');
+        const staleHeader = fileSectionHeader(filePath, `⚠ changed on disk after the last index sync — source omitted (indexed line ranges no longer match, so a slice could show the wrong code). Read this file directly for current content; ${staleRecoveryNote(cg)}`);
         lines.push(staleHeader, '');
         totalChars += staleHeader.length + 2;
         diag?.recordRender(filePath, 'stale-omitted', 0, true);
@@ -9454,7 +9543,7 @@ export class ToolHandler {
     }
     if (!embedded) {
       lines.push(
-        `> ⚠ \`${node.filePath}\` changed on disk after it was last indexed — the indexed line range for this symbol no longer reliably matches, so its body is omitted rather than risk showing a different symbol's code. For current content, call codegraph_explore with \`mode: "source"\` and \`file: "${node.filePath}"\` (no symbol; \`offset\`/\`limit\` narrow it like Read), or Read the file. The change is picked up automatically on that project's next index sync.`,
+        `> ⚠ \`${node.filePath}\` changed on disk after it was last indexed — the indexed line range for this symbol no longer reliably matches, so its body is omitted rather than risk showing a different symbol's code. For current content, call codegraph_explore with \`mode: "source"\` and \`file: "${node.filePath}"\` (no symbol; \`offset\`/\`limit\` narrow it like Read), or Read the file. ${staleRecoveryNote(cg)}`,
       );
     }
     return lines.join('\n') + this.formatTrail(cg, node);
@@ -9645,6 +9734,15 @@ export class ToolHandler {
       `**Total edges:** ${stats.edgeCount}`,
       `**Database size:** ${(stats.dbSizeBytes / 1024 / 1024).toFixed(2)} MB`,
     );
+
+    // `watching: false` needs its reason in the text form too, not only in the
+    // structured block: status is where an agent asks "is this index caught
+    // up?", and a bare false cannot distinguish "someone else syncs it" from
+    // "nothing will".
+    const idleWatchPolicy = cg.isWatching?.() ? null : cg.getWatchPolicy?.() ?? null;
+    if (idleWatchPolicy && this.shouldAnnounceIdleWatch(idleWatchPolicy)) {
+      lines.push(`**Watch:** ${watchInactiveWarning(idleWatchPolicy, cg.getWatchPolicyReason?.() ?? null)}`);
+    }
 
     // Exact CLI-parity change counts are measured on a worker: Git or the
     // filesystem fallback can stall on a large/busy checkout, but status must

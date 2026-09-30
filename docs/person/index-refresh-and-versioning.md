@@ -8,6 +8,9 @@
 - `codegraph refresh <file>` 与 `CodeGraph.refresh()` 只刷新指定文件；普通正文变更保持 `file` 范围，接口、导出、路由等结构变更扩大到 `related`，项目配置变更使用 `project` 范围。
 - 文件 watcher 继续使用尾沿防抖，把连续保存合并成一次同步。局部刷新不会绕过已有 writer lock 或引用解析流程。
 - 每次成功取得写锁的索引任务生成一个 `index_generation` 版本。结构化响应的状态块以及 explore/node 的符号、源码和调用链都声明该版本；文件漂移时禁止按旧行号切当前源码，改为整文件或省略正文。
+- `watching: false` 必须带上原因：`watchPolicy` 与 `watchPolicyReason` 只在未监听时出现，取值为 `disabled-env`（`CODEGRAPH_NO_WATCH=1`）、`disabled-wsl`（WSL2 `/mnt/`，判定见 `src/sync/watch-policy.ts`）、`start-failed`（watcher 起不来）、`disabled-lock`（别的 CodeGraph 进程持写锁）、`unwatched-projectPath`（只读、`--no-watch`，或一次性 CLI/库 handler）、`never-started`（尚未启动）。原因记录在同一 `CodeGraph` 实例上；环境判定由 `watchDisabledPolicy()` 单点给出，写锁判定由 `src/mcp/project-lifecycle.ts` 的 `activate()` 在握手前给出。
+- 结构化 `warnings`、`codegraph_status` 的 `**Watch:**` 行和 explore 文本横幅共用 `watchInactiveWarning()` 一句文案。`disabled-lock` 不等于索引会变旧：持锁进程仍在同步，本会话在其退出后接管，因此这一条只说“本会话未监听、由对方维护”，不提示 `codegraph sync`——否则会引导 agent 去和持锁进程抢写；其余策略才明确要求手工同步。没有 project lifecycle 的一次性 handler 不在文本响应里重复这条（结构化状态块仍然报告）。
+- explore/node 的文件漂移提示按是否真在监听改写结尾句（`staleRecoveryNote()`），不再无条件承诺改动“会在下次索引同步时自动被拾取”。
 
 ## 数据库与提取版本
 
@@ -24,3 +27,5 @@
 ## 验证
 
 类型检查使用 `npm run typecheck`。局部刷新和状态字段应通过 `CodeGraph.refresh()`、`codegraph status --json`、`codegraph_explore` 的 `mode: "status"` 共同核对，确保所有入口读取同一版本状态。
+
+监听原因的文案与分类由 `__tests__/watch-inactive-notice.test.ts` 固定（含“持锁时不出现 `codegraph sync`”这一条）；真实生命周期下的取值由 `__tests__/mcp-projectpath-lifecycle.test.ts` 覆盖：外部持锁进程 → `disabled-lock`，`CODEGRAPH_NO_WATCH=1` → `disabled-env`，并核对 `codegraph_status` 文本里的 `**Watch:**` 行。

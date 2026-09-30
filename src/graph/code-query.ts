@@ -1,7 +1,7 @@
 import * as path from 'path';
 import type CodeGraph from '../index';
 import type { Edge, GraphStats, Language, Node } from '../types';
-import { sortPendingFiles, type PendingFile } from '../sync';
+import { sortPendingFiles, type PendingFile, type WatchPolicy } from '../sync';
 import type { LspCapabilities, LspServerState, LspServerStatus } from '../lsp/manager';
 import { indexedFileFreshness, type FileFreshness } from '../sync/file-freshness';
 import { isConfigLeafNode, validatePathWithinRoot } from '../utils';
@@ -225,8 +225,12 @@ export interface IndexBlock {
   watching: boolean;
   degraded: boolean;
   degradedReason: string | null;
-  /** Why file watching is inactive (when watching=false). */
-  watchPolicy?: 'session-default' | 'unwatched-projectPath' | 'disabled-lock' | 'disabled-env' | 'disabled-wsl' | 'start-failed' | 'never-started';
+  /**
+   * Why file watching is inactive. Set whenever `watching` is false and some
+   * layer classified it — see {@link WatchPolicy}. Only ever present with
+   * `watching: false`, so a reader can treat the pair as one statement.
+   */
+  watchPolicy?: WatchPolicy;
   /** Human-readable explanation of watchPolicy. */
   watchPolicyReason?: string;
   pendingFiles: PendingFile[];
@@ -454,6 +458,7 @@ export function buildIndexBlock(
   const pending = cg.getPendingFiles();
   const status = cg.getIndexStatus(options.checkFiles || options.includeStats);
   const changes = options.checkFiles ? cg.getChangedFiles() : null;
+  const watching = cg.isWatching();
   const hasTextChanges = Boolean(status.textChanges && (
     status.textChanges.added.length > 0
     || status.textChanges.modified.length > 0
@@ -487,7 +492,13 @@ export function buildIndexBlock(
     laggingFileCount: status.laggingFileCount,
     failureReason: status.failureReason,
     taskLevel: status.taskLevel,
-    lastIndexedAt: cg.getLastIndexedAt(), watching: cg.isWatching(),
+    lastIndexedAt: cg.getLastIndexedAt(), watching,
+    // Only with `watching: false`: a live watcher clears the policy, and pairing
+    // the two here means no caller can report a reason next to `watching: true`.
+    // Optional calls: the shared builders are handed partial CodeGraph stubs in
+    // tests, which have `isWatching` but predate the watch-policy accessors.
+    watchPolicy: watching ? undefined : cg.getWatchPolicy?.() ?? undefined,
+    watchPolicyReason: watching ? undefined : cg.getWatchPolicyReason?.() ?? undefined,
     degraded: cg.isWatcherDegraded(), degradedReason: cg.getWatcherDegradedReason(),
     pendingFiles: sortPendingFiles(pending).slice(0, STATE_PATH_LIMIT), pendingFileCount: pending.length,
     pendingReferences: cg.getPendingReferenceCount(),
@@ -502,6 +513,25 @@ export function buildIndexBlock(
   };
 }
 
+/**
+ * One sentence explaining an inactive watcher, shared by the structured
+ * `warnings` list and the MCP text notices so the two cannot disagree.
+ *
+ * The distinction that matters is whether anything is STILL syncing the index:
+ * a foreign writer lock means another CodeGraph process owns it and keeps it
+ * fresh, whereas every other policy means nothing will update it until someone
+ * syncs. Saying "run codegraph sync" in the lock case would be wrong — the
+ * index is not stranded, and telling the agent to sync invites a write conflict
+ * with the process that owns it.
+ */
+export function watchInactiveWarning(policy: WatchPolicy, reason: string | null): string {
+  const detail = reason ? `: ${reason}` : '';
+  const follow = policy === 'disabled-lock'
+    ? 'This session takes over watching if that process exits.'
+    : 'The index will not auto-update; run codegraph sync after code changes.';
+  return `File watching is not active in this session${detail}. ${follow}`;
+}
+
 export function indexWarnings(index: IndexBlock): string[] {
   const warnings: string[] = [];
   if (index.indexedCommit && index.currentCommit && index.indexedCommit !== index.currentCommit) {
@@ -509,13 +539,12 @@ export function indexWarnings(index: IndexBlock): string[] {
   }
   if (index.degraded) warnings.push('Auto-sync is disabled; indexed results may be stale.');
 
-  // Watch policy warning: explain why file watching is inactive
+  // `watching: false` on its own is ambiguous — it covers "another process is
+  // syncing this for you" and "nothing will ever update this index" alike.
+  // Degraded watching already has the more specific warning above, so this
+  // branch stands down for it.
   if (!index.watching && !index.degraded && index.watchPolicy) {
-    const reason = index.watchPolicyReason || index.watchPolicy;
-    warnings.push(
-      `File watching is not active (${reason}). ` +
-      `The index will not auto-update; run codegraph sync after code changes.`
-    );
+    warnings.push(watchInactiveWarning(index.watchPolicy, index.watchPolicyReason ?? null));
   }
 
   if (index.pendingReferences) warnings.push('Reference resolution is incomplete; results may omit edges.');

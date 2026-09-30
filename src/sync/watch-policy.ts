@@ -82,6 +82,28 @@ export interface WatchProbe {
 }
 
 /**
+ * Why a given connection has no live file watcher.
+ *
+ * `watching: false` alone is ambiguous — it covers "another process is syncing
+ * this index for you" and "nothing will ever update this index" alike. The
+ * layer that decided it (the watcher, the MCP project lifecycle, or the engine)
+ * records the reason here, and index status turns it into an explanation.
+ */
+export type WatchPolicy =
+  /** Opened without a watcher at all: one-shot CLI/library handler, `--no-watch`, or read-only serving. */
+  | 'unwatched-projectPath'
+  /** Another CodeGraph process owns the writer lock and keeps this index in sync. */
+  | 'disabled-lock'
+  /** `CODEGRAPH_NO_WATCH=1` opted out of watching. */
+  | 'disabled-env'
+  /** The project is on a WSL2 `/mnt/` drive, where recursive fs.watch is unusable (#199). */
+  | 'disabled-wsl'
+  /** A watcher was requested but could not start in this environment. */
+  | 'start-failed'
+  /** Watching may still start; it has not yet (for example, a gate is still running). */
+  | 'never-started';
+
+/**
  * Decide whether the file watcher should be disabled for a project, and why.
  *
  * Returns a short human-readable reason when watching should be skipped, or
@@ -93,10 +115,29 @@ export interface WatchProbe {
  *  3. WSL2 + `/mnt/*` drive     → off  (recursive fs.watch is too slow; #199)
  */
 export function watchDisabledReason(projectRoot: string, probe: WatchProbe = {}): string | null {
+  return watchDisabledPolicy(projectRoot, probe)?.reason ?? null;
+}
+
+/**
+ * Why a project's watcher is off, in the machine-readable form index status
+ * reports. The reason string is the same human-readable text
+ * {@link watchDisabledReason} returns — that function is now a view over this
+ * one, so the watcher's log line and the status output cannot drift apart.
+ */
+export interface WatchDisabledDecision {
+  policy: WatchPolicy;
+  reason: string;
+}
+
+/**
+ * Classify one of the environment-driven opt-outs. Returns `null` when policy
+ * allows watching.
+ */
+export function watchDisabledPolicy(projectRoot: string, probe: WatchProbe = {}): WatchDisabledDecision | null {
   const env = probe.env ?? process.env;
 
   if (env.CODEGRAPH_NO_WATCH === '1') {
-    return 'CODEGRAPH_NO_WATCH=1 is set';
+    return { policy: 'disabled-env', reason: 'CODEGRAPH_NO_WATCH=1 is set' };
   }
   if (env.CODEGRAPH_FORCE_WATCH === '1') {
     return null;
@@ -104,7 +145,10 @@ export function watchDisabledReason(projectRoot: string, probe: WatchProbe = {})
 
   const isWsl = probe.isWsl ?? detectWsl();
   if (isWsl && isWindowsDriveMount(projectRoot)) {
-    return 'project is on a WSL2 /mnt/ drive, where recursive fs.watch is too slow to be reliable';
+    return {
+      policy: 'disabled-wsl',
+      reason: 'project is on a WSL2 /mnt/ drive, where recursive fs.watch is too slow to be reliable',
+    };
   }
 
   return null;

@@ -108,8 +108,15 @@ export class MCPEngine {
         // Explicit projects and read-only fallbacks also hold SQLite handles.
         // Fence them before opening, just like the default daemon project.
         assertNoRebuild(root);
-        if (this.opts.readOnly) return loadCodeGraph().openSync(root, { readOnly: true });
-        if (!this.opts.watch) return open();
+        if (this.opts.readOnly) {
+          return this.markUnwatched(
+            loadCodeGraph().openSync(root, { readOnly: true }),
+            'this session serves the index read-only, so it never watches',
+          );
+        }
+        if (!this.opts.watch) {
+          return this.markUnwatched(open(), 'file watching is disabled for this session (--no-watch)');
+        }
         const lease = acquireProject(root, open, this.watchOptions());
         this.explicitProjects.set(lease.cg, lease);
         return lease.cg;
@@ -451,7 +458,18 @@ export class MCPEngine {
    * keep working.
    */
   private startWatching(): void {
-    if (this.opts.readOnly || !this.cg || this.watcherStarted || !this.opts.watch) return;
+    if (this.watcherStarted || !this.cg) return;
+    if (this.opts.readOnly || !this.opts.watch) {
+      // No watcher will ever be wired here, so say so once. Without a reason,
+      // status can only report a bare `watching: false`.
+      this.markUnwatched(
+        this.cg,
+        this.opts.readOnly
+          ? 'this session serves the index read-only, so it never watches'
+          : 'file watching is disabled for this session (--no-watch)',
+      );
+      return;
+    }
 
     const opened = this.cg;
     this.defaultLease = acquireProject(opened.getProjectRoot(), () => opened, this.watchOptions());
@@ -459,6 +477,12 @@ export class MCPEngine {
     if (this.cg !== opened) opened.close();
     this.toolHandler.setDefaultCodeGraph(this.cg);
     this.watcherStarted = true;
+  }
+
+  /** Record that no watcher is (or will be) attached to this project, and why. */
+  private markUnwatched(cg: CodeGraph, reason: string): CodeGraph {
+    cg.setWatchPolicy('unwatched-projectPath', reason);
+    return cg;
   }
 
   /**

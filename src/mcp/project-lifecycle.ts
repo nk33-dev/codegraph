@@ -3,10 +3,10 @@ import { realpathSync } from 'fs';
 import type { Socket } from 'net';
 import type CodeGraph from '../index';
 import { isInitialized } from '../directory';
-import { LockUnavailableError, watchDisabledReason } from '../sync';
+import { LockUnavailableError, watchDisabledPolicy } from '../sync';
 import { getDaemonSocketCandidates } from './daemon-paths';
 import { connectWithHello } from './proxy';
-import { markWriterReady, readWriterLock, releaseWriterLock, tryAcquireWriterLock } from './writer-lock';
+import { markWriterReady, readWriterLock, releaseWriterLock, tryAcquireWriterLock, type WriterLockInfo } from './writer-lock';
 
 interface Project {
   cg: CodeGraph;
@@ -110,6 +110,12 @@ async function activate(root: string, project: Project): Promise<void> {
   if (!isInitialized(root)) return;
   const writer = tryAcquireWriterLock(root, 'fallback');
   if (writer.kind === 'taken') {
+    // Another process owns syncing this index. Record it BEFORE the (possibly
+    // slow) socket handshake so a status call made during it already explains
+    // why this session shows no watcher. The reason names the holder on
+    // purpose: "not watched here" does not mean "not auto-updated" — that
+    // process is the one keeping the index fresh.
+    project.cg.setWatchPolicy('disabled-lock', writerLockReason(writer.existing));
     // Keep a real daemon session, so its idle timeout cannot strand this reader.
     // Direct writers have no socket; the periodic retry takes over on their exit.
     if (writer.existing?.mode === 'daemon') {
@@ -140,10 +146,13 @@ async function activate(root: string, project: Project): Promise<void> {
     return;
   }
   project.owner = true;
-  const disabled = watchDisabledReason(root);
+  const disabled = watchDisabledPolicy(root);
   if (disabled) {
-    process.stderr.write(`[CodeGraph MCP] File watcher disabled for ${root} — ${disabled}.\n`);
+    project.cg.setWatchPolicy(disabled.policy, disabled.reason);
+    process.stderr.write(`[CodeGraph MCP] File watcher disabled for ${root} — ${disabled.reason}.\n`);
   } else {
+    // `watch()` classifies its own failure ('start-failed') and clears the
+    // policy on success, so the environment decision is not duplicated here.
     if (project.cg.watch(project.options)) {
       process.stderr.write(`[CodeGraph MCP] File watcher active for ${root} — graph will auto-sync on changes\n`);
     }
@@ -151,6 +160,17 @@ async function activate(root: string, project: Project): Promise<void> {
   await project.cg.sync();
   project.caughtUp = true;
   markWriterReady(root);
+}
+
+/**
+ * Name whoever holds the writer lock, for the index-status explanation. The pid
+ * and mode are what make the notice actionable: the reader can tell a live
+ * daemon (which is syncing for it) from a stale lock it is about to take over.
+ */
+function writerLockReason(existing: WriterLockInfo | null): string {
+  return existing
+    ? `another CodeGraph process (pid ${existing.pid}, ${existing.mode} mode) holds this project's writer lock and keeps the index in sync`
+    : "another CodeGraph process holds this project's writer lock and keeps the index in sync";
 }
 
 /** A tool request passes through the daemon's own first-query catch-up gate. */

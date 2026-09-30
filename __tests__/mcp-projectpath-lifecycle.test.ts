@@ -278,6 +278,67 @@ describe('MCP explicit projectPath lifecycle (#1835)', { timeout: 30_000 }, () =
     fs.unlinkSync(path.join(serviceB, '.codegraph', 'writer.pid'));
   });
 
+  // A structured status call: the surface that reports `watching` and now the
+  // reason beside it (#8).
+  async function structuredStatus(root: string): Promise<{ index?: { watching: boolean; watchPolicy?: string; watchPolicyReason?: string }; warnings?: string[] }> {
+    const res = await engine.getToolHandler().execute('codegraph_explore', { mode: 'status', query: 'status', projectPath: root });
+    expect(res.isError, res.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n')).toBeFalsy();
+    return res.structuredContent as { index?: { watching: boolean; watchPolicy?: string; watchPolicyReason?: string }; warnings?: string[] };
+  }
+
+  it('explains a foreign writer lock as covered, not as a stranded index', async () => {
+    // Simulate a foreign writer (another daemon) holding the lock — the same
+    // fixture as the ownership test below.
+    fs.mkdirSync(path.join(serviceB, '.codegraph'), { recursive: true });
+    fs.writeFileSync(
+      path.join(serviceB, '.codegraph', 'writer.pid'),
+      JSON.stringify({ pid: process.ppid, mode: 'daemon', startedAt: Date.now() }),
+    );
+    try {
+      expect(await search(serviceB, 'betaOriginal')).toContain('betaOriginal');
+      const status = await structuredStatus(serviceB);
+      expect(status.index).toMatchObject({ watching: false, watchPolicy: 'disabled-lock' });
+      expect(status.index!.watchPolicyReason).toContain(`pid ${process.ppid}`);
+      const warnings = (status.warnings ?? []).join('\n');
+      expect(warnings).toContain('File watching is not active in this session');
+      // That process owns the index and syncs it; this session takes over if it
+      // exits. Saying otherwise would send the agent to `codegraph sync` against
+      // a lock someone else holds.
+      expect(warnings).not.toContain('will not auto-update');
+      expect(warnings).not.toContain('codegraph sync');
+    } finally {
+      fs.rmSync(path.join(serviceB, '.codegraph', 'writer.pid'), { force: true });
+    }
+  });
+
+  it('names the environment opt-out and tells the agent to sync', async () => {
+    const prev = process.env.CODEGRAPH_NO_WATCH;
+    process.env.CODEGRAPH_NO_WATCH = '1';
+    try {
+      expect(await search(serviceB, 'betaOriginal')).toContain('betaOriginal');
+      const status = await structuredStatus(serviceB);
+      expect(status.index).toMatchObject({ watching: false, watchPolicy: 'disabled-env' });
+      expect((status.warnings ?? []).join('\n'))
+        .toContain('CODEGRAPH_NO_WATCH=1 is set. The index will not auto-update; run codegraph sync after code changes.');
+    } finally {
+      if (prev === undefined) delete process.env.CODEGRAPH_NO_WATCH;
+      else process.env.CODEGRAPH_NO_WATCH = prev;
+    }
+  });
+
+  it('reports the watch state in the text status output too', async () => {
+    const prev = process.env.CODEGRAPH_NO_WATCH;
+    process.env.CODEGRAPH_NO_WATCH = '1';
+    try {
+      const res = await engine.getToolHandler().execute('codegraph_status', { projectPath: serviceB });
+      const text = res.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+      expect(text).toContain('**Watch:** File watching is not active in this session');
+    } finally {
+      if (prev === undefined) delete process.env.CODEGRAPH_NO_WATCH;
+      else process.env.CODEGRAPH_NO_WATCH = prev;
+    }
+  });
+
   it('catches up both children without selecting a default', async () => {
     for (const [root, symbol] of [[serviceA, 'alphaNew'], [serviceB, 'betaNew']]) {
       fs.writeFileSync(path.join(root!, 'src/sample.ts'), `export function ${symbol}() {}\n`);

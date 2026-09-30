@@ -75,7 +75,7 @@ import { hasSynthesisPattern } from './resolution/callback-synthesizer';
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
-import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError, planRefresh, type RefreshPlan } from './sync';
+import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError, planRefresh, watchDisabledPolicy, type RefreshPlan, type WatchPolicy } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
@@ -247,6 +247,13 @@ export class CodeGraph {
 
   // File watcher for auto-sync on file changes
   private watcher: FileWatcher | null = null;
+  /**
+   * Why no watcher is running, recorded by whoever decided it. `null` means
+   * either watching is active or nobody has classified this connection yet —
+   * see {@link getWatchPolicy}.
+   */
+  private watchPolicy: WatchPolicy | null = null;
+  private watchPolicyReason: string | null = null;
 
   /**
    * Language-server manager, created on demand (only structured queries with
@@ -1466,7 +1473,10 @@ export class CodeGraph {
    * @returns true if watching started successfully
    */
   watch(options: WatchOptions = {}): boolean {
-    if (this.watcher?.isActive()) return true;
+    if (this.watcher?.isActive()) {
+      this.setWatchPolicy(null);
+      return true;
+    }
 
     this.watcher = new FileWatcher(
       this.projectRoot,
@@ -1481,7 +1491,22 @@ export class CodeGraph {
         : undefined
     );
 
-    return this.watcher.start();
+    if (this.watcher.start()) {
+      this.setWatchPolicy(null);
+      return true;
+    }
+
+    // Classify the failure HERE rather than at each caller: watch() is the one
+    // place that knows both the environment decision and whether setup actually
+    // threw, so the MCP lifecycle, the library, and the tests all report the
+    // same reason. A resource-exhausted watcher is degraded, and index status
+    // gives that its own, more specific notice.
+    const disabled = watchDisabledPolicy(this.projectRoot);
+    this.setWatchPolicy(
+      disabled?.policy ?? 'start-failed',
+      disabled?.reason ?? 'the file watcher could not start in this environment',
+    );
+    return false;
   }
 
   /**
@@ -1515,6 +1540,31 @@ export class CodeGraph {
   /** The reason live watching degraded, or null if it is healthy (#876). */
   getWatcherDegradedReason(): string | null {
     return this.watcher?.getDegradedReason() ?? null;
+  }
+
+  /**
+   * Record why this connection has no live watcher, or clear it (`null`) once
+   * one is running. Called by the watcher itself and by the MCP project
+   * lifecycle, which is the only party that knows about a foreign writer lock;
+   * index status reads it back to explain `watching: false`.
+   */
+  setWatchPolicy(policy: WatchPolicy | null, reason?: string | null): void {
+    this.watchPolicy = policy;
+    this.watchPolicyReason = policy === null ? null : reason ?? null;
+  }
+
+  /**
+   * Why no watcher is running, or `null` when watching works or no layer has
+   * classified this connection. A `null` here must not be read as "watching
+   * is fine" — check {@link isWatching} first.
+   */
+  getWatchPolicy(): WatchPolicy | null {
+    return this.watchPolicy;
+  }
+
+  /** Human-readable detail for {@link getWatchPolicy}, or `null`. */
+  getWatchPolicyReason(): string | null {
+    return this.watchPolicyReason;
   }
 
   /** Re-arm a lock-degraded watcher; its stale state persists until a full sync. */
