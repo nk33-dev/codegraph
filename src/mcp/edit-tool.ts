@@ -26,14 +26,14 @@ export const editTools: ToolDefinition[] = [
     // 工具描述保持「一句话定位 + 何时使用」（P0 问题 2）：apply/previewHash/operationId 的用法
     // 属于参数行为，写在 schema 里；「canApply 为真且 blockers 为空才应用」以及重命名只认
     // 语言服务器 + 已核实 Graph 引用的约束，在初始化说明的 Editing 段声明一次。
-    description: 'Structured write to indexed code: rename a symbol, replace its definition, or insert code. Previews by default; a direct apply replans, verifies, and writes transactionally.',
+    description: 'Structured code write: rename, LSP code action, replace a definition, or insert code. Previews by default; writes are transactional.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          description: 'rename (LSP), replace-body (full indexed definition), insert-before, or insert-after.',
-          enum: ['rename', 'replace-body', 'insert-before', 'insert-after'],
+          description: 'rename, code-action, replace-body, insert-before, or insert-after.',
+          enum: ['rename', 'code-action', 'replace-body', 'insert-before', 'insert-after'],
         },
         symbol: {
           type: 'string',
@@ -45,12 +45,13 @@ export const editTools: ToolDefinition[] = [
         },
         line: {
           type: 'number',
-          description: 'rename only: 1-based target line; pair with file.',
+          description: 'rename/code-action: 1-based line; pair with file.',
         },
         column: {
           type: 'number',
-          description: 'rename only: 0-based UTF-16 column.',
+          description: 'rename/code-action: 0-based UTF-16 column.',
         },
+        actionIndex: { type: 'number', description: 'code-action result index (default 0).' },
         newName: {
           type: 'string',
           description: 'rename only: new name without whitespace.',

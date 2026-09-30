@@ -155,6 +155,55 @@ describe('LSP manager: lifecycle', () => {
   });
 });
 
+describe('LSP manager: semantic capabilities', () => {
+  it('normalizes semantic queries, hierarchies, workspace diagnostics, and resolved code actions', async () => {
+    const project = makeProject({ 'a.ts': FILE_CONTENT }, { serverArgs: ['--semantic-tools'] });
+    const manager = makeManager(project);
+    const target = filePath(project);
+    const position = { line: 0, character: 7 };
+
+    expect((await manager.hover(target, position, 'typescript')).items[0]?.contents).toContain('class Widget');
+    expect((await manager.typeDefinition(target, position, 'typescript')).items).toHaveLength(1);
+    expect((await manager.implementations(target, position, 'typescript')).items[0]?.range.start.line).toBe(1);
+    expect((await manager.callHierarchy(target, position, 'typescript', 'incoming')).items[0]?.name).toBe('helper');
+    expect((await manager.callHierarchy(target, position, 'typescript', 'outgoing')).items[0]?.name).toBe('render');
+    expect((await manager.typeHierarchy(target, position, 'typescript', 'supertypes')).items[0]?.name).toBe('BaseWidget');
+    expect((await manager.typeHierarchy(target, position, 'typescript', 'subtypes')).items[0]?.name).toBe('ConcreteWidget');
+
+    const actions = await manager.codeActions(
+      target,
+      { start: { line: 0, character: 2 }, end: { line: 0, character: 8 } },
+      'typescript',
+      ['quickfix'],
+    );
+    expect(actions.items[0]).toMatchObject({ title: 'Add missing import', kind: 'quickfix', preferred: true });
+    expect(actions.items[0]?.edit[0]?.edits[0]?.newText).toContain('Missing');
+    const request = project.events('textDocument/codeAction')[0]!;
+    expect(request.params.context.only).toEqual(['quickfix']);
+    expect(request.params.context.diagnostics).toHaveLength(1);
+
+    const workspace = await manager.workspaceDiagnostics('typescript');
+    expect(workspace.items[0]?.items[0]?.message).toContain('workspace diagnostic');
+    expect(manager.status().find((entry) => entry.family === 'typescript')?.capabilities).toMatchObject({
+      hover: true,
+      implementation: true,
+      typeDefinition: true,
+      callHierarchy: true,
+      typeHierarchy: true,
+      codeAction: true,
+      workspaceDiagnostics: true,
+    });
+  });
+
+  it('reports an unadvertised semantic request as unavailable', async () => {
+    const project = makeProject();
+    const manager = makeManager(project);
+    await expect(manager.hover(filePath(project), { line: 0, character: 7 }, 'typescript'))
+      .rejects.toMatchObject({ name: 'LspUnavailableError', family: 'typescript' });
+    expect(project.events('textDocument/hover')).toHaveLength(0);
+  });
+});
+
 describe('LSP manager: document sync and diagnostics', () => {
   it('didOpen on demand, didChange on content change, didClose on file removal', async () => {
     const project = makeProject();

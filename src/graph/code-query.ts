@@ -13,8 +13,12 @@ import { collectIncomingRelations } from './incoming-relations';
 import type { TextHit } from '../db/file-text';
 import type { TextIndexChanges } from '../db/file-text';
 import { runtimeBuildIdentity, type RuntimeBuildIdentity } from '../runtime-info';
+import { buildTypeHierarchy } from './type-hierarchy';
 
-export const CODE_QUERY_MODES = ['definitions', 'references', 'symbols', 'callers', 'callees', 'diagnostics', 'status', 'impact', 'tests', 'text'] as const;
+export const CODE_QUERY_MODES = [
+  'definitions', 'type-definition', 'implementations', 'references', 'symbols', 'hover',
+  'callers', 'callees', 'type-hierarchy', 'diagnostics', 'code-actions', 'status', 'impact', 'tests', 'text',
+] as const;
 export type CodeQueryMode = typeof CODE_QUERY_MODES[number];
 
 /**
@@ -35,7 +39,9 @@ export const CODE_QUERY_SOURCES = ['graph', 'lsp'] as const;
 export type CodeQuerySource = typeof CODE_QUERY_SOURCES[number];
 
 /** Modes both the graph and LSP can answer; only the language server can answer `diagnostics`. */
-export const DUAL_SOURCE_MODES: readonly CodeQueryMode[] = ['definitions', 'references', 'symbols', 'impact', 'tests'];
+export const DUAL_SOURCE_MODES: readonly CodeQueryMode[] = [
+  'definitions', 'implementations', 'references', 'symbols', 'callers', 'callees', 'type-hierarchy', 'impact', 'tests',
+];
 
 export interface CodeQueryRequest {
   mode: CodeQueryMode;
@@ -53,6 +59,11 @@ export interface CodeQueryRequest {
    */
   line?: number;
   column?: number;
+  /** code-actions only: optional end of the selected range; defaults to line/column. */
+  endLine?: number;
+  endColumn?: number;
+  /** code-actions only: LSP action kinds such as quickfix or source.organizeImports. */
+  actionKinds?: string[];
   /** LSP-only diagnostics: the minimum severity (1=error … 4=hint; default 4 = everything). */
   severity?: number;
   /** LSP-only references: whether the declaration itself counts as a reference (default true). */
@@ -151,6 +162,36 @@ export interface LspDiagnosticItem {
   symbolId: string | null;
 }
 
+export interface LspHoverItem {
+  source: 'lsp';
+  filePath: string;
+  external: boolean;
+  startLine: number;
+  endLine: number;
+  startColumn: number;
+  endColumn: number;
+  contents: string;
+  symbolId: string | null;
+  /** Present for type-hierarchy results so callers can distinguish the two directions. */
+  hierarchy?: 'supertype' | 'subtype';
+}
+
+export interface LspCodeActionItem {
+  source: 'lsp';
+  title: string;
+  actionKind: string | null;
+  preferred: boolean;
+  filesAffected: number;
+  edits: number;
+  commandOnly: boolean;
+}
+
+export interface HierarchyCodeSymbol extends CodeSymbol {
+  hierarchy: 'focus' | 'supertype' | 'subtype' | 'implementation';
+  depth: number;
+  relation: 'extends' | 'implements' | null;
+}
+
 /** Edge kinds that carry impact propagation; `lsp_usage` means "a reference reported by the language server". */
 export type ImpactVia = Edge['kind'] | 'lsp_usage';
 
@@ -196,6 +237,9 @@ export type CodeQueryItem =
   | LspReferenceItem
   | LspDocumentSymbolItem
   | LspDiagnosticItem
+  | LspHoverItem
+  | LspCodeActionItem
+  | HierarchyCodeSymbol
   | ImpactItem
   | AffectedTestItem
   | TextHit;
@@ -377,7 +421,8 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
   const filesInsteadOfQuery = request.mode === 'tests' && (request.files?.length ?? 0) > 0;
   const queryOptional = request.mode === 'status'
     || (request.mode === 'symbols' && request.file !== undefined)
-    || (request.mode === 'diagnostics' && request.file !== undefined);
+    || request.mode === 'diagnostics'
+    || (request.mode === 'code-actions' && request.file !== undefined && request.line !== undefined);
   if (!request.query.trim() && !filesInsteadOfQuery && !queryOptional) {
     throw new Error('query must be a non-empty string of at most 2000 characters');
   }
@@ -388,6 +433,18 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
   }
   if (request.column !== undefined && (!Number.isSafeInteger(request.column) || request.column < 0)) {
     throw new Error('column must be a non-negative integer');
+  }
+  if (request.endLine !== undefined && (!Number.isSafeInteger(request.endLine) || request.endLine < 1)) {
+    throw new Error('endLine must be a 1-based integer');
+  }
+  if (request.endColumn !== undefined && (!Number.isSafeInteger(request.endColumn) || request.endColumn < 0)) {
+    throw new Error('endColumn must be a non-negative integer');
+  }
+  if (request.actionKinds !== undefined) {
+    if (!Array.isArray(request.actionKinds) || request.actionKinds.some((kind) => typeof kind !== 'string' || !kind.trim())) {
+      throw new Error('actionKinds must be an array of non-empty strings');
+    }
+    if (request.mode !== 'code-actions') throw new Error('actionKinds is only supported in code-actions mode');
   }
   if (request.severity !== undefined
     && (!Number.isSafeInteger(request.severity) || request.severity < 1 || request.severity > 4)) {
@@ -424,8 +481,12 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
 /** Ownership check for backend-specific fields: rather fail outright than silently ignore a parameter. */
 export function assertBackendFields(request: CodeQueryRequest, backend: CodeQuerySource): void {
   const positional = request.line !== undefined || request.column !== undefined;
-  if (positional && (request.mode !== 'definitions' && request.mode !== 'references')) {
-    throw new Error('line/column are only supported in definitions or references mode');
+  const positionModes: readonly CodeQueryMode[] = [
+    'definitions', 'type-definition', 'implementations', 'references', 'hover',
+    'callers', 'callees', 'type-hierarchy', 'code-actions',
+  ];
+  if (positional && !positionModes.includes(request.mode)) {
+    throw new Error(`line/column are not supported in ${request.mode} mode`);
   }
   if (positional && backend !== 'lsp') throw new Error('line/column require backend "lsp"');
   if (request.severity !== undefined && backend !== 'lsp') throw new Error('severity requires backend "lsp"');
@@ -439,8 +500,11 @@ export function assertBackendFields(request: CodeQueryRequest, backend: CodeQuer
     throw new Error('includeDeclaration requires backend "lsp"');
   }
   if (request.checkFiles && backend !== 'graph') throw new Error('checkFiles is only supported with backend "graph"');
-  if (request.mode === 'diagnostics' && backend !== 'lsp') {
-    throw new Error('diagnostics requires backend "lsp": the graph index has no diagnostics');
+  if ((request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'type-definition' || request.mode === 'code-actions') && backend !== 'lsp') {
+    throw new Error(`${request.mode} requires backend "lsp": the graph index cannot answer it`);
+  }
+  if ((request.endLine !== undefined || request.endColumn !== undefined || request.actionKinds !== undefined) && backend !== 'lsp') {
+    throw new Error('code-action range and kinds require backend "lsp"');
   }
   if (request.mode === 'tests' && request.file !== undefined) {
     throw new Error('tests mode takes a changed-file list (query or files), not a single file');
@@ -582,6 +646,7 @@ export { compareNodes };
 export function resolveFileInput(root: string, request: CodeQueryRequest): string | null {
   const raw = (request.mode === 'symbols' || request.mode === 'diagnostics') ? request.file ?? request.query : request.file;
   if (raw === undefined) return null;
+  if (request.mode === 'diagnostics' && request.file === undefined && typeof raw === 'string' && !raw.trim()) return null;
   if (typeof raw !== 'string' || !raw.trim() || raw.length > 4096) throw new Error('file must be a non-empty path');
   const normalized = raw.replace(/\\/g, '/');
   if (!validatePathWithinRoot(root, normalized)) throw new Error('file must stay within the project root');
@@ -784,7 +849,41 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     }
   }
 
-  if (request.mode === 'impact') {
+  if (request.mode === 'implementations' || request.mode === 'type-hierarchy') {
+    const hierarchyItems: HierarchyCodeSymbol[] = [];
+    const seen = new Set<string>();
+    for (const node of nodes) {
+      const hierarchy = buildTypeHierarchy(cg, node, { overrides: false });
+      if (!hierarchy) continue;
+      if (request.mode === 'type-hierarchy' && !seen.has(node.id)) {
+        seen.add(node.id);
+        hierarchyItems.push({ ...symbol(node), hierarchy: 'focus', depth: 0, relation: null });
+      }
+      const entries = request.mode === 'implementations'
+        ? hierarchy.descendants
+        : [...hierarchy.ancestors, ...hierarchy.descendants];
+      for (const entry of entries) {
+        if (seen.has(entry.node.id)) continue;
+        seen.add(entry.node.id);
+        hierarchyItems.push({
+          ...symbol(entry.node),
+          hierarchy: request.mode === 'implementations'
+            ? 'implementation'
+            : hierarchy.ancestors.includes(entry) ? 'supertype' : 'subtype',
+          depth: entry.depth,
+          relation: entry.relation,
+        });
+      }
+    }
+    hierarchyItems.sort((a, b) => a.depth - b.depth
+      || a.filePath.localeCompare(b.filePath)
+      || a.startLine - b.startLine
+      || a.name.localeCompare(b.name));
+    result.page.total = hierarchyItems.length;
+    result.items = hierarchyItems.slice(offset, offset + limit);
+    result.routing.sources.graph = hierarchyItems.length;
+    if (hierarchyItems.length === 0) result.status = 'not_found';
+  } else if (request.mode === 'impact') {
     const depth = request.depth ?? DEFAULT_IMPACT_DEPTH;
     const analysis = nodes.length === 0 ? { entries: new Map(), unattributed: 0 } : analyzeImpact(cg, nodes, depth);
     const ordered = [...analysis.entries.values()]

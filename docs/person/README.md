@@ -10,6 +10,7 @@
 - [AI 改动上下文与语义差异](change-context.md)：Git 改动符号、语义边差异、影响入口、关联测试，以及显式深度基准图的隔离与清理。
 - [测试与前后端关联](api-correlation.md)：测试类型/证据区分、HTTP 方法路径参数匹配、init 配置和 Vue 推断关系。
 - [幂等与事务式结构化编辑](edit-transactions.md)：稳定 operation ID、跨文件暂存/提交/回滚、启动恢复、逐文件恢复清单与 LSP 文件通知。
+- [LSP 语义查询与安全自动修复](lsp-semantic-actions.md)：类型提示、实现/类型定义、调用/类型层级、全项目诊断，以及补导入和整理导入等 Code Action 的预览与事务写入。
 - [个人版生产硬化与发布准备](release-readiness.md)：三平台门禁、夜间真实依赖验证、个人安装产物和发布边界。
 
 | 功能 | 文档 |

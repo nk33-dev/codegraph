@@ -15,6 +15,9 @@ export {
   SERVER_WARMUP_HINT_MS,
   type LspCapabilities,
   type LspDiagnostic,
+  type LspCodeAction,
+  type LspHierarchyItem,
+  type LspHover,
   type LspLocation,
   type LspManagerOptions,
   type LspPosition,
@@ -25,6 +28,7 @@ export {
   type LspSymbolNode,
   type LspTextEdit,
   type LspWorkspaceEditOperation,
+  type LspWorkspaceDiagnostic,
 } from './manager';
 export {
   LSP_LEASE_SCHEMA_VERSION,

@@ -59,6 +59,34 @@ export interface LspPosition { line: number; character: number }
 export interface LspRange { start: LspPosition; end: LspPosition }
 export interface LspLocation { uri: string; range: LspRange }
 
+export interface LspHover {
+  contents: string;
+  range: LspRange | null;
+}
+
+export interface LspHierarchyItem {
+  name: string;
+  detail: string | null;
+  kind: number;
+  uri: string;
+  range: LspRange;
+  selectionRange: LspRange;
+  data?: unknown;
+}
+
+export interface LspCodeAction {
+  title: string;
+  kind: string | null;
+  preferred: boolean;
+  edit: LspWorkspaceEditOperation[];
+  command: string | null;
+}
+
+export interface LspWorkspaceDiagnostic {
+  uri: string;
+  items: LspDiagnostic[];
+}
+
 export interface LspDiagnostic {
   range: LspRange;
   severity: number | null;
@@ -108,6 +136,13 @@ export interface LspQueryOutcome<T> {
 export interface LspCapabilities {  definition: boolean;
   references: boolean;
   documentSymbol: boolean;
+  hover: boolean;
+  implementation: boolean;
+  typeDefinition: boolean;
+  callHierarchy: boolean;
+  typeHierarchy: boolean;
+  codeAction: boolean;
+  workspaceDiagnostics: boolean;
   /** textDocument/rename: true when the server advertises renameProvider (an object form counts too). */
   rename: boolean;
   /** pull = supports textDocument/diagnostic; push = only sends publishDiagnostics. */
@@ -234,6 +269,14 @@ function asRange(value: unknown): LspRange | null {
   return { start, end };
 }
 
+function comparePositions(left: LspPosition, right: LspPosition): number {
+  return left.line - right.line || left.character - right.character;
+}
+
+function rangesOverlap(left: LspRange, right: LspRange): boolean {
+  return comparePositions(left.end, right.start) >= 0 && comparePositions(left.start, right.end) <= 0;
+}
+
 /** Definition/reference response normalization: Location | Location[] | LocationLink[] | null. */
 export function normalizeLocations(result: unknown): LspLocation[] {
   if (result === null || result === undefined) return [];
@@ -251,6 +294,70 @@ export function normalizeLocations(result: unknown): LspLocation[] {
       const range = asRange(entry.targetSelectionRange) ?? asRange(entry.targetRange);
       if (range) out.push({ uri: entry.targetUri, range });
     }
+  }
+  return out;
+}
+
+function markupText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (isRecord(value) && typeof value.value === 'string') return value.value;
+  if (Array.isArray(value)) return value.map(markupText).filter(Boolean).join('\n\n');
+  return '';
+}
+
+function normalizeHover(result: unknown): LspHover[] {
+  if (!isRecord(result)) return [];
+  const contents = markupText(result.contents).trim();
+  return contents ? [{ contents, range: asRange(result.range) }] : [];
+}
+
+function normalizeHierarchyItems(result: unknown): LspHierarchyItem[] {
+  if (!Array.isArray(result)) return [];
+  const out: LspHierarchyItem[] = [];
+  for (const entry of result) {
+    if (!isRecord(entry) || typeof entry.name !== 'string' || typeof entry.kind !== 'number' || typeof entry.uri !== 'string') continue;
+    const range = asRange(entry.range);
+    const selectionRange = asRange(entry.selectionRange) ?? range;
+    if (!range || !selectionRange) continue;
+    out.push({
+      name: entry.name,
+      detail: typeof entry.detail === 'string' ? entry.detail : null,
+      kind: entry.kind,
+      uri: entry.uri,
+      range,
+      selectionRange,
+      ...(entry.data !== undefined ? { data: entry.data } : {}),
+    });
+  }
+  return out;
+}
+
+function normalizeCodeActions(result: unknown): LspCodeAction[] {
+  if (!Array.isArray(result)) return [];
+  const out: LspCodeAction[] = [];
+  for (const entry of result) {
+    if (!isRecord(entry) || typeof entry.title !== 'string') continue;
+    const edit = entry.edit === undefined ? [] : normalizeWorkspaceEdit(entry.edit);
+    const command = isRecord(entry.command) && typeof entry.command.command === 'string'
+      ? entry.command.command
+      : typeof entry.command === 'string' ? entry.command : null;
+    out.push({
+      title: entry.title,
+      kind: typeof entry.kind === 'string' ? entry.kind : null,
+      preferred: entry.isPreferred === true,
+      edit,
+      command,
+    });
+  }
+  return out;
+}
+
+function normalizeWorkspaceDiagnostics(result: unknown): LspWorkspaceDiagnostic[] {
+  if (!isRecord(result) || !Array.isArray(result.items)) return [];
+  const out: LspWorkspaceDiagnostic[] = [];
+  for (const report of result.items) {
+    if (!isRecord(report) || typeof report.uri !== 'string' || !Array.isArray(report.items)) continue;
+    out.push({ uri: report.uri, items: normalizeDiagnostics(report.items) });
   }
   return out;
 }
@@ -424,6 +531,13 @@ function capabilitiesFromInitialize(result: unknown): LspCapabilities {
     definition: provided(capabilities.definitionProvider),
     references: provided(capabilities.referencesProvider),
     documentSymbol: provided(capabilities.documentSymbolProvider),
+    hover: provided(capabilities.hoverProvider),
+    implementation: provided(capabilities.implementationProvider),
+    typeDefinition: provided(capabilities.typeDefinitionProvider),
+    callHierarchy: provided(capabilities.callHierarchyProvider),
+    typeHierarchy: provided(capabilities.typeHierarchyProvider),
+    codeAction: provided(capabilities.codeActionProvider),
+    workspaceDiagnostics: isRecord(capabilities.diagnosticProvider) && capabilities.diagnosticProvider.workspaceDiagnostics === true,
     rename: provided(capabilities.renameProvider),
     diagnostics: capabilities.diagnosticProvider !== undefined ? 'pull' : 'push',
     positionEncoding: typeof capabilities.positionEncoding === 'string' ? capabilities.positionEncoding : 'utf-16',
@@ -758,6 +872,15 @@ export class LspManager {
 
   // ---------------------------------------------------------------- Query entry points
 
+  private requireCapability(entry: ServerEntry, supported: boolean | undefined, method: string): void {
+    if (supported) return;
+    throw new LspUnavailableError(
+      entry.family,
+      `the ${entry.family} language server does not advertise ${method}`,
+      'Configure a language server that supports this request, or use a graph-backed mode when one is available.',
+    );
+  }
+
   async definition(filePath: string, position: LspPosition, language: Language | null): Promise<LspQueryOutcome<LspLocation>> {
     const entry = await this.requireServer(language);
     await this.syncDocument(entry, filePath, language);
@@ -765,6 +888,33 @@ export class LspManager {
       textDocument: { uri: pathToUri(filePath) },
       position,
     }, normalizeLocations);
+  }
+
+  async typeDefinition(filePath: string, position: LspPosition, language: Language | null): Promise<LspQueryOutcome<LspLocation>> {
+    const entry = await this.requireServer(language);
+    this.requireCapability(entry, entry.capabilities?.typeDefinition, 'textDocument/typeDefinition');
+    await this.syncDocument(entry, filePath, language);
+    return this.requestWithWarmupRetry(entry, 'textDocument/typeDefinition', {
+      textDocument: { uri: pathToUri(filePath) }, position,
+    }, normalizeLocations);
+  }
+
+  async implementations(filePath: string, position: LspPosition, language: Language | null): Promise<LspQueryOutcome<LspLocation>> {
+    const entry = await this.requireServer(language);
+    this.requireCapability(entry, entry.capabilities?.implementation, 'textDocument/implementation');
+    await this.syncDocument(entry, filePath, language);
+    return this.requestWithWarmupRetry(entry, 'textDocument/implementation', {
+      textDocument: { uri: pathToUri(filePath) }, position,
+    }, normalizeLocations);
+  }
+
+  async hover(filePath: string, position: LspPosition, language: Language | null): Promise<LspQueryOutcome<LspHover>> {
+    const entry = await this.requireServer(language);
+    this.requireCapability(entry, entry.capabilities?.hover, 'textDocument/hover');
+    await this.syncDocument(entry, filePath, language);
+    return this.requestWithWarmupRetry(entry, 'textDocument/hover', {
+      textDocument: { uri: pathToUri(filePath) }, position,
+    }, normalizeHover);
   }
 
   async references(
@@ -788,6 +938,107 @@ export class LspManager {
     return this.requestWithWarmupRetry(entry, 'textDocument/documentSymbol', {
       textDocument: { uri: pathToUri(filePath) },
     }, normalizeDocumentSymbols);
+  }
+
+  async callHierarchy(
+    filePath: string,
+    position: LspPosition,
+    language: Language | null,
+    direction: 'incoming' | 'outgoing',
+  ): Promise<LspQueryOutcome<LspHierarchyItem>> {
+    const entry = await this.requireServer(language);
+    this.requireCapability(entry, entry.capabilities?.callHierarchy, 'call hierarchy');
+    await this.syncDocument(entry, filePath, language);
+    const prepared = await this.requestWithWarmupRetry(entry, 'textDocument/prepareCallHierarchy', {
+      textDocument: { uri: pathToUri(filePath) }, position,
+    }, normalizeHierarchyItems);
+    const items: LspHierarchyItem[] = [];
+    for (const item of prepared.items) {
+      const response = await this.request(
+        entry,
+        direction === 'incoming' ? 'callHierarchy/incomingCalls' : 'callHierarchy/outgoingCalls',
+        { item },
+      );
+      if (!Array.isArray(response)) continue;
+      for (const relation of response) {
+        if (!isRecord(relation)) continue;
+        items.push(...normalizeHierarchyItems([direction === 'incoming' ? relation.from : relation.to]));
+      }
+    }
+    return { items, retried: prepared.retried };
+  }
+
+  async typeHierarchy(
+    filePath: string,
+    position: LspPosition,
+    language: Language | null,
+    direction: 'supertypes' | 'subtypes',
+  ): Promise<LspQueryOutcome<LspHierarchyItem>> {
+    const entry = await this.requireServer(language);
+    this.requireCapability(entry, entry.capabilities?.typeHierarchy, 'type hierarchy');
+    await this.syncDocument(entry, filePath, language);
+    const prepared = await this.requestWithWarmupRetry(entry, 'textDocument/prepareTypeHierarchy', {
+      textDocument: { uri: pathToUri(filePath) }, position,
+    }, normalizeHierarchyItems);
+    const items: LspHierarchyItem[] = [];
+    for (const item of prepared.items) {
+      const response = await this.request(
+        entry,
+        direction === 'supertypes' ? 'typeHierarchy/supertypes' : 'typeHierarchy/subtypes',
+        { item },
+      );
+      items.push(...normalizeHierarchyItems(response));
+    }
+    return { items, retried: prepared.retried };
+  }
+
+  async codeActions(
+    filePath: string,
+    range: LspRange,
+    language: Language | null,
+    kinds: string[] = [],
+  ): Promise<LspQueryOutcome<LspCodeAction>> {
+    const entry = await this.requireServer(language);
+    this.requireCapability(entry, entry.capabilities?.codeAction, 'textDocument/codeAction');
+    await this.syncDocument(entry, filePath, language);
+    const uri = pathToUri(filePath);
+    const key = uriKey(uri);
+    const diagnostics = await this.collectDiagnostics(entry, uri, key, -1);
+    const diagnosticsInRange = diagnostics.items.filter((diagnostic) => rangesOverlap(diagnostic.range, range));
+    const raw = await this.requestWithWarmupRetry(entry, 'textDocument/codeAction', {
+      textDocument: { uri }, range,
+      context: { diagnostics: diagnosticsInRange, ...(kinds.length > 0 ? { only: kinds } : {}) },
+    }, (value) => Array.isArray(value) ? value : []);
+    const resolved: unknown[] = [];
+    for (const action of raw.items) {
+      if (!isRecord(action) || action.edit !== undefined || action.data === undefined) {
+        resolved.push(action);
+        continue;
+      }
+      try {
+        resolved.push(await this.request(entry, 'codeAction/resolve', action));
+      } catch {
+        resolved.push(action);
+      }
+    }
+    return { items: normalizeCodeActions(resolved), retried: raw.retried };
+  }
+
+  async workspaceDiagnostics(language: Language | null): Promise<LspQueryOutcome<LspWorkspaceDiagnostic>> {
+    const entry = await this.requireServer(language);
+    if (!entry.capabilities?.workspaceDiagnostics) {
+      throw new LspUnavailableError(
+        entry.family,
+        `the ${entry.family} language server does not advertise workspace diagnostics`,
+        'Query one file at a time, or configure a server with workspace/diagnostic support.',
+      );
+    }
+    return this.requestWithWarmupRetry(
+      entry,
+      'workspace/diagnostic',
+      { previousResultIds: [] },
+      normalizeWorkspaceDiagnostics,
+    );
   }
 
   /**
@@ -1252,11 +1503,25 @@ export class LspManager {
             didRename: true,
             didDelete: true,
           },
+          diagnostics: { refreshSupport: false },
         },
         textDocument: {
           synchronization: { dynamicRegistration: false, willSave: false, didSave: false },
           definition: { linkSupport: false },
           references: {},
+          hover: { contentFormat: ['markdown', 'plaintext'] },
+          implementation: { linkSupport: false },
+          typeDefinition: { linkSupport: false },
+          callHierarchy: { dynamicRegistration: false },
+          typeHierarchy: { dynamicRegistration: false },
+          codeAction: {
+            dynamicRegistration: false,
+            dataSupport: true,
+            resolveSupport: { properties: ['edit'] },
+            codeActionLiteralSupport: {
+              codeActionKind: { valueSet: ['quickfix', 'refactor', 'source', 'source.organizeImports', 'source.fixAll'] },
+            },
+          },
           documentSymbol: {
             hierarchicalDocumentSymbolSupport: true,
             symbolKind: { valueSet: SYMBOL_KIND_VALUE_SET },

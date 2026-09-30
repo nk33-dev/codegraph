@@ -32,6 +32,7 @@ import {
 } from './contract';
 import { planGraphEdit, FRAGMENT_KINDS } from './graph-edit';
 import { planRename } from './lsp-rename';
+import { planCodeAction } from './lsp-code-action';
 import { resolveEditTarget, toCodeEditTarget } from './target';
 import {
   applyEditTransaction,
@@ -86,7 +87,7 @@ function fail(result: CodeEditResult, error: unknown): void {
     const detail = error.remedy ? `${error.message} — ${error.remedy}` : error.message;
     result.blockers.push(detail);
     result.warnings.push(detail);
-    if (result.operation === 'rename' && error.status === 'unavailable') {
+    if ((result.operation === 'rename' || result.operation === 'code-action') && error.status === 'unavailable') {
       result.routing.lsp = { ...result.routing.lsp, available: false, reason: error.message };
     }
     return;
@@ -123,7 +124,9 @@ export async function editCode(
       if (recorded) return recorded;
     }
     const target = resolveEditTarget(cg, request);
-    result.target = toCodeEditTarget(target, { source: request.operation === 'rename' ? 'lsp' : 'index' });
+    result.target = toCodeEditTarget(target, {
+      source: request.operation === 'rename' || request.operation === 'code-action' ? 'lsp' : 'index',
+    });
 
     if (request.operation === 'rename') {
       const plan = await planRename(cg, manager, request, target);
@@ -139,6 +142,14 @@ export async function editCode(
         result.warnings.push(staleIndexBlocker);
       }
       result.canApply = result.blockers.length === 0;
+      result.warnings.push(...plan.warnings);
+    } else if (request.operation === 'code-action') {
+      const plan = await planCodeAction(cg, manager, request, target);
+      result.files = plan.files;
+      result.routing.source = 'lsp';
+      result.routing.lsp = { requested: true, available: true, family: plan.family, reason: null };
+      result.canApply = plan.files.length > 0;
+      result.warnings.push(`Selected code action: ${plan.title}`);
       result.warnings.push(...plan.warnings);
     } else {
       const planned = planGraphEdit(request, target);
@@ -185,7 +196,7 @@ export async function editCode(
 
   if (!result.canApply) {
     result.status = 'rejected';
-    result.warnings.push('Nothing was written because this rename preview has apply blockers.');
+    result.warnings.push('Nothing was written because this edit preview has apply blockers.');
     return result;
   }
 

@@ -21,7 +21,7 @@ import { createHash } from 'crypto';
 import type { Language, Node } from '../types';
 import type { FileFreshness } from '../sync/file-freshness';
 
-export const CODE_EDIT_OPERATIONS = ['rename', 'replace-body', 'insert-before', 'insert-after'] as const;
+export const CODE_EDIT_OPERATIONS = ['rename', 'code-action', 'replace-body', 'insert-before', 'insert-after'] as const;
 export type CodeEditOperation = typeof CODE_EDIT_OPERATIONS[number];
 
 /** Operations that are purely textual at an indexed range; they need no language server. */
@@ -59,6 +59,13 @@ export interface CodeEditRequest {
   /** rename only: a position-based target instead of a name (1-based line, 0-based UTF-16 column). */
   line?: number;
   column?: number;
+  /** code-action only: optional end of the selected range; defaults to line/column. */
+  endLine?: number;
+  endColumn?: number;
+  /** code-action only: filter to LSP action kinds such as quickfix or source.organizeImports. */
+  actionKinds?: string[];
+  /** code-action only: which returned action to preview/apply (default 0). */
+  actionIndex?: number;
   /** rename only: the new symbol name. */
   newName?: string;
   /** replace-body / insert-before / insert-after: the replacement or inserted text. */
@@ -216,7 +223,7 @@ export function emptyCodeEditResult(
     schemaVersion: 1, operation, applyRequested, status: 'preview', canApply: false, blockers: [], projectRoot: null, target: null,
     files: [], summary: { files: 0, edits: 0, additions: 0, deletions: 0, previewTruncated: false },
     previewHash: null, operationId: null,
-    routing: { source: null, lsp: { requested: operation === 'rename', available: false, family: null, reason: null } },
+    routing: { source: null, lsp: { requested: operation === 'rename' || operation === 'code-action', available: false, family: null, reason: null } },
     applied: null, warnings: [],
   };
 }
@@ -263,15 +270,34 @@ export function validateCodeEditRequest(request: CodeEditRequest): void {
   if (request.column !== undefined && (!Number.isSafeInteger(request.column) || request.column < 0)) {
     throw new CodeEditRefusal('column must be a non-negative integer', 'error');
   }
+  if (request.endLine !== undefined && (!Number.isSafeInteger(request.endLine) || request.endLine < 1)) {
+    throw new CodeEditRefusal('endLine must be a 1-based integer', 'error');
+  }
+  if (request.endColumn !== undefined && (!Number.isSafeInteger(request.endColumn) || request.endColumn < 0)) {
+    throw new CodeEditRefusal('endColumn must be a non-negative integer', 'error');
+  }
+  if (request.actionIndex !== undefined && (!Number.isSafeInteger(request.actionIndex) || request.actionIndex < 0)) {
+    throw new CodeEditRefusal('actionIndex must be a non-negative integer', 'error');
+  }
+  if (request.actionKinds !== undefined && (!Array.isArray(request.actionKinds)
+    || request.actionKinds.some((kind) => typeof kind !== 'string' || !kind.trim()))) {
+    throw new CodeEditRefusal('actionKinds must be an array of non-empty strings', 'error');
+  }
 
   const positional = request.line !== undefined || request.column !== undefined;
-  if (positional && request.operation !== 'rename') {
-    throw new CodeEditRefusal('line/column are only supported by rename', 'error');
+  if (positional && request.operation !== 'rename' && request.operation !== 'code-action') {
+    throw new CodeEditRefusal('line/column are only supported by rename or code-action', 'error');
   }
   // `file` is optional for a name-based target: the name is resolved through the index and a name
   // that matches several definitions is refused (status "ambiguous") rather than guessed.
   if (!positional && !request.symbol?.trim()) {
-    throw new CodeEditRefusal(`operation "${request.operation}" needs a symbol name (or rename with file + line)`, 'error');
+    throw new CodeEditRefusal(`operation "${request.operation}" needs a symbol name (or rename/code-action with file + line)`, 'error');
+  }
+
+  const codeActionOnly = request.endLine !== undefined || request.endColumn !== undefined
+    || request.actionKinds !== undefined || request.actionIndex !== undefined;
+  if (codeActionOnly && request.operation !== 'code-action') {
+    throw new CodeEditRefusal('endLine/endColumn/actionKinds/actionIndex are only accepted by code-action', 'error');
   }
 
   if (request.operation === 'rename') {
@@ -285,6 +311,20 @@ export function validateCodeEditRequest(request: CodeEditRequest): void {
       throw new CodeEditRefusal('newName must not contain whitespace', 'error');
     }
     if (request.content !== undefined) throw new CodeEditRefusal('content is not accepted by rename', 'error');
+  } else if (request.operation === 'code-action') {
+    if (!request.file || request.line === undefined) {
+      throw new CodeEditRefusal('code-action requires file and line', 'error');
+    }
+    if (request.newName !== undefined || request.content !== undefined) {
+      throw new CodeEditRefusal('code-action does not accept newName or content', 'error');
+    }
+    const startLine = request.line!;
+    const startColumn = request.column ?? 0;
+    const endLine = request.endLine ?? startLine;
+    const endColumn = request.endColumn ?? startColumn;
+    if (endLine < startLine || (endLine === startLine && endColumn < startColumn)) {
+      throw new CodeEditRefusal('code-action range end must not be before its start', 'error');
+    }
   } else {
     if (typeof request.content !== 'string') {
       throw new CodeEditRefusal(`operation "${request.operation}" requires content`, 'error');
@@ -311,6 +351,10 @@ export function editRequestHash(request: CodeEditRequest): string {
     file: request.file ?? null,
     line: request.line ?? null,
     column: request.column ?? null,
+    endLine: request.endLine ?? null,
+    endColumn: request.endColumn ?? null,
+    actionKinds: request.actionKinds ?? null,
+    actionIndex: request.actionIndex ?? null,
     newName: request.newName ?? null,
     content: request.content ?? null,
   })).digest('hex');

@@ -1,5 +1,5 @@
 /**
- * Unified contract for LSP queries: result shape and pagination for all four modes,
+ * Unified contract for LSP queries: result shape and pagination across semantic modes,
  * availability, CLI/MCP output parity, and unchanged graph-backend behavior (phase-one regression).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -27,7 +27,7 @@ async function setupProject(options: Parameters<typeof createFakeProject>[1] = {
 }
 
 beforeEach(async () => {
-  await setupProject({ serverArgs: ['--pull-diagnostics'] });
+  await setupProject({ serverArgs: ['--pull-diagnostics', '--semantic-tools'] });
 }, 30_000);
 
 afterEach(() => {
@@ -109,6 +109,39 @@ describe('LSP structured query contract', () => {
       kind: 'class',
       symbolId: expect.any(String),
     });
+  });
+
+  it('exposes hover, type definition, implementations, hierarchies, and code actions through explore modes', async () => {
+    const hover = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'hover', query: 'Widget' });
+    expect(hover.items[0]).toMatchObject({ source: 'lsp', filePath: 'a.ts', contents: expect.stringContaining('class Widget') });
+
+    const typeDefinition = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'type-definition', query: 'Widget' });
+    expect(typeDefinition.items[0]).toMatchObject({ source: 'lsp', filePath: 'a.ts', name: 'Widget' });
+
+    const implementations = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'implementations', query: 'Widget' });
+    expect(implementations.items[0]).toMatchObject({ source: 'lsp', filePath: 'a.ts' });
+
+    const callers = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'callers', query: 'Widget' });
+    expect(callers.items[0]).toMatchObject({ source: 'lsp', name: 'helper' });
+
+    const callees = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'callees', query: 'Widget' });
+    expect(callees.items[0]).toMatchObject({ source: 'lsp', name: 'render' });
+
+    const hierarchy = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'type-hierarchy', query: 'Widget' });
+    expect(hierarchy.items).toMatchObject([
+      { source: 'lsp', name: 'BaseWidget', hierarchy: 'supertype' },
+      { source: 'lsp', name: 'ConcreteWidget', hierarchy: 'subtype' },
+    ]);
+
+    const actions = await cg.queryCodeWithBackend({
+      backend: 'lsp', mode: 'code-actions', query: 'a.ts', file: 'a.ts', line: 1, column: 2, actionKinds: ['quickfix'],
+    });
+    expect(actions.items[0]).toMatchObject({
+      source: 'lsp', title: 'Add missing import', actionKind: 'quickfix', preferred: true, filesAffected: 1, edits: 1,
+    });
+
+    const workspaceDiagnostics = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'diagnostics', query: '' });
+    expect(workspaceDiagnostics.items[0]).toMatchObject({ source: 'lsp', filePath: 'a.ts', message: expect.stringContaining('workspace diagnostic') });
   });
 
   it('references: distinguish in-project sites from out-of-project URIs', async () => {
@@ -274,6 +307,11 @@ describe('LSP CLI / MCP parity', () => {
       const tool = list.tools.find((entry: any) => entry.name === 'codegraph_explore');
       expect(tool.inputSchema.properties.backend.enum).toEqual(['graph', 'lsp', 'auto', 'both']);
       expect(tool.inputSchema.properties.mode.enum).toContain('diagnostics');
+      expect(tool.inputSchema.properties.mode.enum).toContain('hover');
+      expect(tool.inputSchema.properties.mode.enum).toContain('implementations');
+      expect(tool.inputSchema.properties.mode.enum).toContain('type-definition');
+      expect(tool.inputSchema.properties.mode.enum).toContain('type-hierarchy');
+      expect(tool.inputSchema.properties.mode.enum).toContain('code-actions');
       expect(tool.inputSchema.properties.mode.enum).toContain('impact');
       expect(tool.inputSchema.properties.mode.enum).toContain('tests');
       expect(tool.inputSchema.properties.severity.type).toBe('number');

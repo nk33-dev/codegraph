@@ -29,7 +29,9 @@ import {
   type CodeQueryItem,
   type ImpactItem,
   type LspDiagnosticItem,
+  type LspCodeActionItem,
   type LspDocumentSymbolItem,
+  type LspHoverItem,
   type LspReferenceItem,
   type LspResultBlock,
   type LspSymbolItem,
@@ -592,8 +594,11 @@ export async function queryCodeLsp(
   }
 
   const file = resolveFileInput(root, request);
-  if ((request.mode === 'diagnostics' || request.mode === 'symbols') && !file) {
+  if ((request.mode === 'symbols' || request.mode === 'code-actions') && !file) {
     throw new Error(`mode "${request.mode}" requires a project-relative file`);
+  }
+  if (request.mode === 'code-actions' && request.line === undefined) {
+    throw new Error('mode "code-actions" requires line (and optionally column/endLine/endColumn)');
   }
 
   const context = new LspQueryContext(cg, manager, root);
@@ -603,6 +608,42 @@ export async function queryCodeLsp(
   try {
     switch (request.mode) {
       case 'diagnostics': {
+        if (!file) {
+          const families = new Map<LspFamily, Language>();
+          for (const record of cg.getFiles()) {
+            const candidateFamily = familyForLanguage(record.language);
+            if (candidateFamily && !families.has(candidateFamily)) families.set(candidateFamily, record.language);
+          }
+          const all: LspDiagnosticItem[] = [];
+          for (const [candidateFamily, candidateLanguage] of families) {
+            try {
+              const outcome = await manager.workspaceDiagnostics(candidateLanguage);
+              if (family === null) family = candidateFamily;
+              for (const report of outcome.items) {
+                const absPath = uriToNormalizedPath(report.uri);
+                const mapped = absPath === null ? { filePath: report.uri, external: true } : context.toResultPath(absPath);
+                for (const item of report.items) {
+                  if (severityRank(item) > (request.severity ?? 4)) continue;
+                  all.push({
+                    source: 'lsp', ...mapped,
+                    startLine: item.range.start.line + 1, startColumn: item.range.start.character,
+                    endLine: item.range.end.line + 1, endColumn: item.range.end.character,
+                    severity: severityLabel(item), message: item.message, code: item.code,
+                    diagnosticSource: item.source,
+                    symbolId: absPath === null ? null : context.graphNodeAt(absPath, item.range.start)?.id ?? null,
+                  });
+                }
+              }
+            } catch (error) {
+              result.warnings.push(`${candidateFamily}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          all.sort((a, b) => a.filePath.localeCompare(b.filePath) || a.startLine - b.startLine || a.startColumn - b.startColumn);
+          result.page.total = all.length;
+          result.items = all.slice(offset, offset + limit);
+          if (all.length === 0) result.status = result.warnings.length > 0 ? 'unavailable' : 'not_found';
+          break;
+        }
         const absPath = path.resolve(root, file!);
         const { items, source, retried } = await manager.diagnostics(absPath, language);
         if (source === 'none') {
@@ -671,7 +712,51 @@ export async function queryCodeLsp(
         break;
       }
 
+      case 'hover': {
+        const resolved = resolveCandidates(cg, context, request, file);
+        result.ambiguous = resolved.ambiguous;
+        if (resolved.note) result.warnings.push(resolved.note);
+        const items: LspHoverItem[] = [];
+        for (const candidate of resolved.candidates) {
+          if (family === null) family = familyForLanguage(candidate.language);
+          const outcome = await manager.hover(candidate.absPath, candidate.position, candidate.language);
+          for (const hover of outcome.items) {
+            const range = hover.range ?? { start: candidate.position, end: candidate.position };
+            const mapped = context.toResultPath(candidate.absPath);
+            items.push({
+              source: 'lsp', ...mapped,
+              startLine: range.start.line + 1, startColumn: range.start.character,
+              endLine: range.end.line + 1, endColumn: range.end.character,
+              contents: hover.contents, symbolId: candidate.node?.id ?? null,
+            });
+          }
+        }
+        result.page.total = items.length;
+        result.items = items.slice(offset, offset + limit);
+        if (items.length === 0) result.status = 'not_found';
+        break;
+      }
+
+      case 'code-actions': {
+        const absPath = path.resolve(root, file!);
+        const start = { line: request.line! - 1, character: request.column ?? 0 };
+        const end = { line: (request.endLine ?? request.line!) - 1, character: request.endColumn ?? request.column ?? 0 };
+        const outcome = await manager.codeActions(absPath, { start, end }, language, request.actionKinds ?? []);
+        const items = outcome.items.map((action) => ({
+          source: 'lsp', title: action.title, actionKind: action.kind, preferred: action.preferred,
+          filesAffected: new Set(action.edit.map((operation) => operation.uri)).size,
+          edits: action.edit.reduce((sum, operation) => sum + operation.edits.length, 0),
+          commandOnly: action.edit.length === 0 && action.command !== null,
+        } satisfies LspCodeActionItem));
+        result.page.total = items.length;
+        result.items = items.slice(offset, offset + limit);
+        if (items.length === 0) result.status = 'not_found';
+        break;
+      }
+
       case 'definitions':
+      case 'type-definition':
+      case 'implementations':
       case 'references': {
         const resolved = resolveCandidates(cg, context, request, file);
         result.ambiguous = resolved.ambiguous;
@@ -693,7 +778,11 @@ export async function queryCodeLsp(
           if (family === null) family = familyForLanguage(candidate.language);
           const outcome = request.mode === 'definitions'
             ? await manager.definition(candidate.absPath, candidate.position, candidate.language)
-            : await manager.references(
+            : request.mode === 'type-definition'
+              ? await manager.typeDefinition(candidate.absPath, candidate.position, candidate.language)
+              : request.mode === 'implementations'
+                ? await manager.implementations(candidate.absPath, candidate.position, candidate.language)
+                : await manager.references(
                 candidate.absPath,
                 candidate.position,
                 candidate.language,
@@ -779,6 +868,52 @@ export async function queryCodeLsp(
           const warning = compileDbWarning(root);
           if (warning) result.warnings.push(warning);
         }
+        break;
+      }
+
+      case 'callers':
+      case 'callees':
+      case 'type-hierarchy': {
+        const resolved = resolveCandidates(cg, context, request, file);
+        result.ambiguous = resolved.ambiguous;
+        if (resolved.note) result.warnings.push(resolved.note);
+        const items: LspSymbolItem[] = [];
+        const seen = new Set<string>();
+        for (const candidate of resolved.candidates) {
+          if (family === null) family = familyForLanguage(candidate.language);
+          const outcomes = request.mode === 'type-hierarchy'
+            ? [
+                { outcome: await manager.typeHierarchy(candidate.absPath, candidate.position, candidate.language, 'supertypes'), hierarchy: 'supertype' as const },
+                { outcome: await manager.typeHierarchy(candidate.absPath, candidate.position, candidate.language, 'subtypes'), hierarchy: 'subtype' as const },
+              ]
+            : [{
+                outcome: await manager.callHierarchy(
+                  candidate.absPath, candidate.position, candidate.language,
+                  request.mode === 'callers' ? 'incoming' : 'outgoing',
+                ),
+                hierarchy: undefined,
+              }];
+          for (const { outcome, hierarchy } of outcomes) {
+            for (const item of outcome.items) {
+              const key = locationKey(item.uri, item.selectionRange.start, item.selectionRange.end);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              const absPath = uriToNormalizedPath(item.uri);
+              const base = absPath === null
+                ? uriOnlyItem(item.uri, item.selectionRange)
+                : await context.symbolItemAt(absPath, item.selectionRange.start, context.languageFor(absPath), item.range);
+              items.push({
+                ...base,
+                name: item.name,
+                kind: lspSymbolKindToNodeKind(item.kind) ?? base.kind,
+                ...(hierarchy ? { hierarchy } : {}),
+              });
+            }
+          }
+        }
+        result.page.total = items.length;
+        result.items = items.slice(offset, offset + limit);
+        if (items.length === 0) result.status = 'not_found';
         break;
       }
 

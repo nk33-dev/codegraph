@@ -6,6 +6,7 @@
  *   initialize / initialized / shutdown / exit / $/cancelRequest
  *   textDocument didOpen / didChange / didClose / publishDiagnostics
  *   definition / references / documentSymbol / diagnostic(pull)
+ *   hover / implementation / typeDefinition / callHierarchy / typeHierarchy / codeAction
  *
  * Command-line switches:
  *   --log <file>               append one JSON line per received event (tests assert the request sequence)
@@ -20,6 +21,9 @@
  *                              workspace/workspaceFolders / window/workDoneProgress/create
  *                              and log the client's answers (the client MUST answer them)
  *   --stderr <text>            write one line to stderr at startup
+ *   --semantic-tools           declare and answer the semantic query/code-action capabilities
+ *   --code-action-command-only return a command-only action (the edit layer must refuse it)
+ *   --code-action-extra <file> add a text edit for another absolute path
  *
  * Phase-4 rename switches:
  *   --rename                   declare renameProvider and answer textDocument/rename by replacing
@@ -57,6 +61,10 @@ const renameDocumentChanges = flag('--rename-document-changes');
 const renameExtra = opt('--rename-extra', null);
 const renameEnabled = flag('--rename') || renameNull || renameExtra !== null;
 const fileOperations = flag('--file-operations');
+const semanticTools = flag('--semantic-tools');
+const codeActionCommandOnly = flag('--code-action-command-only');
+const codeActionExtra = opt('--code-action-extra', null);
+let workspaceRootUri = null;
 
 const log = (entry) => {
   if (!logFile) return;
@@ -173,6 +181,22 @@ function diagnosticsFor(uri, count, message) {
   return items;
 }
 
+function hierarchyItem(uri, name, line, kind = 5) {
+  return {
+    name,
+    kind,
+    uri,
+    range: { start: { line, character: 0 }, end: { line, character: name.length + 7 } },
+    selectionRange: { start: { line, character: 7 }, end: { line, character: 7 + name.length } },
+    data: { name },
+  };
+}
+
+function workspaceFileUri(relative) {
+  if (!workspaceRootUri) return `file:///fake-workspace/${relative}`;
+  return `${workspaceRootUri.replace(/\/$/, '')}/${relative}`;
+}
+
 /** Server-request reply table: {id: verify(value)}. */
 const serverRequestVerifiers = new Map();
 let probeOk = true;
@@ -220,6 +244,7 @@ function handle(message) {
 
   switch (method) {
     case 'initialize': {
+      workspaceRootUri = params.rootUri ?? params.workspaceFolders?.[0]?.uri ?? null;
       const capabilities = {
         textDocumentSync: 1,
         definitionProvider: true,
@@ -228,7 +253,20 @@ function handle(message) {
       };
       if (!noDocumentSymbol) capabilities.documentSymbolProvider = true;
       if (renameEnabled) capabilities.renameProvider = true;
-      if (pullDiagnostics) capabilities.diagnosticProvider = { identifier: 'fake', interFileDependencies: false, workspaceDiagnostics: false };
+      if (pullDiagnostics || semanticTools) capabilities.diagnosticProvider = {
+        identifier: 'fake', interFileDependencies: false, workspaceDiagnostics: semanticTools,
+      };
+      if (semanticTools) {
+        capabilities.hoverProvider = true;
+        capabilities.implementationProvider = true;
+        capabilities.typeDefinitionProvider = true;
+        capabilities.callHierarchyProvider = true;
+        capabilities.typeHierarchyProvider = true;
+        capabilities.codeActionProvider = {
+          resolveProvider: true,
+          codeActionKinds: ['quickfix', 'source.organizeImports'],
+        };
+      }
       if (fileOperations) {
         capabilities.workspace = {
           fileOperations: {
@@ -285,6 +323,20 @@ function handle(message) {
       else reply();
       return;
     }
+    case 'textDocument/typeDefinition':
+      result(id, [{ uri: params.textDocument.uri, range: range() }]);
+      return;
+    case 'textDocument/implementation':
+      result(id, [
+        { uri: params.textDocument.uri, range: { start: { line: 1, character: 2 }, end: { line: 1, character: 8 } } },
+      ]);
+      return;
+    case 'textDocument/hover':
+      result(id, {
+        contents: { kind: 'markdown', value: '```ts\nclass Widget\n```\nFake hover documentation.' },
+        range: range(),
+      });
+      return;
     case 'textDocument/references':
       result(id, [
         { uri: params.textDocument.uri, range: { start: { line: 1, character: 4 }, end: { line: 1, character: 9 } } },
@@ -348,6 +400,76 @@ function handle(message) {
         },
       ]);
       return;
+    case 'textDocument/prepareCallHierarchy':
+      result(id, [hierarchyItem(params.textDocument.uri, 'Widget', 0)]);
+      return;
+    case 'callHierarchy/incomingCalls':
+      result(id, [{ from: hierarchyItem(params.item.uri, 'helper', 5, 12), fromRanges: [range()] }]);
+      return;
+    case 'callHierarchy/outgoingCalls':
+      result(id, [{ to: hierarchyItem(params.item.uri, 'render', 1, 6), fromRanges: [range()] }]);
+      return;
+    case 'textDocument/prepareTypeHierarchy':
+      result(id, [hierarchyItem(params.textDocument.uri, 'Widget', 0)]);
+      return;
+    case 'typeHierarchy/supertypes':
+      result(id, [hierarchyItem(params.item.uri, 'BaseWidget', 2)]);
+      return;
+    case 'typeHierarchy/subtypes':
+      result(id, [hierarchyItem(params.item.uri, 'ConcreteWidget', 3)]);
+      return;
+    case 'textDocument/codeAction': {
+      if (codeActionCommandOnly) {
+        result(id, [{ title: 'Run external fixer', kind: 'quickfix', command: { title: 'Fix', command: 'fake.fix' } }]);
+        return;
+      }
+      const only = params.context?.only ?? [];
+      const accepts = (kind) => only.length === 0 || only.some((requested) => (
+        requested === kind || kind.startsWith(`${requested}.`) || requested.startsWith(`${kind}.`)
+      ));
+      const actions = [];
+      if (accepts('quickfix') && (params.context?.diagnostics?.length ?? 0) > 0) {
+        actions.push({
+          title: 'Add missing import',
+          kind: 'quickfix',
+          isPreferred: true,
+          data: { uri: params.textDocument.uri },
+        });
+      }
+      if (accepts('source.organizeImports')) {
+        actions.push({
+          title: 'Organize imports',
+          kind: 'source.organizeImports',
+          edit: {
+            changes: {
+              [params.textDocument.uri]: [{
+                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+                newText: '// imports organized\n',
+              }],
+            },
+          },
+        });
+      }
+      result(id, actions);
+      return;
+    }
+    case 'codeAction/resolve': {
+      const uri = params.data?.uri;
+      const changes = {
+        [uri]: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+          newText: "import { Missing } from './missing';\n",
+        }],
+      };
+      if (codeActionExtra) {
+        changes[pathToFileURL(codeActionExtra).href] = [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+          newText: '// outside edit\n',
+        }];
+      }
+      result(id, { ...params, edit: { changes } });
+      return;
+    }
     case 'textDocument/diagnostic': {
       const items = diagnosticsFor(params.textDocument.uri, 1, 'fake pull diagnostic');
       if (mixedDiagnostics) {
@@ -362,6 +484,15 @@ function handle(message) {
       result(id, { kind: 'full', items });
       return;
     }
+    case 'workspace/diagnostic':
+      result(id, {
+        items: [{
+          uri: workspaceFileUri('a.ts'),
+          kind: 'full',
+          items: diagnosticsFor(workspaceFileUri('a.ts'), 1, 'fake workspace diagnostic'),
+        }],
+      });
+      return;
     default:
       if (id !== undefined) result(id, null);
       return;

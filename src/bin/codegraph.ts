@@ -15,8 +15,8 @@
  *   codegraph refresh <file>     Refresh one file with structural scope planning
  *   codegraph status [path]      Show index status
  *   codegraph query <search>     Search for symbols
- *   codegraph explore <query>    Structured queries: definitions, references, symbols, diagnostics, impact, tests, status, text
- *   codegraph edit <symbol>      Structured edits: rename, replace-body, insert-before, insert-after (preview by default)
+ *   codegraph explore <query>    Structured Graph/LSP queries, diagnostics, impact, tests, status, and text
+ *   codegraph edit <symbol>      Structured edits and LSP code actions (preview by default)
  *   codegraph files [options]    Show project file structure
  *   codegraph context <task>     Build context for a task
  *   codegraph callers <symbol>   Find what calls a function/method
@@ -1764,11 +1764,14 @@ program
   .option('--framework <framework...>', 'Require one or more detected project frameworks')
   .option('--symbol-type <kind...>', 'Include these symbol kinds in source excerpts')
   .option('--exclude-type <kind...>', 'Fold these symbol kinds out of source excerpts')
-  .option('--mode <mode>', 'explore, source, definitions, references, symbols, callers, callees, diagnostics, impact, tests, status, or text', 'explore')
+  .option('--mode <mode>', 'explore, source, definitions, type-definition, implementations, references, symbols, hover, callers, callees, type-hierarchy, diagnostics, code-actions, impact, tests, status, or text', 'explore')
   .option('--backend <backend>', 'Structured query backend: graph (default), lsp, auto, or both; diagnostics defaults to auto')
   .option('--file <file>', 'Exact project-relative file for structured queries')
-  .option('--line <number>', 'backend=lsp definitions/references: 1-based line for a position query')
-  .option('--column <number>', 'backend=lsp definitions/references: 0-based UTF-16 column (default 0)')
+  .option('--line <number>', 'backend=lsp position query: 1-based line')
+  .option('--column <number>', 'backend=lsp position query: 0-based UTF-16 column (default 0)')
+  .option('--end-line <number>', 'mode=code-actions: optional 1-based range end line')
+  .option('--end-column <number>', 'mode=code-actions: optional 0-based UTF-16 range end column')
+  .option('--action-kind <kind...>', 'mode=code-actions: filter kinds such as quickfix or source.organizeImports')
   .option('--severity <number>', 'mode=diagnostics: minimum severity 1=error … 4=hint (default 4)')
   .option('--exclude-declaration', 'backend=lsp references: omit the declaration itself')
   .option('--depth <number>', 'mode=impact/tests: propagation depth 1–10 (impact default 2, tests default 5)')
@@ -1780,7 +1783,7 @@ program
   .option('--base <ref>', 'Git commit/ref used as the change-analysis baseline (default: HEAD)')
   .option('--deep-changes', 'Build an isolated temporary baseline index for resolved semantic edge comparison')
   .option('--json', 'Output structured exploration evidence as JSON')
-  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; directory?: string; language?: string[]; framework?: string[]; symbolType?: string[]; excludeType?: string[]; mode?: string; backend?: string; file?: string; line?: string; column?: string; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean; json?: boolean }) => {
+  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; directory?: string; language?: string[]; framework?: string[]; symbolType?: string[]; excludeType?: string[]; mode?: string; backend?: string; file?: string; line?: string; column?: string; endLine?: string; endColumn?: string; actionKind?: string[]; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean; json?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
 
     try {
@@ -1801,6 +1804,9 @@ program
       if (options.file !== undefined) args.file = options.file;
       if (options.line !== undefined) args.line = Number(options.line);
       if (options.column !== undefined) args.column = Number(options.column);
+      if (options.endLine !== undefined) args.endLine = Number(options.endLine);
+      if (options.endColumn !== undefined) args.endColumn = Number(options.endColumn);
+      if (options.actionKind !== undefined) args.actionKinds = options.actionKind;
       if (options.severity !== undefined) args.severity = Number(options.severity);
       if (options.excludeDeclaration) args.includeDeclaration = false;
       if (options.depth !== undefined) args.depth = Number(options.depth);
@@ -1850,17 +1856,21 @@ program
  *
  * Structured editing (phase 4): the same single edit flow the MCP `codegraph_edit` tool uses.
  * A preview (the default) writes nothing; `--apply` writes the files and refreshes the index.
- * Rename needs a language server from `.codegraph/lsp.json` (or CODEGRAPH_LSP_*); the other three
+ * Rename and code-action need a language server from `.codegraph/lsp.json` (or CODEGRAPH_LSP_*); the other three
  * operations are graph-native. Output is the same JSON contract as the MCP tool.
  */
 program
   .command('edit [symbol]')
-  .description('Structured symbol edit: rename, replace-body, insert-before, insert-after (previews unless --apply)')
+  .description('Structured edit: rename, code-action, replace-body, insert-before, insert-after (previews unless --apply)')
   .option('-p, --path <path>', 'Project path')
-  .option('--operation <operation>', 'rename, replace-body, insert-before, or insert-after', 'rename')
+  .option('--operation <operation>', 'rename, code-action, replace-body, insert-before, or insert-after', 'rename')
   .option('--file <file>', 'Exact project-relative file; pins the target when a name matches several definitions')
-  .option('--line <number>', 'rename only: 1-based line for a position-based rename')
-  .option('--column <number>', 'rename only: 0-based UTF-16 column (default 0)')
+  .option('--line <number>', 'rename/code-action: 1-based target line')
+  .option('--column <number>', 'rename/code-action: 0-based UTF-16 column (default 0)')
+  .option('--end-line <number>', 'code-action: optional 1-based range end line')
+  .option('--end-column <number>', 'code-action: optional 0-based UTF-16 range end column')
+  .option('--action-kind <kind...>', 'code-action: filter kinds such as quickfix or source.organizeImports')
+  .option('--action-index <number>', 'code-action: select a returned action (default 0)')
   .option('--new-name <name>', 'rename: the new symbol name')
   .option('--content <text>', 'replace-body/insert-*: the text to replace the body with, or to insert')
   .option('--content-file <file>', 'replace-body/insert-*: read the text from this file ("-" reads stdin)')
@@ -1869,7 +1879,8 @@ program
   .option('--expect-preview-hash <hash>', 'apply only: refuse to write unless the preview hash matches')
   .option('--operation-id <id>', 'Stable idempotency key from preview; reuse it for apply and retries')
   .action(async (symbol: string | undefined, options: {
-    path?: string; operation?: string; file?: string; line?: string; column?: string; newName?: string;
+    path?: string; operation?: string; file?: string; line?: string; column?: string; endLine?: string; endColumn?: string;
+    actionKind?: string[]; actionIndex?: string; newName?: string;
     content?: string; contentFile?: string; apply?: boolean; verbose?: boolean; expectPreviewHash?: string; operationId?: string;
   }) => {
     const projectPath = resolveProjectPath(options.path);
@@ -1885,6 +1896,10 @@ program
       if (options.file !== undefined) args.file = options.file;
       if (options.line !== undefined) args.line = Number(options.line);
       if (options.column !== undefined) args.column = Number(options.column);
+      if (options.endLine !== undefined) args.endLine = Number(options.endLine);
+      if (options.endColumn !== undefined) args.endColumn = Number(options.endColumn);
+      if (options.actionKind !== undefined) args.actionKinds = options.actionKind;
+      if (options.actionIndex !== undefined) args.actionIndex = Number(options.actionIndex);
       if (options.newName !== undefined) args.newName = options.newName;
       let content = options.content;
       if (options.contentFile !== undefined) {

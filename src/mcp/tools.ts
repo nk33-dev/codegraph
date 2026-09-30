@@ -2220,7 +2220,7 @@ export const tools: ToolDefinition[] = [
       properties: {
         mode: {
           type: 'string',
-          description: 'explore/source or JSON: definitions, references, symbols, callers, callees, diagnostics, impact, tests, status, text.',
+          description: 'explore/source, or a structured mode from the enum.',
           enum: ['explore', 'source', ...CODE_QUERY_MODES],
           default: 'explore',
         },

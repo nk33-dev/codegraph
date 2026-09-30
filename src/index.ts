@@ -2180,7 +2180,7 @@ export class CodeGraph {
    */
   async queryCodeWithBackend(request: CodeQueryRequest): Promise<CodeQueryResult> {
     const backend = request.backend ?? (request.mode === 'diagnostics' ? 'auto' : 'graph');
-    if (['text', 'callers', 'callees'].includes(request.mode) && backend !== 'graph') {
+    if (request.mode === 'text' && backend !== 'graph') {
       throw new Error(`${request.mode} mode only supports the graph backend`);
     }
     if (backend === 'graph') return this.queryCode(request);
@@ -2250,13 +2250,13 @@ export class CodeGraph {
   }
 
   /**
-   * Structured editing (phase 4): rename a symbol, replace a symbol's body, or insert code before or
-   * after a symbol.
+   * Structured editing (phase 4+): rename a symbol, apply a language-server code action, replace a
+   * symbol's body, or insert code before or after a symbol.
    *
    * The default is a **preview**: nothing is written unless the request passes `apply: true`, and
    * even then every file is re-verified against the bytes the preview was computed from. `rename`
-   * uses the project's language server (never a textual approximation); the other three operations
-   * are graph-native and need no server. The result carries the target, the per-file preview, a
+   * and `code-action` use the project's language server; the other three operations are graph-native
+   * and need no server. The result carries the target, the per-file preview, a
    * `previewHash` and — after a write — what was written and whether the index was refreshed.
    */
   async editCode(request: CodeEditRequest): Promise<CodeEditResult> {

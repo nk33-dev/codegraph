@@ -13,14 +13,14 @@ Codegraph reads an indexed local code graph. Its default MCP surface has two too
 
 - Call \`codegraph_explore\` first for indexed source or flows. Ask a question or name symbols/files; for a flow, name its endpoints. If the project has no \`.codegraph/\`, stop using Codegraph for it and use built-in tools instead — indexing is the user's decision, so do not run \`codegraph init\` yourself (you may mention it).
 - Default explore returns current, line-numbered source, flow evidence and blast radius. MCP exploration returns text only so clients receive the source. Treat displayed lines as already read. Gap/truncation markers mean omitted code; query the missing symbol or range before editing it. Use \`mode:"source"\` with file, startLine and limit for ranges.
-- Structured modes return versioned JSON for definitions, references, file symbols, diagnostics, impact, tests, status, and file text. Use \`mode:"text"\` for literal strings or configuration keys; Graph is the default backend, while diagnostics auto-routes to LSP. Ask for LSP explicitly (\`backend:"lsp"\`) when the graph answer is ambiguous, spans files by name alone, or you need type-accurate definitions/references.
+- Structured JSON modes cover definitions/types/implementations, references, symbols/hover/hierarchies, diagnostics/code-actions, impact/tests/status/text. Graph is the default; LSP-only modes route automatically. Ask for \`backend:"lsp"\` when compiler-accurate types, diagnostics, or fixes matter.
 - If an answer is empty or incomplete, call explore again with the uncovered exact names; an empty result reports the lexical matches it checked and may name indexed candidates to retry with.
 
 ## Editing
 
-- \`codegraph_edit\` supports rename, replace-body, insert-before, and insert-after. It resolves targets through the index and previews by default. Apply only when \`canApply:true\` and \`blockers\` is empty.
+- \`codegraph_edit\` supports rename, LSP code-action, replace-body, insert-before and insert-after; it previews by default. Code actions may apply text fixes such as imports, but refuse file operations and command-only actions. Apply only when \`canApply:true\` and \`blockers\` is empty.
 - Direct \`apply:true\` needs no IDs: it replans, verifies current bytes, and writes transactionally. For a reviewed two-step write, pass the preview's \`previewHash\` as \`expectPreviewHash\` and reuse its \`operationId\`; reuse that ID after a timeout to avoid a duplicate write.
-- Rename uses a configured language server and completes only AST-verified Graph references. Ambiguous, stale, or known unverified targets are refused.
+- Rename and code-action use a configured language server. Rename completes only AST-verified Graph references; code-action applies only reviewed text edits inside the project. Ambiguous, stale, or unsafe targets are refused.
 
 ## Boundaries
 

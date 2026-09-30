@@ -122,10 +122,10 @@ export function decideRoute(
   const requested = request.backend ?? 'graph';
   const family = availability.family;
 
-  if (request.mode === 'diagnostics') {
+  if (request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'type-definition' || request.mode === 'code-actions') {
     return {
       resolved: 'lsp',
-      reason: 'diagnostics exist only in language servers; the graph index has none',
+      reason: `${request.mode} is answered only by language servers; the graph index has no equivalent result`,
       unavailable: availability.available ? null : availability.reason,
       family,
     };
@@ -204,7 +204,9 @@ export function decideRoute(
 /** The language the query points at: a file qualifier takes precedence, otherwise the first node found in the index by name. */
 export function languageForQuery(cg: CodeGraph, request: CodeQueryRequest): Language | null {
   const root = cg.getProjectRoot();
-  const hint = (request.mode === 'symbols' || request.mode === 'diagnostics') ? request.file ?? request.query : request.file;
+  const hint = (request.mode === 'symbols' || request.mode === 'diagnostics' || request.mode === 'code-actions')
+    ? request.file ?? request.query
+    : request.file;
   if (hint) {
     const rel = normalizeToProjectRelative(root, hint);
     if (rel) {
@@ -422,6 +424,9 @@ export function projectRequest(request: CodeQueryRequest, source: CodeQuerySourc
     ...(source === 'graph' && request.checkFiles ? { checkFiles: true } : {}),
     ...(source === 'lsp' && request.line !== undefined ? { line: request.line } : {}),
     ...(source === 'lsp' && request.column !== undefined ? { column: request.column } : {}),
+    ...(source === 'lsp' && request.endLine !== undefined ? { endLine: request.endLine } : {}),
+    ...(source === 'lsp' && request.endColumn !== undefined ? { endColumn: request.endColumn } : {}),
+    ...(source === 'lsp' && request.actionKinds !== undefined ? { actionKinds: request.actionKinds } : {}),
     ...(source === 'lsp' && request.severity !== undefined ? { severity: request.severity } : {}),
     ...(source === 'lsp' && request.includeDeclaration !== undefined ? { includeDeclaration: request.includeDeclaration } : {}),
   };
@@ -468,7 +473,7 @@ export async function queryCodeRouted(
       lsp.warnings.push(error instanceof Error ? error.message : String(error));
     }
     // Only the language server can answer diagnostics: there is no graph version to fall back to, so return unavailable honestly.
-    if (request.mode === 'diagnostics') {
+    if (request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'type-definition' || request.mode === 'code-actions') {
       lsp.routing = { ...lsp.routing, requested, resolved: 'lsp', reason: decision.reason, fallback: null, families, sources: { graph: 0, lsp: lsp.page.total } };
       return lsp;
     }
