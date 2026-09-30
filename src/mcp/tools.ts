@@ -1146,12 +1146,10 @@ function numberSourceLines(slice: string, firstLineNumber: number): string {
  * truncation boundary (`handleExplore`) keys off to cut on whole file sections.
  */
 const FILE_SECTION_PREFIX = '**`';
-// Placeholder for codegraph_explore's "Found N symbols across M files." line.
-// The honest N/M can only be known after the final truncation drops trailing
-// sections (#1046), so the header is emitted as this sentinel and substituted
-// at the very end. This bracketed token never occurs in rendered source or a
-// file path, so the final string-replace can't collide.
-const SUMMARY_SENTINEL = '[[codegraph-explore-summary]]';
+// Placeholder for the answer block filled after final truncation.
+const ANSWER_SENTINEL = '[[codegraph-explore-answer]]';
+// Extra room for bounded key-file/key-symbol lists and capability caveats.
+const ANSWER_RESERVE = 1600;
 function fileSectionHeader(filePath: string, suffix: string): string {
   return suffix
     ? `${FILE_SECTION_PREFIX}${filePath}\`** — ${suffix}`
@@ -5518,7 +5516,10 @@ export class ToolHandler {
           if (suggestions.length === 3) break;
         }
       }
-      const guidance = [empty, '', 'Try an exact file path or basename, or a function/type name.',
+      const absenceStatus = queryIntent.existence || queryIntent.capability
+        ? ['**Answer**', '- Status: Not found in the current indexed project.', '- This does not prove the feature is absent; the index may be stale, incomplete, or the implementation may use a different name.', ''].join('\n')
+        : '';
+      const guidance = [absenceStatus, empty, '', 'Try an exact file path or basename, or a function/type name.',
         'Use `mode:"symbols"` with a file path for its definitions; use `mode:"status", checkFiles:true` to check index freshness.',
         ...(suggestions.length ? ['', 'Nearby indexed symbols:', ...suggestions] : [])].join('\n');
       // Still an explore call, so it is still recorded: an empty answer spends a
@@ -6435,7 +6436,7 @@ export class ToolHandler {
     const lines: string[] = [
       `**Exploration: ${query}**`,
       `**Index generation:** ${cg.getIndexVersion() ?? 'unknown'} (all symbols, line numbers, source slices, and trail edges below use this generation)`,
-      '',
+      ANSWER_SENTINEL,
       // Curated summary — filled in after the source loop (see below). We do NOT
       // report `subgraph.nodes.size` / `fileGroups.size` here: that's the raw
       // candidate gather, which a broad natural-language query inflates wildly
@@ -6722,9 +6723,11 @@ export class ToolHandler {
         ? ` No indexed file uniquely matches ${unresolvedPathSpans.map((sp) => `\`${sp}\``).join(', ')}.`.length
         : 0)
       + setAsideNote.length;
+    const summaryQuery = queryIntent.list || queryIntent.compare || queryIntent.capability || queryIntent.existence;
+    const answerReserve = summaryReserve + (summaryQuery ? ANSWER_RESERVE : 0);
     const epilogueFloor = Math.max(
       EXPLORE_FALLBACK_NOTES.lost.complete.length, EXPLORE_FALLBACK_NOTES.lost.trimmed.length,
-    ) + 2 + cliffPointerFloor + summaryReserve;
+    ) + 2 + cliffPointerFloor + answerReserve;
     // Absolute stop for the render loop. Reservations already fit the envelope, so
     // this only catches their bounded overshoot (the whole-file grace, an oversize
     // first cluster) — and catches it HERE, where a file can be skipped cleanly and
@@ -8924,7 +8927,7 @@ export class ToolHandler {
     // truncation (see end of method) — `filesIncluded` can over-count when the
     // hard ceiling drops trailing sections — so leave a sentinel here and fill it
     // in once the output is final.
-    lines[summaryLineIdx] = SUMMARY_SENTINEL;
+    lines[summaryLineIdx] = ANSWER_SENTINEL;
 
     // Add remaining files as references (from both relevant and peripheral files).
     // Small projects (per budget) skip this — the relevant story already fits
@@ -9010,9 +9013,9 @@ export class ToolHandler {
     // pointers by `fitExploreEpilogue`'s rules, then the budget note — and
     // emitted in document order.
     const roomFor = roomForLines;
-    // Less what the summary line will grow by when its sentinel is filled in.
+    // Less what the final answer block can grow by when its sentinel is filled in.
     let room = hardCeiling - (flow.text.length + lines.join('\n').length)
-      - Math.max(0, summaryReserve - SUMMARY_SENTINEL.length);
+      - Math.max(0, answerReserve - ANSWER_SENTINEL.length);
 
     const fitted = fitExploreEpilogue({
       room,
@@ -9147,7 +9150,41 @@ export class ToolHandler {
       summaryLine += ` No indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')}.`;
     }
     summaryLine += setAsideNote;
-    finalText = finalText.replace(SUMMARY_SENTINEL, summaryLine);
+    const evidenceStatus = incompleteFlow || flow.evidence?.status === 'partial'
+      ? 'Partially confirmed'
+      : (queryIntent.existence || queryIntent.capability
+        ? 'Found in indexed source; runtime support is not confirmed'
+        : 'Indexed evidence found');
+    const keyFiles = survivors.slice(0, 5);
+    const keySymbols = [...new Set(keyFiles.flatMap((filePath) =>
+      (fileGroups.get(filePath)?.nodes ?? [])
+        .filter((node) => node.kind !== 'import' && node.kind !== 'export')
+        .map((node) => node.name),
+    ))].slice(0, 8);
+    const answerLines = summaryQuery
+      ? [
+        '**Answer**',
+        `- Status: ${evidenceStatus} in the current indexed project.`,
+        `- Scope: ${summaryLine}`,
+        ...(keyFiles.length > 0 ? [`- Key files: ${keyFiles.map((filePath) => `\`${filePath}\``).join(', ')}.`] : []),
+        ...(keySymbols.length > 0 ? [`- Key symbols: ${keySymbols.map((name) => `\`${name}\``).join(', ')}.`] : []),
+        ...(queryIntent.existence || queryIntent.capability
+          ? ['- This is indexed-source evidence, not proof that the feature is fully supported at runtime or absent from unindexed code.']
+          : []),
+        ...(queryIntent.compare
+          ? ['- This call covers one indexed project; compare projects by making one call per projectPath.']
+          : []),
+      ].join('\n')
+      : summaryLine;
+    finalText = finalText.replace(ANSWER_SENTINEL, answerLines);
+    if (summaryQuery) {
+      const answerIndex = finalText.indexOf(answerLines);
+      if (answerIndex > 0) {
+        const beforeAnswer = finalText.slice(0, answerIndex).trim();
+        const afterAnswer = finalText.slice(answerIndex + answerLines.length).trim();
+        finalText = [answerLines, beforeAnswer, afterAnswer].filter(Boolean).join(String.fromCharCode(10, 10));
+      }
+    }
 
     // Emit the allocation diagnostic from the FINAL text, so per-file bytes and
     // shares account for the hard-ceiling truncation above (CG-4).

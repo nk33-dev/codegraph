@@ -26,6 +26,10 @@ export interface ExploreQueryIntent {
   direct: boolean;
   all: boolean;
   related: boolean;
+  list: boolean;
+  compare: boolean;
+  capability: boolean;
+  existence: boolean;
   /** Topical text that remains after structured intent and filler words are removed. */
   remainder: string;
 }
@@ -50,6 +54,10 @@ const INTENT_GROUPS = {
   direct: ['direct', 'directly', 'immediate', '直接'],
   all: ['all', 'every', 'each', 'any', 'both', '所有', '全部', '每个', '各个', '各自', '分别'],
   related: ['related', 'relevant', 'associated', '相关调用', '相关文件', '相关', '有关'],
+  list: ['list', 'enumerate', 'what are', 'which', '有哪些', '哪些', '列出', '清单'],
+  compare: ['compare', 'comparison', 'difference', 'differences', '对比', '比较', '差异', '区别'],
+  capability: ['capability', 'capabilities', 'support', 'supports', 'supported', 'feature', 'features', '能力', '支持', '功能'],
+  existence: ['whether', 'is there', 'do we have', 'does it', 'can it', '有没有', '是否', '能否', '能不能', '存在', '有无'],
 } as const;
 
 /** Remaining words connect the sentence without naming another code topic. */
@@ -202,6 +210,10 @@ export function parseQueryIntent(text: string): ExploreQueryIntent {
     direct: containsAny(text, INTENT_GROUPS.direct),
     all: containsAny(text, INTENT_GROUPS.all),
     related: containsAny(text, INTENT_GROUPS.related),
+    list: containsAny(text, INTENT_GROUPS.list),
+    compare: containsAny(text, INTENT_GROUPS.compare),
+    capability: containsAny(text, INTENT_GROUPS.capability),
+    existence: containsAny(text, INTENT_GROUPS.existence),
     remainder,
   };
 }

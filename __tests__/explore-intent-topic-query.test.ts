@@ -108,6 +108,32 @@ describe('codegraph_explore intent words', () => {
     }
   });
 
+  it('classifies list, comparison, capability, and existence questions', () => {
+    expect(parseQueryIntent('what capabilities does this tool support')).toMatchObject({
+      list: false,
+      capability: true,
+      existence: false,
+    });
+    expect(parseQueryIntent('compare the supported features')).toMatchObject({
+      compare: true,
+      capability: true,
+    });
+    expect(parseQueryIntent('列出有哪些 LSP 能力')).toMatchObject({
+      list: true,
+      capability: true,
+    });
+    expect(parseQueryIntent('有没有 workspace configuration')).toMatchObject({ existence: true });
+  });
+
+  it('front-loads a bounded answer for capability questions', async () => {
+    const result = await handler.execute('codegraph_explore', {
+      query: 'what capabilities does the tool support',
+    });
+    const output = result.content[0].text;
+    expect(output).toContain('**Answer**');
+    expect(output.indexOf('**Answer**')).toBeLessThan(output.indexOf('src/'));
+    expect(output).toContain('indexed project');
+  });
   it('treats a natural-language flow request as intent instead of missing symbol names', async () => {
     const intent = parseQueryIntent('查找 Word/PDF/Excel 导入流程');
     expect(intent).toMatchObject({ flow: true, remainder: 'Word PDF Excel 导入' });
