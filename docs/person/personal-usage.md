@@ -2,6 +2,8 @@
 
 本轮面向个人开发和使用，不复制官方的多平台 npm 发行流程。当前已发布的个人版是 `v1.6.0-personal.11` GitHub prerelease，交付 `.tgz`，不会发布到上游 npm scope，也不会自动替换这台机器上的全局 CodeGraph。
 
+`v1.6.0-personal.12` 已进入发布准备：本地只完成版本元数据、发行说明和快速验证；安装地址仍以 `.11` 为当前有效版本，直到同一提交的三平台 CI 与 `Personal Release` 成功创建新标签和资产。
+
 ## 开发时使用哪个入口
 
 ```powershell

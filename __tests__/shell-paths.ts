@@ -30,18 +30,44 @@ function firstExisting(candidates: (string | undefined)[]): string | null {
   return null;
 }
 
+function gitInstallRoots(): string[] {
+  const roots = new Set<string>();
+  for (const gitPath of commandPath('git')) {
+    const executableDir = path.dirname(gitPath);
+    const parent = path.dirname(executableDir);
+    const directoryName = path.basename(executableDir).toLowerCase();
+    if (directoryName === 'cmd' || directoryName === 'bin') roots.add(parent);
+    if (directoryName === 'bin' && path.basename(parent).toLowerCase() === 'mingw64') {
+      roots.add(path.dirname(parent));
+    }
+  }
+  return [...roots];
+}
+
+function isGitBash(candidate: string): boolean {
+  if (!fs.existsSync(candidate)) return false;
+  const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8', windowsHide: true });
+  return probe.status === 0 && /(?:msys|mingw)/i.test(probe.stdout);
+}
+
 /**
  * Git Bash (or `bash` on POSIX). Honors `CODEGRAPH_TEST_BASH`, then the default
  * Windows install path, then `PATH`. Returns null when no bash is installed.
  */
 export function resolveGitBash(): string | null {
-  return firstExisting([
+  const candidates = [
     process.env.CODEGRAPH_TEST_BASH,
     windows
       ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')
       : undefined,
+    ...(windows ? gitInstallRoots().flatMap((root) => [
+      path.join(root, 'bin', 'bash.exe'),
+      path.join(root, 'usr', 'bin', 'bash.exe'),
+    ]) : []),
     ...commandPath('bash'),
-  ]);
+  ];
+  if (!windows) return firstExisting(candidates);
+  return candidates.find((candidate): candidate is string => !!candidate && isGitBash(candidate)) ?? null;
 }
 
 /**

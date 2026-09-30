@@ -1,5 +1,24 @@
 # 个人版开发验证记录
 
+## 2026-09-30：四个 worktree 合并与 personal.12 发布准备
+
+### 合并与业务复核
+
+- 依次合入关系来源与调用点、启动入口与路径词排序、宽问句首答、LSP 语义查询与 Code Action；监听原因和 stale 恢复路径先作为独立基线提交。
+- `src/mcp/tools.ts` 的宽问句冲突暴露两项真实问题：首答替换会丢失低置信度、路径 pin 和同名文件提示；固定占位预算会与现有动态预算重复计费。合并后复用原动态预算，并把完整检索提示纳入首答 scope。
+- Blast radius 的关系明细最初对宽问句的多个高扇入根全部展开，挤掉核心源码并破坏跨调用去重预算。现在只对精确符号、限定名或行锚点目标展开，宽问句保留按文件聚合的紧凑摘要。
+- LSP 位置参数已扩展到类型定义、实现、hover、调用/类型层级和 Code Action；旧路由测试同步到新参数契约。Code Action 继续拒绝命令执行、项目外文件和文件创建/移动/删除。
+- Windows 测试辅助原先把 WSL `bash.exe` 误认成 Git Bash，导致路径中的反斜杠被吞掉。现在从 `git.exe` 推导非默认 Git for Windows 安装根，并校验 Bash 的 MSYS/MINGW 身份。
+
+### 验证
+
+- 四个功能域与交叉冲突面：15 个测试文件，202 项通过、1 项按既有条件跳过。
+- 关系明细预算修复：`explore-allocation-1500`、`explore-cross-call-dedup`、`explore-blast-radius` 共 54 项通过。
+- 发布准备 `npm run check:quick`：类型检查通过；`bundle-launcher` 与 `installer-targets` 共 252 项通过、13 项按既有平台条件跳过。
+- `npm run version:sync` 与 `npm run check:release-metadata` 通过，根包、lockfile 与 UI manifest 都是 `1.6.0-personal.12`。
+- `bundle-launcher` 定向测试发现产物陈旧后由测试全局准备自动执行 `build:ui`，3 项通过、3 项按平台条件跳过；未手工运行完整 `npm run build`、全量 `npm test`、隔离安装或打包。
+- 大范围受影响测试中的本仓库索引可选夹具仍报告 `LRUCache.get` fan-in 为 55，低于文档化的历史索引基线 500；该测试只在本机存在 `.codegraph/` 时运行，GitHub CI 的干净 checkout 会跳过。未把本机旧索引结果记为产品通过或失败，发布结论以同一提交三平台 CI 为准。
+
 ## 2026-09-30：前端入口与路径词检索收束
 
 ### 结论

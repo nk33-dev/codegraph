@@ -38,13 +38,13 @@ MCP 状态会同时报告索引 freshness 与当前服务构建身份；`tests` 
 
 ## 验证与发布
 
-当前已发布版本为 [v1.6.0-personal.11](releases/v1.6.0-personal.11.md)（2026-09-23 的 GitHub prerelease）；本轮**只做上游同步，没有准备新的发布版本**。发布结果和验证边界见发行说明与[开发验证记录](test-repairs.md)。
+当前已发布版本为 [v1.6.0-personal.11](releases/v1.6.0-personal.11.md)（2026-09-23 的 GitHub prerelease）。待发布版本 [v1.6.0-personal.12](releases/v1.6.0-personal.12.md) 已完成本地合并与定向验证，三平台 CI、隔离安装、打包、标签和 GitHub prerelease 仍待同一提交的远端工作流确认。
 
 个人版从 [GitHub Release 安装](personal-usage.md)，不通过上游 npm 包获得个人改动。`personal` 分支的同一提交通过三平台 CI 后，才由 `Personal Release` 在 GitHub runner 构建、隔离验证、打包并创建 prerelease；本机不承担发布构建和上传。
 
 ### 上游同步状态
 
-上游 **v1.6.1**（`f4ddf50`，113 个提交 / 247 个文件）已合入 `personal`，合并基线是 fork 点 `3ed73bc`。这是本 fork 的首次真正上游同步，重叠模块的取舍、迁移落点与回归覆盖见[维护流程](maintenance.md)的映射表与「迁移编号纪律」。合并结果只存在于本地提交，尚未推送，因此三平台 CI 与隔离安装结论一律记为**未验证**。
+上游 **v1.6.1**（`f4ddf50`，113 个提交 / 247 个文件）已合入 `personal`，合并基线是 fork 点 `3ed73bc`。这是本 fork 的首次真正上游同步，重叠模块的取舍、迁移落点与回归覆盖见[维护流程](maintenance.md)的映射表与「迁移编号纪律」。同步结果纳入 `v1.6.0-personal.12` 准备提交；三平台 CI 与隔离安装在推送前一律记为**未验证**。
 
 同步后个人功能保持不变，用户可见的新行为来自上游：按点名文件拒绝基于漂移索引作答、`status` 报告有界新鲜度、显式 `projectPath` 项目同样拿写锁并挂 watcher、direct 模式启用查询池、`codegraph ui`/`web` 在未设 `CODEGRAPH_UI` 时按上游策略被拒绝。索引库会被自动升到 schema 13，之后需要跑一次 `codegraph sync --upgrade-index` 完成提取版本 28 的重抽取。
 
