@@ -48,6 +48,24 @@ function checkMcpSurface(cli, cwd) {
   }
 }
 
+/**
+ * 比较两个路径是否指向同一处，解析符号链接后再比。
+ *
+ * macOS 上 `os.tmpdir()` 给的是 `/var/folders/...`，而 `/var` 是指向
+ * `/private/var` 的符号链接；Node 默认对主模块做 realpath，所以子进程里
+ * `__dirname` 推出的是 `/private/var/...`，脚本手里拼出来的却是 `/var/...`。
+ * 裸字符串比较必然不等，只有 macOS 会因此误报（升级路径 src/bin/codegraph.ts
+ * 早就用 fs.realpathSync 做同一类身份比较，这里漏了）。
+ */
+const samePath = (a, b) => {
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    // 路径不存在时 realpath 的结果没有意义，退回解析后的字符串比较。
+    return path.resolve(a) === path.resolve(b);
+  }
+};
+
 try {
   // 先构建，再把真实 tarball 装进独立 prefix，避免从工作区借用依赖或产物。
   const packed = parseNpmPackOutput(run([npm, 'pack', '--ignore-scripts', '--json', '--pack-destination', temporary]));
@@ -58,8 +76,13 @@ try {
   const installed = path.join(prefix, process.platform === 'win32' ? 'node_modules' : 'lib/node_modules', pkg.name);
   const cli = path.join(installed, 'dist/bin/codegraph.js');
   const info = JSON.parse(run([cli, 'doctor', '--json'], temporary));
-  if (info.packageRoot !== installed || info.distribution !== 'personal' || !info.build?.buildId) {
-    throw new Error('安装后运行来源不正确。');
+  // 分开报错：三合一断言在 macOS 上只说「来源不正确」，看不出错的是路径比较
+  // 还是 distribution/buildId。
+  if (!samePath(info.packageRoot, installed)) {
+    throw new Error(`安装后运行来源不正确：doctor 报 packageRoot=${info.packageRoot}，期望 ${installed}。`);
+  }
+  if (info.distribution !== 'personal' || !info.build?.buildId) {
+    throw new Error(`安装后运行来源不正确：distribution=${info.distribution}，buildId=${info.build?.buildId ?? 'null'}。`);
   }
   if (!run([cli, 'ui', '--help'], temporary).includes('codegraph ui')) throw new Error('安装包缺少 ui 命令。');
   checkMcpSurface(cli, temporary);
