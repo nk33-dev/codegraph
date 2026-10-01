@@ -275,5 +275,5 @@ export function lookupSymbolNodes(cg: SymbolLookupHost, symbol: string, options:
 
 /** One-line "kind at path:line" label used when disclosing an ambiguous query. */
 export function describeSymbolNode(node: Node): string {
-  return `${node.kind} ${symbolSelector(node)} (${node.language}) — ${node.filePath}:${node.startLine}`;
+  return `${node.kind} ${node.qualifiedName || node.name} (${node.language}) — ${node.filePath}:${node.startLine} [${symbolSelector(node)}]`;
 }

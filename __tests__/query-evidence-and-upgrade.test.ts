@@ -5,7 +5,7 @@ import * as path from 'path';
 import { CodeGraph, QueryBuilder, type DatabaseConnection, type CodeReference, type CodeSymbol } from '../src';
 import { ToolHandler } from '../src/mcp/tools';
 import { EXTRACTION_VERSION } from '../src/extraction/extraction-version';
-import { lookupSymbolNodes, matchesSymbol, rankSymbolNodes } from '../src/graph/symbol-lookup';
+import { lookupSymbolNodes, matchesSymbol, rankSymbolNodes, describeSymbolNode } from '../src/graph/symbol-lookup';
 import { IndexRelationSnapshot, formatIndexRelationChanges } from '../src/graph/index-relation-delta';
 import * as upgradePlanning from '../src/sync/upgrade-index';
 import { FAKE_SERVER } from './lsp-test-utils';
@@ -40,6 +40,11 @@ afterEach(async () => {
 });
 
 describe('symbol context and relationship evidence', () => {
+  it('keeps CLI definition labels compatible and appends a reusable selector', () => {
+    const node = cg.getNodesByName('router').find(node => node.filePath === 'a/router.ts')!;
+    expect(describeSymbolNode(node)).toBe('function router (typescript) — a/router.ts:1 [a/router.ts#router]');
+  });
+
   it('lists Vue candidates with reusable selectors and narrows exact files', async () => {
     const all = cg.queryCode({ mode: 'definitions', query: 'router' });
     const vue = (all.items as CodeSymbol[]).filter((node) => node.filePath.endsWith('.vue'));

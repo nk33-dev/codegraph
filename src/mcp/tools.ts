@@ -3241,9 +3241,13 @@ export class ToolHandler {
       }
     }
 
+    let pathEvidenceText = result.content[0]?.text ?? '';
     if (typeof cg.getIndexStatus === 'function' && typeof cg.getPendingReferenceCount === 'function') {
       const index = buildIndexBlock(cg, { checkFiles: false, includeStats: false });
-      const notices = [...indexTrustWarnings(index), ...frameworkRelationWarnings(cg, files)]
+      const trustMessages = [...indexTrustWarnings(index), ...frameworkRelationWarnings(cg, files)];
+      // Notice paths describe index health, not source returned by this query.
+      for (const message of trustMessages) pathEvidenceText = pathEvidenceText.replace(message, '');
+      const notices = trustMessages
         .filter(message => !result.content[0]?.text.includes(message));
       const [head, ...tail] = result.content;
       result = { ...result, structuredContent: { ...result.structuredContent, index } };
@@ -3316,7 +3320,7 @@ export class ToolHandler {
       // Project-relative POSIX path — the format both the watcher and every
       // codegraph response emit — matched as a whole path, so a pending
       // `src/app.ts` isn't "referenced" by a response that shows `src/app.tsx`.
-      if (mentionsPath(text, p.path)) inResponse.push(p);
+      if (mentionsPath(pathEvidenceText, p.path)) inResponse.push(p);
       else elsewhere.push(p);
     }
 

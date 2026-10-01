@@ -27,7 +27,7 @@ MCP 默认 `explore` 在 session 传输边界只返回完整文本，避免客�
 
 结构化 `references`、`callers`、`callees` 按源、目标、边类型和完整证据等级合并重复调用点，`site` 保留首个位置，重复关系的 `sites` 保留所有去重位置；`page.total` 统计关系而非原始边。`impact` 可直接用已索引的文件路径作为 `query`，保留 `rootId`，并先按距离再按生产代码、测试、fixture 和路径排序。定义与编辑歧义列表也把生产代码放在前面，保留全部候选；名称未精确匹配时提供最多三个建议，不自动改选目标。`diagnostics` 在 MCP、CLI 和 `queryCodeWithBackend` 未指定 `backend` 时使用 `auto`，未传 `file` 时从 `query` 解析路径；schema 不声明固定的后端默认值，以免客户端替用户注入 `graph`；显式选择后端仍按原契约校验。
 
-同名符号共用 `src/graph/symbol-lookup.ts` 的精确查找与排序：作用域、上下文文件、已索引 imports 关系和语言优先，其次是生成代码、测试/fixture 与稳定路径顺序。`contextFile`（CLI `--context-file`）提供排序上下文，保留全部候选；`file` 则严格过滤。`path/to/file#Owner.method` 与 `path/to/file#Owner::method` 可直接查询某文件中的限定符号，候选的 `selector` 可以原样复用。限定名按作用域边界匹配，模块路径必须连续且顺序一致。默认 explore 的精确同名查询列出最多八个候选及总数，结构化 definitions 可分页获取全部；`target` 单独报告目标是否存在，`count` 给出总数、`definitions` 最多附带五十个定义，因此零调用方不会与未知符号混淆。
+同名符号共用 `src/graph/symbol-lookup.ts` 的精确查找与排序：作用域、上下文文件、已索引 imports 关系和语言优先，其次是生成代码、测试/fixture 与稳定路径顺序。`contextFile`（CLI `--context-file`）提供排序上下文，保留全部候选；`file` 则严格过滤。`path/to/file#Owner.method` 与 `path/to/file#Owner::method` 可直接查询某文件中的限定符号，候选的 `selector` 可以原样复用。CLI 分组标题保留种类、限定名、语言与位置，并在末尾附带选择器。限定名按作用域边界匹配，模块路径必须连续且顺序一致。默认 explore 的精确同名查询列出最多八个候选及总数，结构化 definitions 可分页获取全部；`target` 单独报告目标是否存在，`count` 给出总数、`definitions` 最多附带五十个定义，因此零调用方不会与未知符号混淆。
 
 关系查询的 `evidence` 使用与 explore 相同的来源分级：`resolved-static` 表示语法或强解析，`inferred` 表示名称/结构推断，`runtime-candidate` 表示低置信度或未知来源候选。`source` 标明语法、解析器或 synthesizer，数字置信度保留在 `resolverConfidence`，不当作校准后的概率。`confidence` 为 `direct / inferred / unknown`；Tree-sitter 来源上的名称匹配仍属于推断。同端点但证据不同的关系分开返回。
 

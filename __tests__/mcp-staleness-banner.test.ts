@@ -76,7 +76,7 @@ describe('MCP staleness banner', () => {
     vi.restoreAllMocks();
     try { cg.unwatch(); } catch { /* ignore */ }
     try { cg.close(); } catch { /* ignore */ }
-    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   // Force watch-resource exhaustion at startup so the real watcher degrades
@@ -294,7 +294,7 @@ describe('MCP staleness banner — matching whole paths (#1968)', () => {
   afterEach(() => {
     try { cg.unwatch(); } catch { /* ignore */ }
     try { cg.close(); } catch { /* ignore */ }
-    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   async function pend(rel: string): Promise<void> {

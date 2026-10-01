@@ -19,7 +19,7 @@ Use \`codegraph_explore\` for indexed code and \`codegraph_edit\` for constraine
 ## Editing
 
 - Rename, LSP code-action, replace-body, insert-before and insert-after preview by default. Apply only when \`canApply:true\` and \`blockers\` is empty.
-- Direct \`apply:true\` replans and verifies bytes. Reviewed apply passes \`previewHash\` as \`expectPreviewHash\` and reuses \`operationId\`.
+- Direct \`apply:true\` needs no IDs; replans and verifies bytes. Reviewed apply passes \`previewHash\` as \`expectPreviewHash\` and reuses \`operationId\`.
 - Rename needs a configured language server and AST-verified references. Code-action applies text edits within the project; file operations and command execution are refused. Ambiguous/stale targets are refused.
 
 ## Boundaries
