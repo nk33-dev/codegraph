@@ -42,7 +42,7 @@ import { EXTENSION_MAP } from '../extraction/grammars';
 import { loadExtensionOverrides } from '../project-config';
 import {
   LspUnavailableError,
-  SERVER_WARMUP_HINT_MS,
+  LspIndexingError,
   type LspDiagnostic,
   type LspManager,
   type LspPosition,
@@ -523,6 +523,11 @@ function compileDbWarning(root: string): string | null {
 }
 
 function applyFailure(result: CodeQueryResult, error: unknown): void {
+  if (error instanceof LspIndexingError) {
+    result.status = 'indexing';
+    result.warnings.push(error.message);
+    return;
+  }
   if (error instanceof LspUnavailableError) {
     result.status = 'unavailable';
     result.warnings.push(`${error.message}. ${error.remedy}`);
@@ -761,6 +766,15 @@ export async function queryCodeLsp(
         const resolved = resolveCandidates(cg, context, request, file);
         result.ambiguous = resolved.ambiguous;
         if (resolved.note) result.warnings.push(resolved.note);
+        result.target = {
+          status: resolved.candidates.length > 0 ? 'found' : 'not_found',
+          count: resolved.total,
+          definitions: resolved.candidates
+            .map((candidate) => candidate.node)
+            .filter((node): node is Node => node !== null)
+            .slice(0, 50)
+            .map((node) => context.indexItem(path.resolve(root, node.filePath), node)),
+        };
         if (resolved.candidates.length === 0) {
           result.status = 'not_found';
           break;
@@ -853,10 +867,6 @@ export async function queryCodeLsp(
         }
         if (items.length === 0) {
           result.status = 'not_found';
-          const status = serverBlock(manager, family);
-          if (status?.startedAt && Date.now() - status.startedAt < SERVER_WARMUP_HINT_MS) {
-            result.warnings.push('The language server just started and may still be indexing; retrying the same query shortly may return results.');
-          }
         }
         if (sawExternal) {
           result.warnings.push('Results include locations outside the project (standard library, dependencies, or virtual-document URIs); those are absolute paths or URIs with no node in the index.');
@@ -877,6 +887,15 @@ export async function queryCodeLsp(
         const resolved = resolveCandidates(cg, context, request, file);
         result.ambiguous = resolved.ambiguous;
         if (resolved.note) result.warnings.push(resolved.note);
+        result.target = {
+          status: resolved.candidates.length > 0 ? 'found' : 'not_found',
+          count: resolved.total,
+          definitions: resolved.candidates
+            .map((candidate) => candidate.node)
+            .filter((node): node is Node => node !== null)
+            .slice(0, 50)
+            .map((node) => context.indexItem(path.resolve(root, node.filePath), node)),
+        };
         const items: LspSymbolItem[] = [];
         const seen = new Set<string>();
         for (const candidate of resolved.candidates) {
@@ -913,7 +932,10 @@ export async function queryCodeLsp(
         }
         result.page.total = items.length;
         result.items = items.slice(offset, offset + limit);
-        if (items.length === 0) result.status = 'not_found';
+        if (items.length === 0 && resolved.candidates.length === 0) result.status = 'not_found';
+        if (items.length === 0 && resolved.candidates.length > 0) {
+          result.warnings.push(`Target exists; no indexed ${request.mode} were returned by the language server.`);
+        }
         break;
       }
 
@@ -975,7 +997,10 @@ export async function queryCodeLsp(
 
   result.lsp = buildLspBlock(manager, family, false);
   if (result.lsp.server?.indexing) {
-    result.warnings.push('The language server is still indexing; results may be incomplete. Retry this query after indexing finishes.');
+    if (result.items.length === 0 && (result.status === 'not_found' || result.status === 'ok')) result.status = 'indexing';
+    result.warnings.push('The language server is still indexing; results may be incomplete. ' +
+      (result.items.length === 0 ? 'An empty result is provisional. ' : '') +
+      'Retry this query after indexing finishes.');
   }
   result.page.nextOffset = offset + result.items.length < result.page.total ? offset + result.items.length : null;
   result.routing.families = family ? [family] : [];

@@ -2,6 +2,7 @@ import { Node, Edge, ExtractionResult, ExtractionError, UnresolvedReference, Lan
 import { generateNodeId } from './tree-sitter-helpers';
 import { TreeSitterExtractor } from './tree-sitter';
 import { isLanguageSupported } from './grammars';
+import { extractVueScriptBlocks, type VueScriptBlock } from './vue-script-blocks';
 
 /**
  * Vue built-in components — skipped so a `<Transition>` / `<KeepAlive>` in the
@@ -59,7 +60,7 @@ export class VueExtractor {
       const componentNode = this.createComponentNode();
 
       // Extract and process script blocks
-      const scriptBlocks = this.extractScriptBlocks();
+      const scriptBlocks = extractVueScriptBlocks(this.source);
 
       for (const block of scriptBlocks) {
         this.processScriptBlock(block, componentNode.id);
@@ -115,63 +116,9 @@ export class VueExtractor {
   }
 
   /**
-   * Extract <script> and <script setup> blocks from the Vue source
-   */
-  private extractScriptBlocks(): Array<{
-    content: string;
-    startLine: number;
-    isSetup: boolean;
-    isTypeScript: boolean;
-  }> {
-    const blocks: Array<{
-      content: string;
-      startLine: number;
-      isSetup: boolean;
-      isTypeScript: boolean;
-    }> = [];
-
-    const scriptRegex = /<script(\s[^>]*)?>(?<content>[\s\S]*?)<\/script>/g;
-    let match;
-
-    while ((match = scriptRegex.exec(this.source)) !== null) {
-      const attrs = match[1] || '';
-      const content = match.groups?.content || match[2] || '';
-
-      // Detect TypeScript from lang attribute
-      const isTypeScript = /lang\s*=\s*["'](ts|typescript)["']/.test(attrs);
-
-      // Detect <script setup>
-      const isSetup = /\bsetup\b/.test(attrs);
-
-      // Calculate the 0-indexed line where the content begins. The content
-      // starts right after the opening tag's `>` — its leading `\n` is part
-      // of the content, so relative line 1 sits ON the tag's closing line
-      // (adding 1 here double-counted the embedded newline and shifted every
-      // script-block symbol down a line).
-      const beforeScript = this.source.substring(0, match.index);
-      const scriptTagLine = (beforeScript.match(/\n/g) || []).length;
-      const openingTag = match[0].substring(0, match[0].indexOf('>') + 1);
-      const openingTagLines = (openingTag.match(/\n/g) || []).length;
-      const contentStartLine = scriptTagLine + openingTagLines; // 0-indexed line
-
-      blocks.push({
-        content,
-        startLine: contentStartLine,
-        isSetup,
-        isTypeScript,
-      });
-    }
-
-    return blocks;
-  }
-
-  /**
    * Process a script block by delegating to TreeSitterExtractor
    */
-  private processScriptBlock(
-    block: { content: string; startLine: number; isSetup: boolean; isTypeScript: boolean },
-    componentNodeId: string
-  ): void {
+  private processScriptBlock(block: VueScriptBlock, componentNodeId: string): void {
     const scriptLanguage: Language = block.isTypeScript ? 'typescript' : 'javascript';
 
     // Check if the script language parser is available

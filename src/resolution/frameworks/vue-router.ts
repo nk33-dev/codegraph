@@ -64,6 +64,7 @@ import {
   type RouteTable,
 } from './expo-router';
 import { destinationsForHref } from './nextjs';
+import { bindingInitCallee } from '../store-binding';
 
 const ROUTE_LANGUAGES: readonly Language[] = ['typescript', 'javascript', 'vue'];
 
@@ -243,6 +244,27 @@ export function vueNavVerb(name: string): string | null {
   return dot < 0 ? name : name.slice(dot + 1);
 }
 
+/** The receiver names Vue's own documentation uses, which a file need not prove. */
+const CONVENTIONAL_RECEIVERS = new Set(['router', '$router']);
+
+/**
+ * `<receiver>.push` / `.replace`, whatever the receiver is called.
+ *
+ * Wider than {@link NAV_CALL}: `router.push` is the only receiver the idiom
+ * guarantees, and a project is free to hold the same handle under any name —
+ * `const nav = useRouter()`. `resolve()` admits a foreign receiver only after
+ * {@link bindingInitCallee} proves the file bound it to `useRouter`; an array's
+ * `push` carrying a string that happens to name a route must stay unresolved.
+ */
+const NAV_METHOD_CALL = /^([A-Za-z_$][\w$]*)\.(push|replace)$/;
+
+/** The receiver and verb of a navigation call, or null when the name is not one. */
+function navCallOf(name: string): { receiver: string | null; verb: string } | null {
+  if (name === 'navigateTo') return { receiver: null, verb: 'navigateTo' };
+  const match = NAV_METHOD_CALL.exec(name);
+  return match ? { receiver: match[1]!, verb: match[2]! } : null;
+}
+
 /** The route name in a `{ name: 'login' }` destination, or null for anything else. */
 export function routeNameInExpression(expr: string): string | null {
   const args = expr.trim();
@@ -356,9 +378,20 @@ export const vueRouterResolver: FrameworkResolver = {
         : null;
     }
 
-    const verb = vueNavVerb(ref.referenceName);
-    if (!verb) return null;
+    const call = navCallOf(ref.referenceName);
+    if (!call) return null;
     if (!ROUTE_LANGUAGES.includes(ref.language)) return null;
+    // A foreign receiver is the router only if this call site's binding says
+    // so — a file-wide one is not enough, since a parameter of the same name
+    // shadows it.
+    if (
+      call.receiver !== null &&
+      !CONVENTIONAL_RECEIVERS.has(call.receiver) &&
+      bindingInitCallee(ref, context, call.receiver) !== 'useRouter'
+    ) {
+      return null;
+    }
+    const verb = call.verb;
     const routes = routesForFile(vueRouteTable(context), ref.filePath);
     if (!routes || routes.exact.size === 0) return null;
     const lines = context.getFileLines?.(ref.filePath) ?? context.readFile(ref.filePath)?.split(/\r?\n/) ?? null;

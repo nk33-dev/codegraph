@@ -141,4 +141,11 @@ describe('codegraph_explore — 意图词收束', () => {
     expect(files.some((f) => f.endsWith('updater.ts'))).toBe(true);
     expect(files.some((f) => /runner\.ts$/.test(f))).toBe(true);
   });
+
+  it('只列主链路时折叠旁支和源码', async () => {
+    const text = await explore('normalizeVersion 和 runUpgrade 的主链路，只列主链路');
+    expect(text).toContain('**Primary call chain only**');
+    expect(text).not.toContain('**Source Code**');
+    expect(text).toContain('expand: true');
+  });
 });

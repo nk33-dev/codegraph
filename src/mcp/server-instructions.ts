@@ -12,14 +12,15 @@ Codegraph reads an indexed local code graph. Its default MCP surface has two too
 ## How to use
 
 - Call \`codegraph_explore\` first for indexed source or flows. Ask a question or name symbols/files; for a flow, name its endpoints. If the project has no \`.codegraph/\`, stop using Codegraph for it and use built-in tools instead — indexing is the user's decision, so do not run \`codegraph init\` yourself (you may mention it).
-- Default explore returns current, line-numbered source, flow evidence and blast radius. MCP exploration returns text only so clients receive the source. Treat displayed lines as already read. Gap/truncation markers mean omitted code; query the missing symbol or range before editing it. Use \`mode:"source"\` with file, startLine and limit for ranges.
-- Structured JSON modes cover definitions/types/implementations, references, symbols/hover/hierarchies, diagnostics/code-actions, impact/tests/status/text. Graph is the default; LSP-only modes route automatically. Ask for \`backend:"lsp"\` when compiler-accurate types, diagnostics, or fixes matter.
+- Default explore returns current source, flow evidence and blast radius. “Only the main/primary call chain” collapses side branches/source; pass \`expand:true\` to open them. Treat displayed lines as already read. Gaps: query the missing symbol or range before editing it.
+- JSON modes cover definitions, references, symbols, diagnostics, LSP actions, impact, tests, status and text. Omit \`backend\` for auto Graph/LSP; position queries use \`file\` + 1-based \`line\` and optional 0-based \`column\`. Invalid combinations return a correction.
+- LSP cold starts wait for indexing where possible and mark provisional empty results as indexing. An exact target with zero callers/callees is distinct from no target.
 - If an answer is empty or incomplete, call explore again with the uncovered exact names; an empty result reports the lexical matches it checked and may name indexed candidates to retry with.
 
 ## Editing
 
 - \`codegraph_edit\` supports rename, LSP code-action, replace-body, insert-before and insert-after; it previews by default. Code actions may apply text fixes such as imports, but refuse file operations and command-only actions. Apply only when \`canApply:true\` and \`blockers\` is empty.
-- Direct \`apply:true\` needs no IDs: it replans, verifies current bytes, and writes transactionally. For a reviewed two-step write, pass the preview's \`previewHash\` as \`expectPreviewHash\` and reuse its \`operationId\`; reuse that ID after a timeout to avoid a duplicate write.
+- Direct \`apply:true\` replans and verifies current bytes; reviewed apply passes the preview's \`previewHash\` as \`expectPreviewHash\` and reuses \`operationId\`.
 - Rename and code-action use a configured language server. Rename completes only AST-verified Graph references; code-action applies only reviewed text edits inside the project. Ambiguous, stale, or unsafe targets are refused.
 
 ## Boundaries

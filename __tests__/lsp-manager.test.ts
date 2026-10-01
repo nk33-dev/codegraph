@@ -41,6 +41,16 @@ afterEach(async () => {
 });
 
 describe('LSP manager: lifecycle', () => {
+  it('waits for indexing before sending the first semantic request', async () => {
+    const project = makeProject({ 'a.ts': FILE_CONTENT }, { serverArgs: ['--indexing-for', '200'] });
+    const manager = makeManager(project);
+    const result = await manager.definition(filePath(project), { line: 0, character: 13 }, 'typescript');
+    expect(result.items.length).toBeGreaterThan(0);
+    const log = project.readLog();
+    const ready = log.findIndex((event) => event.event === 'index-ready');
+    expect(ready).toBeGreaterThanOrEqual(0);
+    expect(log.findIndex((event) => event.method === 'textDocument/definition')).toBeGreaterThan(ready);
+  });
   it('超过空闲阈值的慢查询不会被清理，完成后才计算空闲时间', async () => {
     const project = makeProject({ 'a.ts': FILE_CONTENT }, {
       serverArgs: ['--slow-definition', '400'], config: { idleTimeoutMs: 100 },

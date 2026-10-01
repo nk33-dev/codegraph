@@ -78,6 +78,46 @@ export interface ResolvedRef {
 }
 
 /**
+ * Metadata marking a resolution whose target is the reference's own node.
+ *
+ * Vue's compiler macros (`defineProps`), Nuxt's auto-imports (`useRouter`) and
+ * its virtual modules (`#imports`) come from the toolchain: the repo declares
+ * no symbol for them, so there is nothing in the graph to point at. Resolving
+ * them to the node that mentions them consumes the reference, which keeps it
+ * out of the failed-lookup queue retried on every sync, without inventing a
+ * relation the source does not contain.
+ */
+export const SELF_RESOLVED_METADATA_KEY = 'selfResolved';
+export const SELF_RESOLVED_BUILTIN = 'framework-builtin';
+
+/**
+ * A resolution for a framework built-in: the reference is consumed, no target
+ * is named. `createEdges` in `resolution/index.ts` drops the edge this would
+ * otherwise draw, since a symbol pointing at itself reads as "this calls
+ * itself" in callers and callees.
+ *
+ * Pass a sub-0.9 `confidence` when the repo may define the same name itself.
+ * The strategy loop takes the first result at 0.9 or above and stops, but
+ * keeps a lower one as a candidate, so import and name resolution get to beat
+ * it; the candidate is used only if nothing else resolved. The reference is
+ * consumed either way.
+ */
+export function selfResolvedBuiltin(ref: UnresolvedRef, confidence = 1.0): ResolvedRef {
+  return {
+    original: ref,
+    targetNodeId: ref.fromNodeId,
+    confidence,
+    resolvedBy: 'framework',
+    metadata: { [SELF_RESOLVED_METADATA_KEY]: SELF_RESOLVED_BUILTIN },
+  };
+}
+
+/** True for a resolution that consumed the reference without naming a target. */
+export function isSelfResolvedBuiltin(ref: ResolvedRef): boolean {
+  return ref.metadata?.[SELF_RESOLVED_METADATA_KEY] === SELF_RESOLVED_BUILTIN;
+}
+
+/**
  * Result of resolution attempt
  */
 export interface ResolutionResult {

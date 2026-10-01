@@ -176,7 +176,11 @@ Each of these cost real debugging time; they are not hypothetical.
    `frameworks/object-literal.ts`.
 5. **A receiver is required for a generic verb.** `push` and `replace` are two
    of the most common method names in JavaScript; claiming a bare one puts every
-   `paths.push('/tmp/x')` one string-match away from a route.
+   `paths.push('/tmp/x')` one string-match away from a route. A receiver other
+   than the conventional `router` / `$router` is not enough on its own either:
+   `vue-router.ts` proves it by asking `store-binding` what `const nav = …` was
+   initialized from, in the innermost scope at the call site, so a parameter of
+   the same name shadows the handle and claims nothing.
 6. **One component can be several screens.** A listing rendered at `/`,
    `/search/:keyword` and `/page/:n` is one component and three addresses;
    `screenOfComponent` maps a component to **every** route it serves, and
@@ -210,6 +214,26 @@ Each of these cost real debugging time; they are not hypothetical.
    per file-count for exactly this reason — an earlier version cached the empty
    pre-index answer and every framework whose dependency lived one directory
    down stayed undetected.
+12. **Registration order is priority, and the first claim at 0.9 ends the
+   search.** `FRAMEWORK_RESOLVERS` is an array and `resolution/index.ts` takes
+   the first result at confidence ≥ 0.9, so two resolvers that both claim a
+   name resolve it by array position rather than by specificity. Nuxt's
+   `navigateTo` is an auto-import in `frameworks/vue.ts` **and** a navigation
+   verb in `frameworks/vue-router.ts`; with `vueResolver` first it answered at
+   1.0 and broke the loop, and the `navigates` edge was never drawn — the verb
+   read as supported and was silently dead. `vueRouterResolver` now runs first,
+   which is safe only because it declines every non-`calls` reference.
+13. **A built-in has nothing to point at — consume the reference, draw
+   nothing.** `defineProps` and Nuxt's `useRouter` are provided by the
+   toolchain, so resolving them to the node that mentions them keeps the
+   reference out of the failed-lookup queue, but the edge it produces points
+   the symbol at itself and reads as "this calls itself" in callers/callees.
+   `selfResolvedBuiltin` (`resolution/types.ts`) marks these and `createEdges`
+   drops them — not a blanket `source === target` skip, which would eat genuine
+   recursion. Resolve below 0.9 when the repo may define the same name itself,
+   so import and name resolution outrank the built-in instead of being
+   shadowed. Svelte (`frameworks/svelte.ts`) and Astro still draw the
+   self-edge; the same marker applies there.
 
 ---
 

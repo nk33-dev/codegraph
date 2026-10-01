@@ -13,6 +13,7 @@
  *   --pull-diagnostics         declare diagnosticProvider and answer textDocument/diagnostic
  *   --push-diagnostics         publishDiagnostics on didOpen/didChange
  *   --slow-init <ms>           delay the initialize response
+ *   --indexing-for <ms>        report indexing progress after initialization
  *   --slow-definition <ms>     delay the definition response (timeout tests)
  *   --crash-on <method>        exit immediately on that method (simulated crash)
  *   --crash-after-init         exit right after initialized
@@ -49,6 +50,7 @@ const logFile = opt('--log', null);
 const pullDiagnostics = flag('--pull-diagnostics');
 const pushDiagnostics = flag('--push-diagnostics');
 const slowInitMs = Number(opt('--slow-init', '0'));
+const indexingMs = Number(opt('--indexing-for', '0'));
 const slowDefinitionMs = Number(opt('--slow-definition', '0'));
 const crashOn = opt('--crash-on', null);
 const crashAfterInit = flag('--crash-after-init');
@@ -276,10 +278,16 @@ function handle(message) {
           },
         };
       }
-      const reply = () => result(id, {
-        capabilities,
-        serverInfo: { name: 'fake-lsp', version: '1.0.0' },
-      });
+      const reply = () => {
+        if (indexingMs > 0) {
+          notify('$/progress', { token: 'indexing', value: { kind: 'begin', title: 'Indexing' } });
+          setTimeout(() => {
+            log({ event: 'index-ready' });
+            notify('$/progress', { token: 'indexing', value: { kind: 'end' } });
+          }, indexingMs);
+        }
+        result(id, { capabilities, serverInfo: { name: 'fake-lsp', version: '1.0.0' } });
+      };
       if (slowInitMs > 0) setTimeout(reply, slowInitMs);
       else reply();
       return;

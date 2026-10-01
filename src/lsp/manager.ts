@@ -187,6 +187,13 @@ export class LspUnavailableError extends Error {
   }
 }
 
+export class LspIndexingError extends Error {
+  constructor(readonly family: LspFamily, readonly timeoutMs: number) {
+    super(`The ${family} language server is still indexing after ${timeoutMs}ms; no absence finding is available yet.`);
+    this.name = 'LspIndexingError';
+  }
+}
+
 /** Empty results within this window after startup are treated as "may still be indexing" and retried once. */
 const WARMUP_RETRY_WINDOW_MS = 60_000;
 /** Longest polling wait when indexing is waited on forcefully (more conservative than warmupTimeoutMs, to avoid long blocking). */
@@ -953,19 +960,21 @@ export class LspManager {
       textDocument: { uri: pathToUri(filePath) }, position,
     }, normalizeHierarchyItems);
     const items: LspHierarchyItem[] = [];
+    let retried = prepared.retried;
     for (const item of prepared.items) {
-      const response = await this.request(
+      const response = await this.requestWithWarmupRetry(
         entry,
         direction === 'incoming' ? 'callHierarchy/incomingCalls' : 'callHierarchy/outgoingCalls',
         { item },
+        (value) => Array.isArray(value) ? value : [],
       );
-      if (!Array.isArray(response)) continue;
-      for (const relation of response) {
+      retried ||= response.retried;
+      for (const relation of response.items) {
         if (!isRecord(relation)) continue;
         items.push(...normalizeHierarchyItems([direction === 'incoming' ? relation.from : relation.to]));
       }
     }
-    return { items, retried: prepared.retried };
+    return { items, retried };
   }
 
   async typeHierarchy(
@@ -1200,6 +1209,7 @@ export class LspManager {
           return { items, source: 'pull' };
         }
       } catch (err) {
+        if (err instanceof LspIndexingError) throw err;
         // Unsupported/protocol errors all degrade to waiting for a push; one query is not turned into a failure.
         lspDebug(`${entry.family}: pull diagnostics unavailable (${err instanceof Error ? err.message : String(err)}); waiting for publishDiagnostics`);
       }
@@ -1872,7 +1882,10 @@ export class LspManager {
     const timeoutMs = force
       ? Math.min(this.config.warmupTimeoutMs, FORCED_WARMUP_CAP_MS)
       : this.config.warmupTimeoutMs;
-    if (timeoutMs <= 0) return;
+    if (timeoutMs <= 0) {
+      if (this.isIndexing(entry)) throw new LspIndexingError(entry.family, timeoutMs);
+      return;
+    }
     const settled = (): boolean => {
       if (entry.quiescent === true) return true;
       if (this.isIndexing(entry)) return false;
@@ -1904,7 +1917,7 @@ export class LspManager {
       }
       if (!woke && entry.connection?.isClosed) return;
     }
-    lspDebug(`${entry.family}: still indexing after ${timeoutMs}ms; issuing the request anyway`);
+    if (this.isIndexing(entry)) throw new LspIndexingError(entry.family, timeoutMs);
   }
 
   private ensureIdleTimer(): void {

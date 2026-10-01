@@ -1,4 +1,4 @@
-# 索引状态、局部刷新与生成版本
+# 索引状态、局部刷新与内容标记
 
 ## 当前契约
 
@@ -7,7 +7,7 @@
 - 结构化查询的 `index` 带有 `freshness` 和 `freshnessReason`：`current` 表示没有已知漂移（未扫描文件时不保证磁盘一致），`syncing` 表示索引任务或待处理文件/引用未完成，`stale` 表示提交、工作区文件已漂移或索引任务未成功完成，`degraded` 表示 watcher 已停止。原始 `state` 即使为 `complete`，`laggingFileCount` 非零且无待处理队列也会标成 `stale`；这些字段只是风险摘要，按文件编辑仍以磁盘内容核验为准。
 - `codegraph refresh <file>` 与 `CodeGraph.refresh()` 只刷新指定文件；普通正文变更保持 `file` 范围，接口、导出、路由等结构变更扩大到 `related`，项目配置变更使用 `project` 范围。
 - 文件 watcher 继续使用尾沿防抖，把连续保存合并成一次同步。局部刷新不会绕过已有 writer lock 或引用解析流程。
-- 每次成功取得写锁的索引任务生成一个 `index_generation` 版本。结构化响应的状态块以及 explore/node 的符号、源码和调用链都声明该版本；文件漂移时禁止按旧行号切当前源码，改为整文件或省略正文。
+- 每次成功取得写锁的索引任务有独立 task ID；对外结果使用由索引文件内容、节点/边计数和提取版本计算的稳定 content marker。无变更同步不会改变 marker，内容或提取结果改变才会改变它。结构化响应的状态块以及 explore/node 的符号、源码和调用链都声明该 marker；文件漂移时禁止按旧行号切当前源码，改为整文件或省略正文。
 - `watching: false` 必须带上原因：`watchPolicy` 与 `watchPolicyReason` 只在未监听时出现，取值为 `disabled-env`（`CODEGRAPH_NO_WATCH=1`）、`disabled-wsl`（WSL2 `/mnt/`，判定见 `src/sync/watch-policy.ts`）、`start-failed`（watcher 起不来）、`disabled-lock`（别的 CodeGraph 进程持写锁）、`unwatched-projectPath`（只读、`--no-watch`，或一次性 CLI/库 handler）、`never-started`（尚未启动）。原因记录在同一 `CodeGraph` 实例上；环境判定由 `watchDisabledPolicy()` 单点给出，写锁判定由 `src/mcp/project-lifecycle.ts` 的 `activate()` 在握手前给出。
 - 结构化 `warnings`、`codegraph_status` 的 `**Watch:**` 行和 explore 文本横幅共用 `watchInactiveWarning()` 一句文案。`disabled-lock` 不等于索引会变旧：持锁进程仍在同步，本会话在其退出后接管，因此这一条只说“本会话未监听、由对方维护”，不提示 `codegraph sync`——否则会引导 agent 去和持锁进程抢写；其余策略才明确要求手工同步。没有 project lifecycle 的一次性 handler 不在文本响应里重复这条（结构化状态块仍然报告）。
 - explore/node 的文件漂移提示按是否真在监听改写结尾句（`staleRecoveryNote()`），不再无条件承诺改动“会在下次索引同步时自动被拾取”。

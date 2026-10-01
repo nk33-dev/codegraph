@@ -97,12 +97,11 @@ Defined in `src/types.ts`. Both extractors and resolvers must use these exact st
 `src/installer/` is the entry point for `codegraph install` (and the bare `codegraph`/`npx @colbymchenry/codegraph` invocation). Architecture:
 
 - `targets/registry.ts` lists every supported agent.
-- `targets/types.ts` defines the `AgentTarget` interface — adding a 5th agent (Continue, Zed, Windsurf…) is **one new file in `targets/` + one entry in `registry.ts`**. Each target owns its config-file location and MCP-server JSON/TOML/JSONC writing. (Targets no longer write an instructions file — see below.)
-- Current targets: `claude.ts`, `cursor.ts`, `codex.ts`, `opencode.ts`.
+- `targets/types.ts` defines the `AgentTarget` interface. Each target owns its config-file location, MCP-server JSON/TOML/JSONC writing and supported instruction surfaces. The registry lists the supported agents.
 - `targets/toml.ts` is a hand-rolled TOML serializer scoped to `[mcp_servers.codegraph]` (used by Codex). Sibling tables and `[[array_of_tables]]` are preserved verbatim. No new dependency.
 - opencode reads `opencode.jsonc` by default; the installer prefers existing `.jsonc`, falls back to `.json`, and creates `.jsonc` for greenfield installs. Edits are surgical via `jsonc-parser` so user comments and formatting survive install/re-install/uninstall round-trips. The MCP entry is OpenCode 2's native `mcp.servers.codegraph` with `disabled: false` and `codemode: false` (so `codegraph_explore` stays on the native tool list); a pre-#1698 `mcp.codegraph` + `enabled` entry is migrated on re-install and removed by uninstall.
-- `instructions-template.ts` no longer holds an instructions body — it exports only the `<!-- CODEGRAPH_START -->`/`<!-- CODEGRAPH_END -->` markers. The installer **stopped writing** a `## CodeGraph` block into each agent's instructions file (`CLAUDE.md` / `~/.codex/AGENTS.md` / `~/.config/opencode/AGENTS.md` / `~/.gemini/GEMINI.md` / `.cursor/rules/codegraph.mdc` / Kiro steering doc) because it duplicated the MCP `initialize` instructions verbatim (issue #529). Each target's `install` (self-heal on upgrade) and `uninstall` use the markers to **strip** a block a previous install left behind. `server-instructions.ts` is the single source of truth for agent-facing guidance.
-- All installer changes need matching coverage in `__tests__/installer-targets.test.ts` — there are ~47 parameterized contract tests covering install idempotency, sibling preservation, uninstall reverses install, byte-equal re-runs returning `unchanged`, and partial-state recovery for Codex.
+- `instructions-template.ts` holds the short marker-fenced block written to supported agent instruction files. It carries entry points and query-selection rules for subagents and clients that do not receive MCP initialization instructions. `install --refresh` replaces existing blocks in configured agents while preserving user content and permission choices; full MCP guidance lives in `server-instructions.ts`.
+- All installer changes need matching coverage in `__tests__/installer-targets.test.ts`, including stale-block refresh, user-content preservation and repeated installs returning `unchanged`.
 
 ### Cursor MCP working-directory quirk
 
@@ -110,13 +109,13 @@ Cursor launches MCP subprocesses with the wrong cwd and doesn't pass `rootUri` i
 
 ### MCP server instructions
 
-`src/mcp/server-instructions.ts` is sent back to the agent in the MCP `initialize` response. This is the *first* thing every agent sees about how to use the tools, and as of issue #529 it is the **single source of truth** for agent-facing tool guidance — the installer no longer writes a duplicate `## CodeGraph` instructions block into `CLAUDE.md` / `AGENTS.md` / `.cursor/rules/codegraph.mdc`. Edit tool guidance here and nowhere else.
+`src/mcp/server-instructions.ts` provides the full guidance in the MCP `initialize` response; parameter contracts live in tool schemas. Keep the installer block short and consistent with this guidance. Existing clients need to restart their MCP connection to load updated initialization instructions.
 
 ## Tests and platforms
 
 Tests live in `__tests__/` and mirror the module they cover. Notable ones beyond the obvious:
 
-- `installer-targets.test.ts` — parameterized contract suite across all 4 agent targets (see installer notes above).
+- `installer-targets.test.ts` — parameterized contract suite across supported agent targets (see installer notes above).
 - `evaluation/` — `runner.ts` + `test-cases.ts` exercise codegraph against synthetic projects and score the results; run via `npm run eval` (builds first). Not part of `npm test`.
 - `sqlite-backend.test.ts` / `node-sqlite-backend.test.ts` — pin that `node:sqlite` is the sole backend: `getBackend()` reports `node-sqlite` and the DB comes up in WAL.
 - `pr19-improvements.test.ts`, `frameworks-integration.test.ts` — regression coverage for specific past PRs/incidents; don't rename these, the names anchor to git history.

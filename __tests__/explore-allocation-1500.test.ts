@@ -249,6 +249,8 @@ describe('#1500 — generated Go CRUD beside a hand-written payroll workflow', (
       // unique to the hand-written chain.
       expect(response).toContain('runPayrollCycleAll');
       expect(response).toContain('s.store.Upsert(ctx, slip)');
+      expect(response.startsWith('**Answer**')).toBe(true);
+      expect(response).toContain('<summary>Source and evidence</summary>');
     });
 
     it('CG-12 GATE: delivers the calculation the question asks about', () => {

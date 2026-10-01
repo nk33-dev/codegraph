@@ -1,6 +1,7 @@
 import type { Node as SyntaxNode } from 'web-tree-sitter';
 import { getParser } from '../extraction/grammars';
-import type { Node } from '../types';
+import { extractVueScriptBlocks } from '../extraction/vue-script-blocks';
+import type { Language, Node } from '../types';
 import { resolveViaImport } from './import-resolver';
 import type { ResolutionContext, ResolvedRef, UnresolvedRef } from './types';
 
@@ -11,6 +12,8 @@ interface Binding {
   local: boolean;
   store?: string;
   action?: string;
+  /** Callee of the declarator's initializer call — `useRouter` for `const nav = useRouter()`. */
+  initCallee?: string;
 }
 
 const JS = new Set(['typescript', 'tsx', 'javascript', 'jsx']);
@@ -36,12 +39,12 @@ function patternNames(node: SyntaxNode): string[] {
 }
 
 /** 只保留绑定和词法范围，解析树立即释放；同名参数、局部变量会遮蔽外层 action。 */
-function bindingsFor(ref: UnresolvedRef, context: ResolutionContext, source: string): Binding[] {
+function bindingsFor(filePath: string, language: Language, context: ResolutionContext, source: string): Binding[] {
   let files = cache.get(context);
   if (!files) { files = new Map(); cache.set(context, files); }
-  const hit = files.get(ref.filePath);
+  const hit = files.get(filePath);
   if (hit?.source === source) return hit.bindings;
-  const tree = getParser(ref.language)?.parse(source);
+  const tree = getParser(language)?.parse(source);
   if (!tree) return [];
   const bindings: Binding[] = [];
   const add = (pattern: SyntaxNode, scope: SyntaxNode) => {
@@ -76,6 +79,9 @@ function bindingsFor(ref: UnresolvedRef, context: ResolutionContext, source: str
           const callee = value.childForFieldName('function')?.text.replace(/\s+/g, '');
           const args = value.childForFieldName('arguments')?.namedChildren ?? [];
           const store = callee?.match(/^([A-Za-z_$][\w$]*)(?:\.getState)?$/)?.[1];
+          // Records where the binding came from, so a caller can attribute
+          // `nav.push(...)` to the composable rather than to a same-named array.
+          if (store) for (const entry of entries) entry.initCallee = store;
           if (store && args.length === 0 && pattern.type === 'object_pattern') {
             for (const prop of pattern.namedChildren) {
               const key = prop.type === 'pair_pattern' ? prop.childForFieldName('key')?.text : prop.text;
@@ -100,15 +106,62 @@ function bindingsFor(ref: UnresolvedRef, context: ResolutionContext, source: str
   };
   try { visit(tree.rootNode, tree.rootNode, tree.rootNode); } finally { tree.delete(); }
   if (files.size >= 32) files.delete(files.keys().next().value!);
-  files.set(ref.filePath, { source, bindings });
+  files.set(filePath, { source, bindings });
   return bindings;
+}
+
+/**
+ * The text a reference's own positions are relative to, and the file line its
+ * first line sits on.
+ *
+ * Normally the whole file. A `.vue` SFC is the exception: its references carry
+ * `language: 'vue'`, which `getParser` has nothing for, and their columns are
+ * relative to the `<script>` block while their lines are not — so the block is
+ * what gets parsed, and `lineOffset` maps the file's line numbers onto it.
+ */
+function sourceFor(
+  ref: UnresolvedRef,
+  context: ResolutionContext
+): { text: string; language: Language; lineOffset: number } | null {
+  const file = context.readFile(ref.filePath);
+  if (!file) return null;
+  if (ref.language !== 'vue') return { text: file, language: ref.language, lineOffset: 0 };
+  for (const block of extractVueScriptBlocks(file)) {
+    const lines = block.content.split('\n').length;
+    if (ref.line > block.startLine && ref.line <= block.startLine + lines) {
+      return {
+        text: block.content,
+        language: block.isTypeScript ? 'typescript' : 'javascript',
+        lineOffset: block.startLine,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * The callee `name` is bound to at this reference's call site — `useRouter`
+ * for a `const nav = useRouter()` the call can see.
+ *
+ * The innermost binding wins, so a parameter or a nested local `nav` shadows
+ * the file-scope one and this returns null instead of attributing the call to
+ * the outer binding's initializer.
+ */
+export function bindingInitCallee(ref: UnresolvedRef, context: ResolutionContext, name: string): string | null {
+  const source = sourceFor(ref, context);
+  if (!source) return null;
+  const offset = callOffsetAt(source.text, ref.line - source.lineOffset, ref.column);
+  const visible = bindingsFor(ref.filePath, source.language, context, source.text)
+    .filter((binding) => binding.name === name && binding.start <= offset && offset < binding.end)
+    .sort((a, b) => a.end - a.start - (b.end - b.start));
+  return visible[0]?.initCallee ?? null;
 }
 
 function storeNode(name: string, ref: UnresolvedRef, context: ResolutionContext): Node | null {
   const source = context.readFile(ref.filePath);
   if (source) {
     const offset = callOffset(source, ref);
-    if (bindingsFor(ref, context, source).some((binding) =>
+    if (bindingsFor(ref.filePath, ref.language, context, source).some((binding) =>
       binding.name === name && binding.local && binding.start <= offset && offset < binding.end)) return null;
   }
   const imported = resolveViaImport({ ...ref, referenceKind: 'references', referenceName: name }, context);
@@ -118,8 +171,13 @@ function storeNode(name: string, ref: UnresolvedRef, context: ResolutionContext)
 }
 
 function callOffset(source: string, ref: UnresolvedRef): number {
-  const prefix = source.split('\n').slice(0, ref.line - 1).join('\n');
-  return Buffer.byteLength(prefix, 'utf8') + (ref.line > 1 ? 1 : 0) + ref.column;
+  return callOffsetAt(source, ref.line, ref.column);
+}
+
+/** Byte offset of a 1-based line and byte column — tree-sitter's own index space. */
+function callOffsetAt(source: string, line: number, column: number): number {
+  const prefix = source.split('\n').slice(0, line - 1).join('\n');
+  return Buffer.byteLength(prefix, 'utf8') + (line > 1 ? 1 : 0) + column;
 }
 
 function actionOnStore(store: Node, action: string, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
@@ -171,7 +229,7 @@ export function resolveStoreBinding(
   if (sibling) {
     const source = context.readFile(ref.filePath) ?? '';
     const offset = callOffset(source, ref);
-    const visibleGetters = bindingsFor(ref, context, source).filter((binding) =>
+    const visibleGetters = bindingsFor(ref.filePath, ref.language, context, source).filter((binding) =>
       binding.name === 'get' && binding.start <= offset && offset < binding.end);
     // Two visible `get`s means an inner one (a method's own parameter,
     // `shadowGet: (get: any) => get().reset()`) shadows the store factory's —
@@ -198,7 +256,7 @@ export function resolveStoreBinding(
   if (!/^[A-Za-z_$][\w$]*$/.test(ref.referenceName)) return undefined;
   const source = context.readFile(ref.filePath);
   if (!source) return undefined;
-  const bindings = bindingsFor(ref, context, source);
+  const bindings = bindingsFor(ref.filePath, ref.language, context, source);
   if (!bindings.some((binding) => binding.name === ref.referenceName && binding.store)) return undefined;
   const offset = callOffset(source, ref);
   const visible = bindings.filter((binding) => binding.name === ref.referenceName && binding.start <= offset && offset < binding.end)

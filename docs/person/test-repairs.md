@@ -1,5 +1,24 @@
 # 个人版开发验证记录
 
+## 2026-10-01：Vue 框架关系与调用链修复
+
+### 本轮实现
+
+- 修正解析器注册顺序。`vueResolver` 对 Nuxt 自动导入一律返回 1.0 置信度，而策略循环在第一个 ≥0.9 的结果处就停止，`navigateTo` 因此从不产生 `navigates` 边——它既是自动导入又是导航动词，之前被前者截胡。`vueRouterResolver` 现在排在前面；它拒绝一切非 `calls` 引用，不影响 `vueResolver` 的别名与虚拟模块处理。
+- 框架内建不再画自环边。`defineProps`、`useRouter`、`#imports` 由工具链提供，仓库里没有对应符号，解析到提及它的节点自身只为消费引用（避免落进失败队列反复重试），`createEdges` 丢弃这条边。不做 `source === target` 的全局跳过——真实递归必须保留。
+- 仓库自己定义了与 Nuxt 自动导入同名的 composable（例如封装过的 `useRouter`）时，自动导入降为 0.1 置信度候选，由 import 与名称解析先绑定；外部包（`vue-router`）与虚拟模块不计入，因为它们没有可绑定的节点。
+- 路由接收者不再只认字面 `router`。`const nav = useRouter(); nav.push('/x')` 现在能解析到路由。判定复用 `store-binding` 既有的词法作用域绑定，取最内层的同名绑定，参数或嵌套局部变量遮蔽时返回空而不是误认。
+
+### 验证
+
+- `__tests__/vue-router.test.ts` 26 项通过，其中新增 3 项：`navigateTo` 导航边、无自环边、接收者绑定与遮蔽。
+- 三个新用例都做了反向对照，确认不是空断言：接收者正则改回只认 `router`，`nav.push` 的导航边从 1 变 0；把最内层绑定改成最外层，参数遮蔽用例从 0 变 1（误报）；关掉 `createEdges` 的跳过逻辑，无自环边用例抓到真实自环，宿主节点是 `constant`。
+- `store-binding` 重构后的相邻测试：`store-binding-cache`、`zustand-binding`、`vue-store-extraction`、`vue-template-flow`、`vuex-dispatch-synthesizer` 共 9 项通过。
+- 框架解析：`frameworks`、`frameworks-integration` 共 311 项通过。
+- 真实仓 `vue-realworld` 重新索引：10 条路由、23 条导航边、自环边 0 条。23 与该仓既有基线一致，说明本改动对它零覆盖变化（该仓 8 处 `useRouter()` 全部赋给字面名 `router`，12 处 `router.push` 本就能解析）。源码另有 13 处 `defineProps`/`defineEmits`。
+- 未做该仓的修复前后计数对比：没保留修复前的构建。自环边的移除以定向反向对照和上述 0 条结果为准，不声称是同仓前后测得的差值。
+- 控制仓未运行。GitHub 连接失败，未能克隆 `sveltekit-realworld`（预期 31 条导航边）。非 Vue 框架的回归只以 `frameworks-integration` 的 311 项为准，不记为控制仓已复核。
+
 ## 2026-09-30：四个 worktree 合并与 personal.12 发布准备
 
 ### 合并与业务复核
@@ -479,3 +498,11 @@ npm run test:focused -- __tests__/upgrade.test.ts __tests__/personal-runtime.tes
   - `__tests__/query-output-indexing.test.ts` 关于 explore schema 暴露 `directory/languages/frameworks/symbolTypes/excludeTypes` 的断言在个人基线上同样失败（用 `git worktree` 在 `c035e94` 上复现），属既有缺口：代码读取这些参数，schema 未声明。
   - `__tests__/bundle-launcher.test.ts` 与 `installer-targets.test.ts` 中依赖 Git Bash 的用例：本机探测到 Git 装在非默认路径，已改为按真实路径探测；完全没有 bash 的环境会以明确原因跳过（记为本机环境差异，不作为通过证据）。
 - 未做：未推送、未打标签、未触发 Personal Release；未在 Linux/macOS 与真实 Claude Code 宿主上复验；`verify:personal-install`、`npm pack`、发布资产按约束未在本地执行。
+
+## 2026-10-01 查询契约与 Agent 安装说明
+
+- 工作树实现主链请求收敛、摘要与详情折叠、位置参数自动路由、LSP 等待与 `indexing` 状态、符号存在但无关系的独立状态、不可见动态调用提示、升级强制重抽取与稳定内容标记。功能契约见[查询输出](query-output-indexing.md)和[索引状态](index-refresh-and-versioning.md)。版本未修改，尚未提交或发布。
+- `codegraph install` 的简短指令块覆盖结构化模式、Graph/LSP 选择、主链展开与静态调用覆盖边界；Codex、Claude、Gemini、opencode 的契约测试验证旧区块替换、用户内容保留和刷新幂等。用本仓库 `dist` 执行 `install --refresh` 后，本机四个全局指令文件已核对为当前模板；现有 MCP 进程仍需客户端重启加载。
+- 本机 Windows / Node v24.16.0：`check:quick` 类型检查通过，测试批次为 4,290 通过、5 失败、260 跳过。摘要预留挤占源码与初始化说明漏列模式的问题随后修正。定向复验的 12 个项目/文件组合为 501 通过、2 失败、10 跳过；仅剩同一条既有 `LRUCache.get` 热点阈值断言在 engine/perf 重复失败，实测 52，阈值 500。该既有断言背景见上方同步验证记录。
+- LSP manager、LSP query、Graph/LSP routing 定向测试共 58 项通过，其中新增真实协议进度 fixture 验证首个请求等待索引完成、等待超时返回 `indexing`；跨文件 `invoke("local_command")` 测试验证无图边时返回目标存在和静态覆盖提醒。
+- 测试准备步骤只运行 TypeScript 编译与资源复制；未运行本地完整发布构建、打包或上传。真实客户端的新会话行为、真实语言服务、Linux/macOS 和发行安装留给后续验证。

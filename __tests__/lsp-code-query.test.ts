@@ -37,6 +37,16 @@ afterEach(() => {
 });
 
 describe('LSP structured query contract', () => {
+  it('reports an indexing timeout without turning it into a missing target', async () => {
+    project.writeConfig({ serverArgs: ['--semantic-tools', '--indexing-for', '1000'], config: { warmupTimeoutMs: 100 } });
+    const result = await cg.queryCodeWithBackend({ mode: 'callers', query: 'Widget', backend: 'auto' });
+    expect(result.status).toBe('indexing');
+    expect(result.target?.status).toBe('found');
+    expect(result.items).toEqual([]);
+    expect(result.warnings.join('\n')).toContain('still indexing');
+    expect(result.summary.join('\n')).toContain('not an absence finding');
+    expect(project.events('textDocument/prepareCallHierarchy')).toHaveLength(0);
+  });
   it('diagnostics defaults to auto and accepts the file path in query', async () => {
     const result = await cg.queryCodeWithBackend({ mode: 'diagnostics', query: 'a.ts' });
     expect(result.status).toBe('ok');

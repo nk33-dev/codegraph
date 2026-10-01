@@ -52,4 +52,15 @@ describe('索引状态、局部刷新与任务等级', () => {
     const plan = planRefresh('C:/project', 'package.json');
     expect(plan).toMatchObject({ scope: 'project', taskLevel: 'global' });
   });
+
+  it('keeps the content marker stable across a no-op sync', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-content-marker-'));
+    fs.writeFileSync(path.join(root, 'main.ts'), 'export function main() { return 1; }\n');
+    graph = CodeGraph.initSync(root);
+    await graph.indexAll();
+    const first = graph.getIndexStatus().version;
+    await graph.sync();
+    expect(graph.getIndexStatus().version).toBe(first);
+    expect(graph.getIndexStatus().taskId).not.toBeNull();
+  }, 30_000);
 });

@@ -19,6 +19,7 @@ import {
   isSupertypeTarget,
   isInheritanceRef,
   isImportableKind,
+  isSelfResolvedBuiltin,
   CPP_DEFINE_SIGNATURE,
 } from './types';
 import { isUnresolvedJsMemberChain, matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesCodeBoundary, gateLanguageMatch, dumpNameMatcherProfile, clearNameMatcherMemos } from './name-matcher';
@@ -1259,6 +1260,15 @@ export class ReferenceResolver {
    */
   createEdges(resolved: ResolvedRef[]): Edge[] {
     return resolved.flatMap((ref) => {
+      // A framework built-in has no symbol to point at — `defineProps`, Nuxt's
+      // `useRouter`. The resolver consumed the reference so it is not retried
+      // forever, but the edge it produced pointed the mentioning symbol at
+      // itself, which reads as "this calls itself" in callers and callees.
+      //
+      // Not a blanket `source === target` skip: a genuine recursive call is a
+      // real edge and must survive.
+      if (isSelfResolvedBuiltin(ref)) return [];
+
       // `function_ref` (#756) is internal-only: it persists as a `references`
       // edge (the registration site depends on the callback), distinguishable
       // by metadata.resolvedBy === 'function-ref'. callers/impact already

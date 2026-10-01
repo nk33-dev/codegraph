@@ -21,6 +21,7 @@ export interface ExploreQueryIntent {
   callers: boolean;
   callees: boolean;
   flow: boolean;
+  mainChainOnly: boolean;
   references: boolean;
   tests: boolean;
   direct: boolean;
@@ -45,7 +46,7 @@ const INTENT_GROUPS = {
     '被谁调用', '谁调用了', '谁调用', '被调用', '调用方', '调用者', '上游',
   ],
   callees: ['callee', 'callees', 'calls', '调用链', '下游'],
-  flow: ['flow', 'flows', 'pipeline', '流程', '调用链', '链路'],
+  flow: ['flow', 'flows', 'pipeline', 'main chain', 'main path', 'primary flow', '主调用链', '主链路', '主路径', '主流程', '流程', '调用链', '链路'],
   references: [
     'usage', 'usages', 'used', 'uses', 'use', 'using',
     'reference', 'references', 'referenced', 'mentioned', '引用', '使用',
@@ -75,7 +76,7 @@ const FILLER_WORDS: readonly string[] = [
   'and', 'or', 'its', 'their', 'the', 'this', 'that',
   'these', 'those', 'of', 'for', 'to', 'from', 'in', 'on', 'with', 'by', 'is', 'are', 'was',
   'were', 'does', 'do', 'did', 'please', 'show', 'list', 'give', 'find', 'search', 'which',
-  'what', 'who', 'whom', 'why', 'how', 'a', 'an',
+  'what', 'who', 'whom', 'why', 'how', 'a', 'an', 'only', 'just',
   // Chinese intent words.
   '调用关系', '实现者', '实现',
   '源码', '代码', '文件', '位置', '所在',
@@ -89,7 +90,7 @@ const FILLER_WORDS: readonly string[] = [
   '查询', '搜索', '请', '帮', '和', '与', '跟', '及', '或', '的', '得', '地', '是', '在',
   '有', '为', '了', '被', '把', '给', '对', '就', '都', '也', '还', '再', '又', '它', '其',
   '此', '该', '这', '那', '我', '你', '他', '她', '们', '会', '能', '要', '想', '去', '来',
-  '看', '说', '做', '用', '中', '上', '下', '里', '后', '前', '时',
+  '看', '说', '做', '用', '中', '上', '下', '里', '后', '前', '时', '只列', '只要', '仅列', '只', '仅',
 ];
 
 const INTENT_WORDS: readonly string[] = [
@@ -205,6 +206,8 @@ export function parseQueryIntent(text: string): ExploreQueryIntent {
     callers: containsAny(text, INTENT_GROUPS.callers),
     callees: containsAny(text, INTENT_GROUPS.callees),
     flow: containsAny(text, INTENT_GROUPS.flow),
+    mainChainOnly: (/(?:\bonly\b|\bjust\b|只(?:列|看|要|给|返回)|仅(?:列|看|要|给|返回))/.test(text)
+      && (/(?:主(?:调用)?(?:链路|链|路径|流程))|\b(?:main|primary|critical)\s+(?:call\s+)?(?:chain|path|flow)\b/i.test(text))),
     references: containsAny(text, INTENT_GROUPS.references),
     tests: containsAny(text, INTENT_GROUPS.tests),
     direct: containsAny(text, INTENT_GROUPS.direct),

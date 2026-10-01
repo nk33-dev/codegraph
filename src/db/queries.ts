@@ -5,6 +5,7 @@
  */
 
 import { SqliteDatabase, SqliteStatement } from './sqlite-adapter';
+import { createHash } from 'crypto';
 import {
   Node,
   Edge,
@@ -3872,6 +3873,27 @@ export class QueryBuilder {
     return this.db
       .prepare('SELECT (SELECT COUNT(*) FROM nodes) AS nodes, (SELECT COUNT(*) FROM edges) AS edges')
       .get() as { nodes: number; edges: number };
+  }
+
+  /** Compare source and graph content without write times or database row IDs. */
+  getContentFingerprint(): string {
+    const hash = createHash('sha256');
+    const scans = [
+      ['files', 'SELECT path, content_hash, language FROM files ORDER BY path'],
+      ['nodes', `SELECT id, kind, name, qualified_name, file_path, language,
+        start_line, end_line, start_column, end_column, signature, docstring,
+        visibility, is_exported, is_async, is_static, is_abstract, decorators,
+        type_parameters, return_type FROM nodes ORDER BY id`],
+      ['edges', `SELECT source, target, kind, metadata, line, col, provenance FROM edges
+        ORDER BY source, target, kind, line, col, provenance, metadata`],
+    ];
+    return this.db.transaction(() => {
+      for (const [name, sql] of scans) {
+        hash.update(name! + '\n');
+        for (const row of this.db.prepare(sql!).iterate()) hash.update(JSON.stringify(row) + '\n');
+      }
+      return hash.digest('hex');
+    })();
   }
 
   /**

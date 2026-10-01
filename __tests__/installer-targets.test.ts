@@ -1751,6 +1751,31 @@ describe('Installer — refreshTargets sweep (codegraph install --refresh)', () 
     fs.rmSync(tmpCwd, { recursive: true, force: true });
   });
 
+  it.each([
+    ['codex', '.codex/AGENTS.md'],
+    ['claude', '.claude/CLAUDE.md'],
+    ['gemini', '.gemini/GEMINI.md'],
+    ['opencode', '.config/opencode/AGENTS.md'],
+  ])('refreshes %s query guidance while preserving user notes', (id, relativePath) => {
+    const target = getTarget(id)!;
+    target.install('global', { autoAllow: false });
+    const file = path.join(tmpHome, relativePath);
+    fs.writeFileSync(file, '# User notes\n\nKeep responses concise.\n\n<!-- CODEGRAPH_START -->\n## CodeGraph\nUse codegraph_explore.\n<!-- CODEGRAPH_END -->\n');
+
+    const report = refreshTargets([target], 'global')[0]!;
+    const body = fs.readFileSync(file, 'utf8');
+    expect(report.status).toBe('refreshed');
+    expect(report.changedPaths).toContain(file);
+    expect(body).toContain('# User notes\n\nKeep responses concise.');
+    expect(body).toContain('Graph/LSP');
+    expect(body).toContain('1-based');
+    expect(body).toContain('expand: true');
+    expect(body).toContain('zero callers');
+    expect(body).toContain('indexing');
+    expect(body.match(/<!-- CODEGRAPH_START -->/g)).toHaveLength(1);
+    expect(refreshTargets([target], 'global')[0]!.status).toBe('unchanged');
+  });
+
   it('rewrites a stale instructions block a previous version left, and reports refreshed', () => {
     const claude = getTarget('claude')!;
     claude.install('global', { autoAllow: true });

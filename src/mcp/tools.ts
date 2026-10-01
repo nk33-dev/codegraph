@@ -36,7 +36,7 @@ import {
 } from '../sync/worktree';
 import { pendingFileState, sortPendingFiles, type PendingFile, type WatchPolicy } from '../sync';
 import { indexedFileFreshness } from '../sync/file-freshness';
-import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, buildIndexBlock, emptyCodeQueryResult, watchInactiveWarning, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
+import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, buildIndexBlock, defaultCodeQueryBackend, emptyCodeQueryResult, summarizeCodeQuery, watchInactiveWarning, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
 import { NODE_KINDS, LANGUAGES, type Node, type Edge, type EdgeKind, type SearchResult, type Subgraph, type NodeKind, type Language } from '../types';
 import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, formatCodeEditText, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
 import { editTools } from './edit-tool';
@@ -77,6 +77,7 @@ import {
 import {
   findAllSymbols,
   resolveNamedSymbolFlow,
+  type FlowStep,
 } from '../graph/named-symbol-flow';
 import { getUpdateNotice } from '../upgrade/update-check';
 import { runtimeBuildIdentity } from '../runtime-info';
@@ -2291,6 +2292,10 @@ export const tools: ToolDefinition[] = [
           description: 'explore: full requested test source (default summary).',
           default: false,
         },
+        expand: {
+          type: 'boolean',
+          description: 'Expand main-chain details.',
+        },
         baseRef: {
           type: 'string',
           description: 'explore: Git comparison base.',
@@ -4159,6 +4164,7 @@ export class ToolHandler {
     query: string,
     priorEvidenceKeys: ReadonlySet<string> = new Set(),
     maxHops?: number,
+    mainOnly = false,
   ): {
     text: string;
     pathNodeIds: Set<string>;
@@ -4190,6 +4196,39 @@ export class ToolHandler {
       const { named, dynNamed, tokenNodes, tokenFamily, uniqueNamedNodeIds, preciseNamedIds } =
         flow;
       if (flow.tokens.length < 1) return EMPTY;
+      const renderChain = (steps: FlowStep[]): string => {
+        if (steps.length < 2) return '';
+        const lines = ['**Flow (call path among the symbols you queried)**', '',
+          `1. ${steps[0]!.node.name} (${steps[0]!.node.filePath}:${steps[0]!.node.startLine})`];
+        for (let i = 1; i < steps.length; i++) {
+          const step = steps[i]!;
+          if (!step.edge) continue;
+          const previous = steps[i - 1]!.node;
+          const synth = this.synthEdgeNote(step.edge);
+          const when = this.whenLabel(cg, previous, step.edge);
+          lines.push(`${i + 1}. ${formatDetailedRelation(step.edge, previous, step.node)}${when ? ` (when ${when})` : ''}${synth ? ` [${synth.compact}]` : ''}`);
+        }
+        return lines.join('\n') + '\n\n';
+      };
+      if (mainOnly) {
+        const chain = flow.chains[0];
+        const ids = new Set((chain?.steps ?? []).map((step) => step.node.id));
+        const evidence = buildFlowEvidenceReport(cg, flow, [], {
+          maxEvidence: Math.max(0, (chain?.steps.length ?? 1) - 1),
+          maxImplementations: 0,
+        }).report;
+        evidence.implementations = [];
+        evidence.breaks = [];
+        return {
+          ...EMPTY,
+          text: renderChain(chain?.steps ?? []),
+          pathNodeIds: ids,
+          namedNodeIds: ids,
+          uniqueNamedNodeIds,
+          spineCallSites: chain?.callSites ?? new Map<string, number>(),
+          evidence,
+        };
+      }
       // Surface synthesized (heuristic) edges incident to a named symbol — INCLUDING
       // the non-callable CONSTANT endpoints in `dynNamed`. `skipInChain` drops a hop
       // already shown in the rendered main chain (a 2-node chain renders nothing, so a
@@ -4377,19 +4416,7 @@ export class ToolHandler {
       if (!hasMain && synthLines.length === 0 && !boundaryText && !polyText) return identityOnly();
       const out: string[] = [];
       if (showMain) {
-        out.push('**Flow (call path among the symbols you queried)**', '');
-        const first = best![0]!;
-        out.push(`1. ${first.node.name} (${first.node.filePath}:${first.node.startLine})`);
-        for (let i = 1; i < best!.length; i++) {
-          const step = best![i]!;
-          const previous = best![i - 1]!;
-          if (!step.edge) continue;
-          const synth = this.synthEdgeNote(step.edge);
-          const when = this.whenLabel(cg, previous.node, step.edge);
-          const relation = formatDetailedRelation(step.edge, previous.node, step.node);
-          out.push(`${i + 1}. ${relation}${when ? ` (when ${when})` : ''}${synth ? ` [${synth.compact}]` : ''}`);
-        }
-        out.push('');
+        out.push(renderChain(best!).trimEnd(), '');
       }
       if (synthLines.length && (
         priorEvidenceKeys.size === 0 || built.report.evidence.some((item) => item.kind === 'heuristic')
@@ -5118,6 +5145,11 @@ export class ToolHandler {
     const focusedRelationSources = new Map<string, { source: Node; line: number; origins: Set<'graph' | 'lsp'> }>();
     const queryIntent = parseQueryIntent(query);
     const flowQueryRequested = queryIntent.flow;
+    const expandMainChain = args.expand === true
+      || (queryIntent.mainChainOnly && /(?:\bsource\b|\bdetails?\b|源码|展开|详细)/i.test(rawQuery));
+    if (args.expand !== undefined && typeof args.expand !== 'boolean') {
+      return this.errorResult('expand must be boolean');
+    }
     const requestedTests = queryIntent.tests;
     // "Include the relevant tests" means include the TESTS, not their bodies:
     // every text segment inside them is fixture literal. The default is
@@ -6414,7 +6446,8 @@ export class ToolHandler {
 
     // 流程查询先得出连接状态，后续输出才能在断链时优先说明限制，并压低自动诊断噪声。
     await warmBranchGuardGrammars();
-    const flow = this.buildFlowFromNamedSymbols(cg, flowInput, priorEvidenceKeys, displayFilters.depth);
+    const flow = this.buildFlowFromNamedSymbols(cg, flowInput, priorEvidenceKeys, displayFilters.depth,
+      queryIntent.mainChainOnly && !expandMainChain);
     if (inferredToolFlow && flow.text) {
       flow.text = flow.text.replace(
         '**Flow (call path among the symbols you queried)**',
@@ -6441,10 +6474,44 @@ export class ToolHandler {
     } : null);
     const visibleChangeContext = flowQueryRequested && !changeIntent ? null : changeContext;
 
+    // A restrictive main-chain request is a compact answer contract: return the
+    // confirmed spine and its locations, while leaving side branches/source for
+    // an explicit expansion request.
+    if (queryIntent.mainChainOnly && flowQueryRequested && !expandMainChain) {
+      const pathNodes = [...flow.pathNodeIds]
+        .map((id) => cg.getNode(id))
+        .filter((node): node is Node => node !== null);
+      const pathFiles = [...new Set(pathNodes.map((node) => node.filePath))];
+      const compact = [
+        '**Answer**',
+        `- Status: ${flow.text ? (incompleteFlow ? 'Partially confirmed' : 'Confirmed main chain') : 'No confirmed main chain'}.`,
+        `- Scope: ${pathNodes.length} nodes in ${pathFiles.length} files.`,
+        `- Index content: ${cg.getIndexVersion() ?? 'unknown'}.`,
+        `**Exploration: ${query}**`,
+        '**Primary call chain only**',
+        flow.text || '**Flow status — incomplete**\n\n- No confirmed primary call chain was found in the current index.',
+        pathFiles.length > 0
+          ? `**Primary files:** ${pathFiles.map((filePath) => `\`${filePath}\``).join(', ')}`
+          : '',
+        '**Details collapsed** — pass `expand: true` (or ask for source/details) to include side branches and source excerpts.',
+      ].filter(Boolean).join('\n\n');
+      return this.exploreResult(compact, {
+        projectRoot,
+        query,
+        files: [],
+        sourceBytes: 0,
+        responseBytes: compact.length,
+        evidenceKeys: flow.evidenceKeys,
+      }, visibleEvidence, visibleChangeContext, {
+        cg,
+        paths: pathFiles,
+      });
+    }
+
     // Step 3: Build relationship map
     const lines: string[] = [
       `**Exploration: ${query}**`,
-      `**Index generation:** ${cg.getIndexVersion() ?? 'unknown'} (all symbols, line numbers, source slices, and trail edges below use this generation)`,
+      `**Index content:** ${cg.getIndexVersion() ?? 'unknown'} (all symbols, line numbers, source slices, and trail edges below use this content marker)`,
       SUMMARY_SENTINEL,
       // Curated summary — filled in after the source loop (see below). We do NOT
       // report `subgraph.nodes.size` / `fileGroups.size` here: that's the raw
@@ -6738,7 +6805,10 @@ export class ToolHandler {
         : 0)
       + setAsideNote.length;
     const summaryQuery = queryIntent.list || queryIntent.compare || queryIntent.capability || queryIntent.existence;
-    const answerReserve = summaryReserve + (summaryQuery ? ANSWER_RESERVE : 0);
+    const foldReserve = ['Call chain', 'Impact and relationships', 'Source and evidence']
+      .reduce((size, title) => size + `<details open>\n<summary>${title}</summary>\n\n\n\n</details>\n\n`.length, 0);
+    const answerReserve = summaryReserve + foldReserve + (summaryQuery ? ANSWER_RESERVE
+      : '**Answer**\n- Status: Indexed evidence found in the current indexed project.\n- Scope: '.length);
     const epilogueFloor = Math.max(
       EXPLORE_FALLBACK_NOTES.lost.complete.length, EXPLORE_FALLBACK_NOTES.lost.trimmed.length,
     ) + 2 + cliffPointerFloor + answerReserve;
@@ -9175,28 +9245,36 @@ export class ToolHandler {
         .filter((node) => node.kind !== 'import' && node.kind !== 'export')
         .map((node) => node.name),
     ))].slice(0, 8);
-    const answerLines = summaryQuery
-      ? [
+    const answerLines = [
         '**Answer**',
         `- Status: ${evidenceStatus} in the current indexed project.`,
         `- Scope: ${summaryLine}`,
-        ...(keyFiles.length > 0 ? [`- Key files: ${keyFiles.map((filePath) => `\`${filePath}\``).join(', ')}.`] : []),
-        ...(keySymbols.length > 0 ? [`- Key symbols: ${keySymbols.map((name) => `\`${name}\``).join(', ')}.`] : []),
+        ...(summaryQuery && keyFiles.length > 0 ? [`- Key files: ${keyFiles.map((filePath) => `\`${filePath}\``).join(', ')}.`] : []),
+        ...(summaryQuery && keySymbols.length > 0 ? [`- Key symbols: ${keySymbols.map((name) => `\`${name}\``).join(', ')}.`] : []),
         ...(queryIntent.existence || queryIntent.capability
           ? ['- This is indexed-source evidence, not proof that the feature is fully supported at runtime or absent from unindexed code.']
           : []),
         ...(queryIntent.compare
           ? ['- This call covers one indexed project; compare projects by making one call per projectPath.']
           : []),
-      ].join('\n')
-      : summaryLine;
+      ].join('\n');
     finalText = finalText.replace(SUMMARY_SENTINEL, answerLines);
-    if (summaryQuery) {
+    {
       const answerIndex = finalText.indexOf(answerLines);
       if (answerIndex > 0) {
         const beforeAnswer = finalText.slice(0, answerIndex).trim();
         const afterAnswer = finalText.slice(answerIndex + answerLines.length).trim();
-        finalText = [answerLines, beforeAnswer, afterAnswer].filter(Boolean).join(String.fromCharCode(10, 10));
+        const fold = (title: string, body: string): string => body.trim()
+          ? `<details${args.expand === true ? ' open' : ''}>\n<summary>${title}</summary>\n\n${body.trim()}\n\n</details>` : '';
+        const flowText = flow.text.trim();
+        const flowEnd = flowText ? beforeAnswer.indexOf(flowText) + flowText.length : 0;
+        const metadata = flowEnd > 0 ? beforeAnswer.slice(flowEnd).trim() : beforeAnswer;
+        const sourceStart = afterAnswer.indexOf('**Source Code**');
+        const relations = sourceStart >= 0 ? afterAnswer.slice(0, sourceStart) : afterAnswer;
+        const source = sourceStart >= 0 ? afterAnswer.slice(sourceStart) : '';
+        finalText = [answerLines, metadata, fold('Call chain', flowText),
+          fold('Impact and relationships', relations), fold('Source and evidence', source)]
+          .filter(Boolean).join('\n\n');
       }
     }
 
@@ -9688,7 +9766,7 @@ export class ToolHandler {
     const lines: string[] = [
       `**${node.name}** (${node.kind})`,
       '',
-      `**Index generation:** ${cg.getIndexVersion() ?? 'unknown'}`,
+      `**Index content:** ${cg.getIndexVersion() ?? 'unknown'}`,
       `**Location:** ${node.filePath}${node.startLine ? `:${node.startLine}` : ''} — ⚠ as of the last index sync; the file has changed on disk since, so this line may be shifted`,
     ];
     if (node.signature) {
@@ -9776,26 +9854,22 @@ export class ToolHandler {
   private async handleCodeQuery(args: Record<string, unknown>): Promise<ToolResult> {
     if (!CODE_QUERY_MODES.includes(args.mode as CodeQueryMode)) return this.errorResult('Unknown explore mode');
     const mode = args.mode as CodeQueryMode;
-    // 显式后端原样传递；诊断没有图数据，未指定时交给自动路由选择语言服务。
-    const backend: CodeQueryBackend = args.backend === undefined && mode === 'diagnostics'
-      ? 'auto'
+    const query = typeof args.query === 'string' ? args.query : '';
+    const normalizedArgs = { ...args, query };
+    const backend: CodeQueryBackend = args.backend === undefined
+      ? defaultCodeQueryBackend(normalizedArgs as CodeQueryRequest)
       : CODE_QUERY_BACKENDS.includes(args.backend as CodeQueryBackend)
-      ? args.backend as CodeQueryBackend
-      : 'graph';
-    const normalizedArgs = mode === 'tests' && args.query === undefined && Array.isArray(args.files)
-      ? { ...args, query: '' }
-      : args;
-    const requestArgs = args.backend === undefined && mode === 'diagnostics'
-      ? { ...normalizedArgs, backend: 'auto' }
-      : normalizedArgs;
-    let result = emptyCodeQueryResult(mode, typeof normalizedArgs.query === 'string' ? normalizedArgs.query : '', backend);
+        ? args.backend as CodeQueryBackend
+        : 'graph';
+    const requestArgs = { ...normalizedArgs, backend };
+    let result = emptyCodeQueryResult(mode, query, backend);
     let cg: CodeGraph | null = null;
     try {
       cg = this.getCodeGraph(args.projectPath as string | undefined);
       // When an explicit projectPath hits the default project, reuse the connection
       // that carries the watcher.
       if (this.cg && resolvePath(cg.getProjectRoot()) === resolvePath(this.cg.getProjectRoot())) cg = this.cg;
-      result = await cg.queryCodeWithBackend(requestArgs as unknown as CodeQueryRequest);
+      result = await cg.queryCodeWithBackend(requestArgs as CodeQueryRequest);
       const mismatch = this.worktreeMismatchFor(args.projectPath as string | undefined);
       if (mismatch) result.warnings.push(worktreeMismatchNotice(mismatch));
     } catch (error) {
@@ -9808,6 +9882,7 @@ export class ToolHandler {
       }
       result.warnings.push(error instanceof Error ? error.message : String(error));
     }
+    result.summary = summarizeCodeQuery(result);
     return {
       structuredContent: result,
       content: [{ type: 'text', text: JSON.stringify(result) }],
@@ -9857,7 +9932,7 @@ export class ToolHandler {
       content: [{
         type: 'text',
         text: `Refreshed ${result.plan.filePath} (${result.plan.scope}, ${result.plan.taskLevel})\n` +
-          `${result.plan.reason}\nIndex generation: ${result.version ?? 'unknown'}`,
+          `${result.plan.reason}\nIndex content: ${result.version ?? 'unknown'}`,
       }],
     };
   }
@@ -9898,7 +9973,7 @@ export class ToolHandler {
       `**Runtime version:** ${runtime.version} (${runtime.distribution})`,
       `**Runtime build:** ${runtime.build?.commit ?? 'unavailable'}${runtime.build?.dirty ? ' (dirty)' : ''}`,
       `**Build ID:** ${runtime.build?.buildId ?? 'unavailable'}`,
-      `**Index generation:** ${indexStatus.version ?? 'unknown'}`,
+      `**Index content:** ${indexStatus.version ?? 'unknown'}`,
       `**Indexed commit:** ${indexStatus.indexedCommit ?? 'unknown'}`,
       `**Current commit:** ${indexStatus.currentCommit ?? 'unknown'}`,
       `**Last updated:** ${indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never'}`,
@@ -10439,7 +10514,7 @@ export class ToolHandler {
     const lines: string[] = [
       `**${node.name}** (${node.kind})`,
       '',
-      `**Index generation:** ${indexVersion ?? 'unknown'}`,
+      `**Index content:** ${indexVersion ?? 'unknown'}`,
       `**Location:** ${node.filePath}${location}`,
     ];
 

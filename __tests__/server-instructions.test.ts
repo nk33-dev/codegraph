@@ -48,11 +48,13 @@ const originalToolEnv = process.env[TOOL_ENV];
  * LSP」和「LSP 是权威」，没有任何一句告诉 AI 该主动要 LSP）。压缩了 Boundaries 里
  * 一句冗余，净增 147 字符。
  */
+// 2026-10-01: expand adds a discoverable optional field. Measured tools/list:
+// 5,423 chars; explore: 3,612. Allow roughly 2% headroom for these definitions.
 const SURFACE_MAX = {
   instructions: 2_700,
   noRootInstructions: 500,
-  toolsList: 5_410,
-  explore: 3_610,
+  toolsList: 5_500,
+  explore: 3_700,
   edit: 2_100,
   combined: 8_050,
 } as const;

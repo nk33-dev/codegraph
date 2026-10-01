@@ -493,7 +493,6 @@ export async function queryCodeRouted(
       const reason = `${decision.reason} — but the language server did not answer (${lsp.status}), so the graph index answered instead`;
       graph.routing = { ...graph.routing, requested, resolved: 'graph', reason, fallback: failure, families, sources: { graph: graph.page.total, lsp: 0 } };
       graph.warnings.unshift(`backend "${requested}" routed this query to the ${decision.family ?? 'language'} server first, but it was ${lsp.status}: ${failure}`);
-      graph.status = graph.page.total > 0 ? 'ok' : 'not_found';
       return graph;
     }
     if (lsp.status === 'not_found') {
@@ -507,7 +506,7 @@ export async function queryCodeRouted(
         return lsp;
       }
       const graph = deps.queryGraph(projectRequest(request, 'graph'));
-      if (graph.page.total > 0) {
+      if (graph.page.total > 0 || graph.target?.status === 'found') {
         const reason = 'the language server returned no items, so the graph index answered instead (its answer may be less precise)';
         graph.routing = { ...graph.routing, requested, resolved: 'graph', reason, fallback: null, families, sources: { graph: graph.page.total, lsp: 0 } };
         graph.lsp = lsp.lsp ?? graph.lsp;
@@ -570,6 +569,7 @@ export function mergeResults(
   result.index = graph.index ?? lsp.index;
   result.lsp = lsp.lsp ?? graph.lsp;
   result.ambiguous = graph.ambiguous || lsp.ambiguous;
+  result.target = graph.target?.status === 'found' ? graph.target : lsp.target ?? graph.target;
   result.items = merged.items.slice(options.offset, options.offset + options.limit);
   result.page = {
     offset: options.offset,
@@ -578,7 +578,9 @@ export function mergeResults(
     nextOffset: options.offset + result.items.length < merged.items.length ? options.offset + result.items.length : null,
   };
   const lspFailed = lsp.status === 'unavailable' || lsp.status === 'error';
-  result.status = merged.items.length > 0 ? 'ok' : lsp.status === 'error' ? 'error' : lspFailed ? 'unavailable' : 'not_found';
+  result.status = merged.items.length > 0 ? 'ok' : lsp.status === 'indexing' ? 'indexing'
+    : lsp.status === 'error' ? 'error' : lspFailed ? 'unavailable'
+    : result.target?.status === 'found' ? 'ok' : 'not_found';
   result.routing = {
     requested: options.requested,
     resolved: 'both',

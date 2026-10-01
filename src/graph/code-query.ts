@@ -255,7 +255,10 @@ export type CodeQueryItem =
 export type MergedCodeQueryItem = CodeQueryItem & { origin: CodeQuerySource; corroborated: boolean };
 
 export interface IndexBlock {
+  /** Stable marker for the indexed content. */
   version: string | null;
+  contentVersion?: string | null;
+  taskId?: string | null;
   indexedCommit: string | null;
   currentCommit: string | null;
   textChanges: TextIndexChanges | null;
@@ -340,11 +343,13 @@ export interface RoutingBlock {
 
 export interface CodeQueryResult {
   schemaVersion: 1;
+  summary: string[];
   backend: CodeQueryBackend;
   mode: CodeQueryMode;
   query: string;
   projectRoot: string | null;
-  status: 'ok' | 'not_found' | 'not_indexed' | 'unavailable' | 'error';
+  status: 'ok' | 'not_found' | 'not_indexed' | 'indexing' | 'unavailable' | 'error';
+  target: { status: 'found' | 'not_found' | 'unknown'; count: number; definitions: Array<CodeSymbol | LspSymbolItem> } | null;
   /** Lines are 1-based, columns 0-based; graph uses UTF-8 byte columns and lsp uses UTF-16 code-unit columns. */
   coordinates: { lineBase: 1; columnBase: 0; columnEncoding: 'utf-8' | 'utf-16' };
   ambiguous: boolean;
@@ -384,7 +389,7 @@ export function emptyCodeQueryResult(
   backend: CodeQueryBackend = 'graph',
 ): CodeQueryResult {
   return {
-    schemaVersion: 1, backend, mode, query, projectRoot: null,
+    schemaVersion: 1, summary: [], backend, mode, query, projectRoot: null, target: null,
     status: 'ok',
     coordinates: {
       lineBase: 1, columnBase: 0,
@@ -394,6 +399,45 @@ export function emptyCodeQueryResult(
     ambiguous: false, items: [], page: { offset: 0, limit: 50, total: 0, nextOffset: null },
     index: null, runtime: null, lsp: null, routing: defaultRouting(backend), warnings: [],
   };
+}
+
+export function normalizeCodeQueryRequest(request: CodeQueryRequest): CodeQueryRequest & { query: string } {
+  return { ...request, query: request.query ?? '' };
+}
+
+/** Preserve graph name queries while choosing LSP for semantic fields and positions. */
+export function defaultCodeQueryBackend(request: CodeQueryRequest): CodeQueryBackend {
+  return request.line !== undefined || request.column !== undefined
+    || request.severity !== undefined || request.includeDeclaration !== undefined
+    || ['diagnostics', 'hover', 'type-definition', 'code-actions'].includes(request.mode)
+    ? 'auto' : 'graph';
+}
+
+export function summarizeCodeQuery(result: CodeQueryResult): string[] {
+  const label = result.query || result.mode;
+  const target = result.target;
+  const outcome = result.status === 'indexing'
+    ? 'The language server is still indexing; an empty result is not an absence finding.'
+    : target?.status === 'not_found' ? `No target matched "${label}".`
+    : target?.status === 'found' && result.page.total === 0
+      ? `Target exists; no ${result.mode} were reported by ${result.backend}.`
+      : `${result.page.total} ${result.mode} result(s); ${result.items.length} shown.`;
+  return [
+    `Status: ${result.status}. ${outcome}`,
+    `Backend: ${result.routing.resolved}. ${result.routing.reason}`,
+    `Index content: ${result.index?.contentVersion ?? result.index?.version ?? 'unknown'}; task ID: ${result.index?.taskId ?? 'unknown'}.`,
+    ...(result.warnings.length > 0 ? [result.warnings[0]!] : []),
+  ];
+}
+
+function dynamicCallVisibilityWarnings(cg: CodeGraph, nodes: Node[], mode: CodeQueryMode): string[] {
+  if ((mode !== 'callers' && mode !== 'callees') || nodes.length === 0) return [];
+  for (const node of nodes) {
+    const relations = mode === 'callers' ? cg.getIncomingEdges(node.id) : cg.getOutgoingEdges(node.id);
+    if (relations.some((edge) => edge.kind === 'calls' || edge.kind === 'instantiates')) continue;
+    return [`No indexed ${mode} found for "${node.qualifiedName}"; string-keyed or runtime dispatch may be invisible to the static graph.`];
+  }
+  return [];
 }
 
 export function pageNumber(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -413,7 +457,8 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
   if (request.backend !== undefined && !CODE_QUERY_BACKENDS.includes(request.backend)) {
     throw new Error('backend must be "graph", "lsp", "auto", or "both"');
   }
-  if (typeof request.query !== 'string' || request.query.length > 2000) {
+  const query = request.query ?? '';
+  if (typeof query !== 'string' || query.length > 2000) {
     throw new Error('query must be a string of at most 2000 characters');
   }
   // `mode:"tests"` takes the changed files, so a caller may pass them as `files` and leave the
@@ -422,9 +467,22 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
   const queryOptional = request.mode === 'status'
     || (request.mode === 'symbols' && request.file !== undefined)
     || request.mode === 'diagnostics'
-    || (request.mode === 'code-actions' && request.file !== undefined && request.line !== undefined);
-  if (!request.query.trim() && !filesInsteadOfQuery && !queryOptional) {
-    throw new Error('query must be a non-empty string of at most 2000 characters');
+    || (request.file !== undefined && request.line !== undefined);
+  if (!query.trim() && !filesInsteadOfQuery && !queryOptional) {
+    throw new Error('Provide query with an exact symbol name, or file + line for a position query (column defaults to 0).');
+  }
+  if (request.column !== undefined && request.line === undefined) {
+    throw new Error('column requires line. Add a 1-based line, or remove column to query by symbol name.');
+  }
+  const positionModes: readonly CodeQueryMode[] = [
+    'definitions', 'type-definition', 'implementations', 'references', 'hover',
+    'callers', 'callees', 'type-hierarchy', 'code-actions',
+  ];
+  if ((request.line !== undefined || request.column !== undefined) && !positionModes.includes(request.mode)) {
+    throw new Error(`line/column are not supported in ${request.mode} mode`);
+  }
+  if (request.line !== undefined && !request.file && request.backend !== 'graph') {
+    throw new Error('line requires file. Add the project-relative file path, or remove line/column to query by name.');
   }
   if (request.checkFiles !== undefined && typeof request.checkFiles !== 'boolean') throw new Error('checkFiles must be boolean');
   if (request.checkFiles && request.mode !== 'status') throw new Error('checkFiles is only supported in status mode');
@@ -488,7 +546,7 @@ export function assertBackendFields(request: CodeQueryRequest, backend: CodeQuer
   if (positional && !positionModes.includes(request.mode)) {
     throw new Error(`line/column are not supported in ${request.mode} mode`);
   }
-  if (positional && backend !== 'lsp') throw new Error('line/column require backend "lsp"');
+  if (positional && backend !== 'lsp') throw new Error('line/column require backend "lsp". Omit backend or use backend:"auto"; remove line/column for a graph name query.');
   if (request.severity !== undefined && backend !== 'lsp') throw new Error('severity requires backend "lsp"');
   if (request.severity !== undefined && request.mode !== 'diagnostics') {
     throw new Error('severity is only supported in diagnostics mode');
@@ -501,7 +559,7 @@ export function assertBackendFields(request: CodeQueryRequest, backend: CodeQuer
   }
   if (request.checkFiles && backend !== 'graph') throw new Error('checkFiles is only supported with backend "graph"');
   if ((request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'type-definition' || request.mode === 'code-actions') && backend !== 'lsp') {
-    throw new Error(`${request.mode} requires backend "lsp": the graph index cannot answer it`);
+    throw new Error(`${request.mode} requires backend "lsp": the graph index cannot answer it. Omit backend or use backend:"auto".`);
   }
   if ((request.endLine !== undefined || request.endColumn !== undefined || request.actionKinds !== undefined) && backend !== 'lsp') {
     throw new Error('code-action range and kinds require backend "lsp"');
@@ -547,6 +605,8 @@ export function buildIndexBlock(
   }
   return {
     version: status.version,
+    contentVersion: status.contentVersion,
+    taskId: status.taskId ?? status.version,
     indexedCommit: status.indexedCommit,
     currentCommit: status.currentCommit,
     textChanges: status.textChanges,
@@ -742,7 +802,13 @@ function groupGraphRelations(
 }
 
 /** The graph query shared by CLI/MCP; it only reads the existing index — it neither starts an LSP nor modifies the index. */
-export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryResult {
+export function queryCode(cg: CodeGraph, input: CodeQueryRequest): CodeQueryResult {
+  const result = collectCodeQuery(cg, normalizeCodeQueryRequest(input));
+  result.summary = summarizeCodeQuery(result);
+  return result;
+}
+
+function collectCodeQuery(cg: CodeGraph, request: CodeQueryRequest & { query: string }): CodeQueryResult {
   const { offset, limit } = validateCodeQueryRequest(request);
   assertBackendFields(request, 'graph');
   const result = emptyCodeQueryResult(request.mode, request.query.trim(), 'graph');
@@ -839,6 +905,9 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     : lookup!.nodes.filter(n => file === undefined || n.filePath === file))
     .filter((node) => (impactFile !== null && node.kind === 'file') || isQueryEligibleNode(root, node)).sort(compareNodes);
   result.ambiguous = request.mode !== 'symbols' && impactFile === null && nodes.length > 1;
+  if (request.mode !== 'symbols') {
+    result.target = { status: nodes.length ? 'found' : 'not_found', count: nodes.length, definitions: nodes.slice(0, 50).map(symbol) };
+  }
   if (!nodes.length) {
     if (request.mode !== 'impact') result.status = 'not_found';
     if (request.mode !== 'symbols' && !impactFile) {
@@ -882,7 +951,7 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     result.page.total = hierarchyItems.length;
     result.items = hierarchyItems.slice(offset, offset + limit);
     result.routing.sources.graph = hierarchyItems.length;
-    if (hierarchyItems.length === 0) result.status = 'not_found';
+    if (hierarchyItems.length === 0 && nodes.length === 0) result.status = 'not_found';
   } else if (request.mode === 'impact') {
     const depth = request.depth ?? DEFAULT_IMPACT_DEPTH;
     const analysis = nodes.length === 0 ? { entries: new Map(), unattributed: 0 } : analyzeImpact(cg, nodes, depth);
@@ -922,7 +991,10 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     if (grouped.length < eligible.length) {
       result.warnings.push(`Grouped ${eligible.length} graph edges into ${grouped.length} relationships; repeated sites are listed in each item's sites field.`);
     }
-    if (grouped.length === 0) result.status = 'not_found';
+    if (grouped.length === 0 && nodes.length > 0) {
+      result.warnings.push(`Target exists; no indexed ${request.mode} were found.`);
+    }
+    result.warnings.push(...dynamicCallVisibilityWarnings(cg, nodes, request.mode));
   } else if (request.mode === 'references') {
     const references = collectIncomingRelations(cg, nodes)
       .filter(({ edge, source }) => edge.kind !== 'contains'
@@ -933,6 +1005,9 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     result.items = grouped.slice(offset, offset + limit);
     if (grouped.length < references.length) {
       result.warnings.push(`Grouped ${references.length} graph edges into ${grouped.length} relationships; repeated sites are listed in each item's sites field.`);
+    }
+    if (grouped.length === 0 && nodes.length > 0) {
+      result.warnings.push('Target exists; no indexed references were found.');
     }
     result.warnings.push('Graph edges are best-effort relationships, not a complete list of LSP reference occurrences.');
     result.routing.sources.graph = grouped.length;

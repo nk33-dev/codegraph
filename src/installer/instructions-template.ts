@@ -22,7 +22,8 @@
  *
  * Keep this block SHORT. The main agent reads it every turn on top of the
  * server instructions — the #529 duplication-cost argument still bounds
- * its size. Command names and the two surfaces, nothing more.
+ * its size. Keep the entry points and query-selection rules here; full MCP
+ * guidance stays in `mcp/server-instructions.ts`.
  */
 
 /** Markers used by the marker-based section write/removal. */
@@ -46,6 +47,9 @@ In repositories indexed by CodeGraph (a \`.codegraph/\` directory exists at the 
 
 - **MCP tool** (when available): \`codegraph_explore\` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.
 - **Shell** (always works): \`codegraph explore "<symbol names or question>"\` prints the same output.
+- Use explore \`mode\` for definitions, references, callers/callees, symbols, diagnostics, impact, tests or status. Omit \`backend\` to let CodeGraph choose Graph/LSP; position queries use \`file\` + 1-based \`line\` and optional 0-based \`column\`. Invalid combinations return a correction.
+- “Only the main/primary call chain” returns the confirmed spine with side branches and source collapsed; pass \`expand: true\` or ask for source/details when those are needed. A symbol with no callers is reported as present with zero callers, separately from an unknown symbol. String-keyed/runtime calls may be invisible to the static graph.
+- LSP cold starts wait for indexing when possible and mark incomplete results as indexing; retry only after the result says indexing is still in progress.
 
 If there is no \`.codegraph/\` directory, skip CodeGraph entirely — indexing is the user's decision.
 ${CODEGRAPH_SECTION_END}`;

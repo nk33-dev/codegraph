@@ -19,6 +19,7 @@ import { initGrammars, loadAllGrammars } from '../src/extraction/grammars';
 import { buildScreens } from '../src/ui-server/api/screens';
 import { parseVueRoutes, vueNavVerb, routeNameInExpression } from '../src/resolution/frameworks/vue-router';
 import type { Node } from '../src/types';
+import { NODE_KINDS } from '../src/types';
 
 // =============================================================================
 // Reading the routes array
@@ -154,6 +155,9 @@ describe('vue-router: a routed app end to end', () => {
         'function goTo(tag) {\n' +
         '  router.push({ path: "/", query: { tag } })\n' +
         '}\n' +
+        'function goHome() {\n' +
+        '  navigateTo("/settings")\n' +
+        '}\n' +
         '</script>\n'
     );
     write(
@@ -169,13 +173,23 @@ describe('vue-router: a routed app end to end', () => {
         '}\n' +
         '</script>\n'
     );
+    // The handle a composable returns is the app's to name, so `nav.push` must
+    // reach its route. `takeOther`'s parameter of the same name must not: the
+    // binding in scope is all that separates them.
     write(
       'src/views/Register.vue',
       '<template>\n' +
         '  <router-link to="/login">Have an account?</router-link>\n' +
         '</template>\n' +
         '<script setup>\n' +
-        'const nothing = 1\n' +
+        'import { useRouter } from "vue-router"\n' +
+        'const nav = useRouter()\n' +
+        'function backToLogin() {\n' +
+        '  nav.push("/login")\n' +
+        '}\n' +
+        'function takeOther(nav) {\n' +
+        '  nav.push("/login")\n' +
+        '}\n' +
         '</script>\n'
     );
     write(
@@ -285,6 +299,39 @@ describe('vue-router: a routed app end to end', () => {
     expect(navs(sym('trail'))).toEqual([]);
   });
 
+  it('navigateTo reaches the route it names', () => {
+    // A Nuxt auto-import AND a navigation verb, so the resolver order decides
+    // it: `vueResolver` answering at 1.0 ends the loop before this reaches
+    // `vueRouterResolver`.
+    const goHome = navs(sym('goHome'));
+    expect(goHome).toHaveLength(1);
+    expect(goHome[0]!.target).toBe(route('/settings').id);
+    expect(goHome[0]!.metadata).toMatchObject({ href: '/settings', navMethod: 'navigateTo' });
+  });
+
+  it('a handle the app named itself still navigates, because it is bound to useRouter()', () => {
+    const back = navs(sym('backToLogin'));
+    expect(back).toHaveLength(1);
+    expect(back[0]!.target).toBe(route('/login').id);
+    expect(back[0]!.metadata).toMatchObject({ href: '/login', navMethod: 'push' });
+  });
+
+  it('a parameter of the same name shadows the handle and claims nothing', () => {
+    // `takeOther(nav)` pushes the same real path; only the binding in scope
+    // separates it from `backToLogin`.
+    expect(navs(sym('takeOther'))).toEqual([]);
+  });
+
+  it('framework built-ins are consumed without drawing a self-edge', () => {
+    // `defineProps`/`useRouter` have nothing to point at, so consuming the
+    // reference must not leave an edge to the symbol that mentions it.
+    const nodes = NODE_KINDS.flatMap((kind) => cg.getNodesByKind(kind));
+    const selfEdges = cg
+      .getOutgoingEdgesFrom(nodes.map((n) => n.id))
+      .filter((e) => e.source === e.target);
+    expect(selfEdges).toEqual([]);
+  });
+
   it('lands on the Screens tab as transitions between screens', async () => {
     const screens = await buildScreens(cg, tmpDir);
     expect(screens.routed).toBe(true);
@@ -297,5 +344,58 @@ describe('vue-router: a routed app end to end', () => {
     expect(toProfile.sites[0]).toMatchObject({ href: 'profile', method: 'push' });
     expect(screens.links.find((l) => l.from === at('/login').id && l.to === at('/register').id)).toBeDefined();
     expect(screens.dropped).toBe(0);
+  });
+});
+
+// =============================================================================
+// A composable the repo defines itself, under a name Nuxt also auto-imports
+// =============================================================================
+
+// `useRouter` is a Nuxt auto-import and also a name a project may define. The
+// auto-import must not win when the repo has its own definition.
+describe('vue: a repo-defined composable outranks the auto-import of its name', () => {
+  let tmpDir: string;
+  let cg: CodeGraph;
+
+  beforeAll(async () => {
+    await initGrammars();
+    await loadAllGrammars();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-vue-composable-'));
+    const write = (rel: string, content: string): void => {
+      const full = path.join(tmpDir, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    };
+    write('package.json', JSON.stringify({ name: 'app', dependencies: { vue: '3', 'vue-router': '4' } }));
+    write(
+      'src/composables/useRouter.ts',
+      'import { useRouter as vueRouter } from "vue-router"\n' +
+        'export function useRouter() {\n' +
+        '  return vueRouter()\n' +
+        '}\n'
+    );
+    write(
+      'src/views/Search.vue',
+      '<template>\n  <div>Search</div>\n</template>\n' +
+        '<script setup>\n' +
+        'import { useRouter } from "../composables/useRouter"\n' +
+        'const nav = useRouter()\n' +
+        '</script>\n'
+    );
+    cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+  });
+
+  afterAll(() => {
+    cg?.close();
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('binds the call to the repo’s composable instead of consuming it as a built-in', () => {
+    const defined = cg
+      .getNodesByName('useRouter')
+      .filter((n) => n.kind === 'function' && n.filePath === 'src/composables/useRouter.ts');
+    expect(defined).toHaveLength(1);
+    expect(cg.getIncomingEdges(defined[0]!.id).some((e) => e.kind === 'calls')).toBe(true);
   });
 });

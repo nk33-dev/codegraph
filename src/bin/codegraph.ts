@@ -1122,15 +1122,19 @@ async function runIndexUpgrade(
   }
 
   const started = Date.now();
+  const beforeStats = cg.getStats();
+  let upgradeResult: { filesIndexed: number; filesSkipped: number; filesErrored: number; durationMs: number };
   if (plan.scope === 'all') {
-    const result = await cg.indexAll();
+    const result = await cg.indexAll({ force: true });
+    upgradeResult = result;
     if (!options.quiet) {
       info(`Rebuilt ${formatNumber(result.filesIndexed)} file(s) in ${formatDuration(result.durationMs)}.`);
     }
   } else {
     const languages = new Set(plan.scope);
     const paths = cg.getFiles().filter((file) => languages.has(file.language)).map((file) => file.path);
-    const result = await cg.indexFiles(paths);
+    const result = await cg.indexFiles(paths, 'global', true);
+    upgradeResult = result;
     if (!result.success || result.filesErrored > 0) {
       // 有文件没提取成功时绝不能盖新戳：那会让 status 谎称索引已是当前版本。
       error(
@@ -1163,7 +1167,11 @@ async function runIndexUpgrade(
     error('The index still reports a stale extraction version; run "codegraph index -f ." for a full rebuild.');
     process.exitCode = 1;
   } else if (!options.quiet) {
+    const afterStats = cg.getStats();
+    const diskDelta = afterStats.dbSizeBytes + afterStats.walSizeBytes
+      - (beforeStats.dbSizeBytes + beforeStats.walSizeBytes);
     info(`Index upgraded to extraction version ${assessment.current} in ${formatDuration(Date.now() - started)}.`);
+    info(`Re-extracted ${formatNumber(upgradeResult.filesIndexed)} file(s); graph totals: ${formatNumber(afterStats.nodeCount)} nodes, ${formatNumber(afterStats.edgeCount)} edges; disk change: ${formatUpgradeBytes(diskDelta)}.`);
   }
   persistResourceBaseline(projectPath);
 }
@@ -1190,7 +1198,7 @@ program
       } else {
         success(`Refreshed ${result.plan.filePath} (${result.plan.scope}, ${result.plan.taskLevel})`);
         info(result.plan.reason);
-        info(`Index generation: ${result.version ?? 'unknown'}`);
+        info(`Index content: ${result.version ?? 'unknown'}`);
       }
       cg.destroy();
     } catch (err) {
@@ -1489,7 +1497,8 @@ program
 
       // Project info
       console.log(chalk.cyan('Project:'), projectPath);
-      console.log(chalk.cyan('Index generation:'), indexStatus.version ?? 'unknown');
+      console.log(chalk.cyan('Index content:'), indexStatus.version ?? 'unknown');
+      console.log(chalk.cyan('Index task ID:'), indexStatus.taskId ?? 'unknown');
       console.log(chalk.cyan('Indexed commit:'), indexStatus.indexedCommit ?? 'unknown');
       console.log(chalk.cyan('Current commit:'), indexStatus.currentCommit ?? 'unknown');
       console.log(chalk.cyan('Last updated:'), indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never');
@@ -1759,6 +1768,7 @@ program
   .description('Explore an area: relevant symbols\' source + call paths in one shot (same output as the codegraph_explore MCP tool)')
   .option('-p, --path <path>', 'Project path')
   .option('--max-files <number>', 'Maximum number of files to include source from')
+  .option('--expand', 'Expand side branches and source for a main-chain-only query')
   .option('--directory <directory>', 'Limit primary source files to a project-relative directory')
   .option('--language <language...>', 'Prefer one or more source languages while retaining connected cross-language nodes')
   .option('--framework <framework...>', 'Require one or more detected project frameworks')
@@ -1783,7 +1793,7 @@ program
   .option('--base <ref>', 'Git commit/ref used as the change-analysis baseline (default: HEAD)')
   .option('--deep-changes', 'Build an isolated temporary baseline index for resolved semantic edge comparison')
   .option('--json', 'Output structured exploration evidence as JSON')
-  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; directory?: string; language?: string[]; framework?: string[]; symbolType?: string[]; excludeType?: string[]; mode?: string; backend?: string; file?: string; line?: string; column?: string; endLine?: string; endColumn?: string; actionKind?: string[]; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean; json?: boolean }) => {
+  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; expand?: boolean; directory?: string; language?: string[]; framework?: string[]; symbolType?: string[]; excludeType?: string[]; mode?: string; backend?: string; file?: string; line?: string; column?: string; endLine?: string; endColumn?: string; actionKind?: string[]; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean; json?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
 
     try {
@@ -1794,6 +1804,7 @@ program
 
       const args: Record<string, unknown> = { query: queryParts.join(' ') };
       if (options.maxFiles) args.maxFiles = parseInt(options.maxFiles, 10);
+      if (options.expand) args.expand = true;
       if (options.directory) args.directory = options.directory;
       if (options.language) args.languages = options.language;
       if (options.framework) args.frameworks = options.framework;

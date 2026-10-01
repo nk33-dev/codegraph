@@ -3,6 +3,9 @@
 ## 当前契约
 
 - `codegraph_explore` 默认优先输出查询符号之间的主路径和关键节点；字段、局部变量、实体属性以及短 getter/setter 只保留在符号头部或图关系中。`symbolTypes`、`excludeTypes` 可以覆盖默认展示范围。
+- 请求“只列主链路”或等价的 main/primary chain 时，只返回确认过的主调用链和位置；旁支与源码默认折叠，传 `expand: true` 或明确请求 source/details 才展开。
+- 结构化查询先给 `summary`；`file` + `line`（可选 `column`）自动走 LSP，缺少组合项时直接说明补哪个参数。LSP 冷启动的空结果标为 `indexing`，不冒充“查无此物”。
+- 精确符号存在但没有 callers/callees 时，结果保留 `target.status: found` 并说明关系数为零；目标不存在才是 `not_found`。字符串/计算分派没有图边时会提示可能存在不可见调用。
 - `directory`、`languages`、`frameworks` 和 `depth` 是展示过滤与遍历参数。目录/语言过滤不会删除过滤范围外、但处在主路径深度内的跨语言后端节点；框架过滤使用索引检测到的框架名称。
 - 磁盘上刚出现、尚未写入 `files` 表的源码可以通过 `codegraph_explore` 的 `mode:"source"`（传入 `file`、`offset`、`limit`）直接查看。结果明确标为 `unindexed`，不生成节点、边或 blast radius；刷新后才会进入正式图结果。
 - 单文件刷新命令为 `codegraph sync --file <project-relative-path>`。不支持的扩展会提示在 `codegraph.json` 增加映射；不会由 MCP 查询自动写入索引。
@@ -13,6 +16,7 @@
 - `codegraph_*` 工具名只有在能唯一映射 handler 并沿真实 calls 边回溯时才提升为调度路径；分页源码的下一步提示只使用默认公开的 `codegraph_explore`。
 - 自然语言命中 Vue 文件但没有显式符号时，只在最高相关文件中存在唯一模板处理器且它只有一个已解析下游调用时，自动提升为 `component → handler → callee` 主路径；任一层有多个候选就保持 `unconnected`。
 - MCP 的断链状态、错误原因和补救建议主要供模型消费，使用英文；安装器、`codegraph init` 等直接面向人的交互可以使用中文。
+- `codegraph install` 把简短入口与查询选择规则写入对应 Agent 指令文件；完整 MCP 用法由初始化说明和工具 schema 提供。模板变更后用 `codegraph install --refresh` 更新已配置 Agent 的旧区块，保留用户内容；工具进程需在客户端完整退出并重开后加载新实现。
 
 ## 验证边界
 

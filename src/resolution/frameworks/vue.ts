@@ -6,7 +6,13 @@
  */
 
 import { Node } from '../../types';
-import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import {
+  FrameworkResolver,
+  UnresolvedRef,
+  ResolvedRef,
+  ResolutionContext,
+  selfResolvedBuiltin,
+} from '../types';
 
 /**
  * Vue 3 compiler macros — compiler-provided, not user code
@@ -77,6 +83,25 @@ const NUXT_VIRTUAL_MODULES = [
   '#head',
 ];
 
+/** An import the repo itself resolves: relative, or through a project alias. */
+const PROJECT_LOCAL_IMPORT = /^(?:\.{1,2}\/|@\/|~\/|\/)/;
+
+/** Below the strategy loop's 0.9 first-claim threshold, so a real definition can outrank the auto-import. */
+const AUTO_IMPORT_FALLBACK_CONFIDENCE = 0.1;
+
+/**
+ * Whether the repo declares or imports this name itself. Only a same-file
+ * declaration or a project-local import counts: `vue-router` and `#imports`
+ * have no node to bind to.
+ */
+function declaresNameLocally(ref: UnresolvedRef, context: ResolutionContext): boolean {
+  const local = context.getNodesInFileNamed?.(ref.filePath, ref.referenceName) ?? [];
+  if (local.length > 0) return true;
+  return context
+    .getImportMappings(ref.filePath, ref.language)
+    .some((m) => m.localName === ref.referenceName && PROJECT_LOCAL_IMPORT.test(m.source.trim()));
+}
+
 export const vueResolver: FrameworkResolver = {
   name: 'vue',
 
@@ -103,33 +128,20 @@ export const vueResolver: FrameworkResolver = {
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
     // Pattern 1: Vue compiler macros (defineProps, defineEmits, etc.)
     if (VUE_COMPILER_MACROS.has(ref.referenceName)) {
-      return {
-        original: ref,
-        targetNodeId: ref.fromNodeId,
-        confidence: 1.0,
-        resolvedBy: 'framework',
-      };
+      return selfResolvedBuiltin(ref);
     }
 
     // Pattern 2: Nuxt auto-imported composables
     if (NUXT_AUTO_IMPORTS.has(ref.referenceName)) {
-      return {
-        original: ref,
-        targetNodeId: ref.fromNodeId,
-        confidence: 1.0,
-        resolvedBy: 'framework',
-      };
+      return declaresNameLocally(ref, context)
+        ? selfResolvedBuiltin(ref, AUTO_IMPORT_FALLBACK_CONFIDENCE)
+        : selfResolvedBuiltin(ref);
     }
 
     // Pattern 3: Nuxt virtual module imports (#imports, #components, etc.)
     if (ref.referenceKind === 'imports' && ref.referenceName.startsWith('#')) {
       if (NUXT_VIRTUAL_MODULES.some((prefix) => ref.referenceName.startsWith(prefix))) {
-        return {
-          original: ref,
-          targetNodeId: ref.fromNodeId,
-          confidence: 1.0,
-          resolvedBy: 'framework',
-        };
+        return selfResolvedBuiltin(ref);
       }
     }
 

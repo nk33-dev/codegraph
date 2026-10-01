@@ -1941,7 +1941,8 @@ export class ExtractionOrchestrator {
     // no reads/writes during the parse loop, so one writer applying bundles
     // in file order preserves the #1015 determinism exactly.
     storeWriterOpts?: { dbPath: string; fastInit: boolean } | null,
-    taskLevel: IndexTaskLevel = 'global'
+    taskLevel: IndexTaskLevel = 'global',
+    force = false
   ): Promise<IndexResult> {
     const tGrammar = Date.now();
     await initGrammars();
@@ -2180,7 +2181,7 @@ export class ExtractionOrchestrator {
         await storeWriter.waitBelow(STORE_WRITER_WINDOW);
       } else {
         const materialized = materializeKernelResult(result, filePath, language);
-        await this.storeExtractionResult(filePath, content, language, stats, materialized, commitYield);
+        await this.storeExtractionResult(filePath, content, language, stats, materialized, commitYield, force);
       }
 
       if (result.errors.length > 0) {
@@ -2493,7 +2494,7 @@ export class ExtractionOrchestrator {
 
         if (result.nodes.length > 0 || result.errors.length === 0) {
           const stats = await fsp.stat(path.join(this.rootDir, filePath));
-          await this.storeExtractionResult(filePath, content, language, stats, result, commitYield);
+          await this.storeExtractionResult(filePath, content, language, stats, result, commitYield, force);
 
           const idx = errors.indexOf(errEntry);
           if (idx >= 0) errors.splice(idx, 1);
@@ -2548,7 +2549,7 @@ export class ExtractionOrchestrator {
 
           if (result.nodes.length > 0 || result.errors.length === 0) {
             const stats = await fsp.stat(path.join(this.rootDir, filePath));
-            await this.storeExtractionResult(filePath, fullContent, language, stats, result, commitYield);
+            await this.storeExtractionResult(filePath, fullContent, language, stats, result, commitYield, force);
 
             // Salvaged from comment-stripped source: keep a visible trace in
             // the summary instead of erasing the failure outright — the
@@ -2588,7 +2589,7 @@ export class ExtractionOrchestrator {
   /**
    * Index specific files
    */
-  async indexFiles(filePaths: string[]): Promise<IndexResult> {
+  async indexFiles(filePaths: string[], force = false): Promise<IndexResult> {
     const startTime = Date.now();
     const errors: ExtractionError[] = [];
     let filesIndexed = 0;
@@ -2605,7 +2606,7 @@ export class ExtractionOrchestrator {
     }
 
     for (const filePath of filePaths) {
-      const result = await this.indexFile(filePath);
+      const result = await this.indexFile(filePath, force);
 
       if (result.errors.length > 0) {
         errors.push(...result.errors);
@@ -2642,7 +2643,7 @@ export class ExtractionOrchestrator {
   /**
    * Index a single file
    */
-  async indexFile(relativePath: string): Promise<ExtractionResult> {
+  async indexFile(relativePath: string, force = false): Promise<ExtractionResult> {
     // Indexing read: follow in-root symlinks (the `../` guard still applies), #935.
     const fullPath = validatePathWithinRoot(this.rootDir, relativePath, { allowSymlinkEscape: true });
 
@@ -2685,7 +2686,7 @@ export class ExtractionOrchestrator {
       };
     }
 
-    return this.indexFileWithContent(relativePath, content, stats);
+    return this.indexFileWithContent(relativePath, content, stats, force);
   }
 
   /**
@@ -2695,7 +2696,8 @@ export class ExtractionOrchestrator {
   async indexFileWithContent(
     relativePath: string,
     content: string,
-    stats: fs.Stats
+    stats: fs.Stats,
+    force = false
   ): Promise<ExtractionResult> {
     // Prevent `../` traversal; follow in-root symlinks like the directory walk (#935).
     const fullPath = validatePathWithinRoot(this.rootDir, relativePath, { allowSymlinkEscape: true });
@@ -2728,7 +2730,7 @@ export class ExtractionOrchestrator {
         ],
         durationMs: 0,
       };
-      await this.storeExtractionResult(relativePath, content, language, stats, result, createYielder());
+      await this.storeExtractionResult(relativePath, content, language, stats, result, createYielder(), force);
       return result;
     }
 
@@ -2750,7 +2752,7 @@ export class ExtractionOrchestrator {
     const result = extractFromSource(relativePath, content, language, frameworkNames);
 
     // Store in database
-    await this.storeExtractionResult(relativePath, content, language, stats, result, createYielder());
+    await this.storeExtractionResult(relativePath, content, language, stats, result, createYielder(), force);
 
     return result;
   }
@@ -2792,7 +2794,8 @@ export class ExtractionOrchestrator {
     language: Language,
     stats: fs.Stats,
     result: ExtractionResult,
-    onYield?: MaybeYield
+    onYield?: MaybeYield,
+    force = false
   ): Promise<void> {
     // A kernel result can arrive as an undecoded buffer transport (empty
     // node/edge arrays, tables riding in kernelBuffers). Decode it before
@@ -2816,7 +2819,7 @@ export class ExtractionOrchestrator {
     // successful retry's symbols — a permanent empty file presented as
     // recovered (the #1541 wipe, reintroduced through the marker path).
     const existingFile = this.queries.getFileByPath(filePath);
-    if (existingFile && existingFile.contentHash === contentHash) {
+    if (!force && existingFile && existingFile.contentHash === contentHash) {
       const existingIsMarker =
         existingFile.nodeCount === 0 && (existingFile.errors?.length ?? 0) > 0;
       const incomingHasContent = result.nodes.length > 0;

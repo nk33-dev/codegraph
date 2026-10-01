@@ -14,6 +14,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- Vue 路由接收者不再只认字面 `router`。把 `useRouter()` 的返回值命名为 `nav`、`appRouter` 是常规写法，此前这类导航一条边都建不出来；现在按词法作用域确认该名字确实绑定到 `useRouter()` 才连边，参数或局部变量同名遮蔽时不会误连，数组的 `paths.push('/login')` 也仍然不会被当成导航。
+- 修 Vue 调用链的三处关系缺失。Nuxt 的 `navigateTo` 既是自动导入又是导航动词，而解析器注册顺序让自动导入那一个先以满分置信度截胡，导航边因此从不产生；`defineProps`、`useRouter` 这类工具链内建各自解析到提及它的那个符号自身，画出的边在调用方视图里读成「自己调用自己」；项目自己定义、与 Nuxt 自动导入同名的 composable（例如封装过的 `useRouter`）会被自动导入遮住，绑不到真实定义。现在 `navigateTo` 连到它命名的路由，内建只消费引用不建边，仓库里存在同名定义时自动导入降为候选、由 import 与名称解析先行绑定。
+- 收敛 `codegraph_explore` 的主链问答：主链请求默认折叠旁支和源码，结构化查询先给摘要并自动选择 Graph/LSP；LSP 冷启动会等待或标记索引中，精确符号无调用方时与查无此物分开报告。索引升级会强制重抽取受影响文件，并显示稳定的内容标记与实际图规模变化。
+- 安装器的 Agent 指令块补充结构化查询、Graph/LSP 自动选择、主链展开、索引中状态与静态调用覆盖边界，已有安装可用 `codegraph install --refresh` 更新说明。
+
 - 重排 MCP 常驻说明，让「怎么选」在截断下也能活下来。真实客户端会截断过长的 `instructions`（本轮在 Claude Code 里实测到 codegraph 说明的结尾被截掉，尾部整段 Boundaries 没送到模型），而「项目没有 `.codegraph/` 就别用 Codegraph」原本压在最后一段——被截掉等于没写，已前移到 How to use。同时补上 LSP 的选择依据：原文只有「diagnostics 自动走 LSP」和「LSP 是语言正确性的权威」，没有任何一句告诉模型该主动索要 LSP，`backend:"lsp"` 事实上不可发现；现在写明图答案有歧义、仅按名字跨文件、或需要类型精确的定义/引用时显式要 LSP。Boundaries 压缩一句冗余，净增 147 字符，上限相应调整为 instructions 2,700、combined 8,050。
 
 - 补声明 `codegraph_explore` 的显示过滤参数。`handleExplore` 一直在读 `directory`、`languages`、`frameworks`、`symbolTypes`、`excludeTypes`，但工具 schema 从未声明它们——按 schema 校验的客户端发不出这些参数，CHANGELOG 里宣传的过滤功能在 MCP 上等于不存在。五个参数共 642 字符，固定表面上限相应调整（`explore` 3,280→3,610、`toolsList` 5,050→5,410、`combined` 7,300→7,950），单数别名（`language`、`symbolType`、`excludeType`、`framework`）刻意不声明以省下份额。

@@ -7,10 +7,17 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { getFileTextChanges, refreshFileTextIndex, searchFileText, type TextHit, type TextIndexChanges } from './db/file-text';
-import { queryCode, type CodeQueryRequest, type CodeQueryResult } from './graph/code-query';
+import {
+  queryCode,
+  summarizeCodeQuery,
+  defaultCodeQueryBackend,
+  normalizeCodeQueryRequest,
+  type CodeQueryRequest,
+  type CodeQueryResult,
+} from './graph/code-query';
 import { queryCodeRouted, type LspAvailability } from './graph/code-query-route';
 import { editCode, type CodeEditRequest, type CodeEditResult } from './edits';
 import { completeEditTransaction, recoverPendingEditTransactions } from './edits/transaction';
@@ -201,10 +208,14 @@ export interface IndexOptions {
   paths?: string[];
   /** 资源调度等级；普通保存、接口结构变化或全局配置变化。 */
   taskLevel?: IndexTaskLevel;
+  /** Re-extract unchanged file bytes when an extraction upgrade requires it. */
+  force?: boolean;
 }
 
 export interface IndexStatus {
   version: string | null;
+  contentVersion: string | null;
+  taskId: string | null;
   indexedCommit: string | null;
   currentCommit: string | null;
   textChanges: TextIndexChanges | null;
@@ -617,9 +628,11 @@ export class CodeGraph {
   // ===========================================================================
 
   private beginIndexGeneration(taskLevel: IndexTaskLevel, paths?: string[]): string {
-    const version = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+    const taskId = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
     try {
-      this.queries.setMetadata('index_generation', version);
+      this.queries.setMetadata('index_task_id', taskId);
+      // Keep the legacy key for old readers.
+      this.queries.setMetadata('index_generation', taskId);
       this.queries.setMetadata('index_commit', this.currentGitCommit() ?? '');
       this.queries.setMetadata('index_state', 'indexing');
       this.queries.setMetadata('index_phase', 'scanning');
@@ -628,7 +641,7 @@ export class CodeGraph {
       this.queries.setMetadata('index_started_at', String(Date.now()));
       this.queries.setMetadata('index_pending_files', String(paths?.length ?? 0));
     } catch { /* 状态元数据是辅助信息，不阻断索引 */ }
-    return version;
+    return taskId;
   }
 
   private updateIndexProgress(progress: IndexProgress): void {
@@ -645,7 +658,15 @@ export class CodeGraph {
       this.queries.setMetadata('index_failure_reason', reason ?? '');
       this.queries.setMetadata('index_finished_at', String(Date.now()));
       this.queries.setMetadata('index_pending_files', '0');
+      if (state !== 'failed') this.queries.setMetadata('index_content_version', this.computeIndexContentVersion());
     } catch { /* best effort */ }
+  }
+
+  private computeIndexContentVersion(): string {
+    const hash = createHash('sha256');
+    hash.update(`extraction:${this.queries.getMetadata('indexed_with_extraction_version') ?? 'unknown'}\n`);
+    hash.update(this.queries.getContentFingerprint());
+    return `content-${hash.digest('hex').slice(0, 16)}`;
   }
 
   /**
@@ -759,7 +780,8 @@ export class CodeGraph {
             // data the store path must read (existing-file checks, cross-file
             // edge snapshots) and delete, which belongs on one thread.
             freshDb ? { dbPath: this.db.getPath(), fastInit } : null,
-            options.taskLevel ?? 'global'
+            options.taskLevel ?? 'global',
+            options.force === true
           );
         } finally {
           if (freshDb) {
@@ -979,7 +1001,7 @@ export class CodeGraph {
    *
    * Uses a mutex to prevent concurrent indexing operations.
    */
-  async indexFiles(filePaths: string[], taskLevel: IndexTaskLevel = 'interface'): Promise<IndexResult> {
+  async indexFiles(filePaths: string[], taskLevel: IndexTaskLevel = 'interface', force = false): Promise<IndexResult> {
     return this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
@@ -988,7 +1010,7 @@ export class CodeGraph {
       }
       this.beginIndexGeneration(taskLevel, filePaths);
       try {
-        const result = await this.orchestrator.indexFiles(filePaths);
+        const result = await this.orchestrator.indexFiles(filePaths, force);
         if (result.success) await refreshFileTextIndex(this.db.getDb(), this.projectRoot, filePaths);
         this.finishIndexGeneration(result.success ? 'complete' : 'failed', result.errors.find((entry) => entry.severity === 'error')?.message);
         return result;
@@ -1671,9 +1693,20 @@ export class CodeGraph {
       : null;
   }
 
-  /** 当前索引生成版本；所有带行号的查询结果都应引用同一版本。 */
+  /** Stable marker for the indexed content. */
   getIndexVersion(): string | null {
-    return this.queries.getMetadata('index_generation');
+    return this.getIndexContentFingerprint();
+  }
+
+  /** Execution ID of the latest indexing task, for diagnostics only. */
+  getIndexTaskId(): string | null {
+    return this.queries.getMetadata('index_task_id') ?? this.queries.getMetadata('index_generation');
+  }
+
+  /** Explicit content comparison for upgrades; task metadata and timestamps are excluded. */
+  getIndexContentFingerprint(): string | null {
+    if (this.getLastIndexedAt() == null) return null;
+    return this.queries.getMetadata('index_content_version') ?? this.computeIndexContentVersion();
   }
 
   isTextIndexReady(): boolean {
@@ -1714,6 +1747,8 @@ export class CodeGraph {
     const lastUpdatedAt = this.getLastIndexedAt();
     return {
       version: this.getIndexVersion(),
+      contentVersion: this.getIndexContentFingerprint(),
+      taskId: this.getIndexTaskId(),
       indexedCommit: this.queries.getMetadata('index_commit') || null,
       currentCommit: this.currentGitCommit(checkFiles),
       textChanges,
@@ -1751,6 +1786,7 @@ export class CodeGraph {
     try {
       this.queries.setMetadata('indexed_with_version', CodeGraphPackageVersion);
       this.queries.setMetadata('indexed_with_extraction_version', String(EXTRACTION_VERSION));
+      this.queries.setMetadata('index_content_version', this.computeIndexContentVersion());
     } catch { /* metadata is advisory — never fail an upgrade over it */ }
   }
 
@@ -2178,18 +2214,22 @@ export class CodeGraph {
    * Language servers start lazily per project and are reused; repeated calls in one
    * process never spawn another one.
    */
-  async queryCodeWithBackend(request: CodeQueryRequest): Promise<CodeQueryResult> {
-    const backend = request.backend ?? (request.mode === 'diagnostics' ? 'auto' : 'graph');
+  async queryCodeWithBackend(input: CodeQueryRequest): Promise<CodeQueryResult> {
+    const request = normalizeCodeQueryRequest(input);
+    const backend = request.backend ?? defaultCodeQueryBackend(request);
     if (request.mode === 'text' && backend !== 'graph') {
       throw new Error(`${request.mode} mode only supports the graph backend`);
     }
-    if (backend === 'graph') return this.queryCode(request);
-    if (backend === 'lsp') return queryCodeLsp(this, this.getLspManager(), request);
-    return queryCodeRouted(this, { ...request, backend }, {
+    let result: CodeQueryResult;
+    if (backend === 'graph') result = this.queryCode(request);
+    else if (backend === 'lsp') result = await queryCodeLsp(this, this.getLspManager(), request);
+    else result = await queryCodeRouted(this, { ...request, backend }, {
       queryGraph: (routed) => this.queryCode(routed),
       queryLsp: (routed) => queryCodeLsp(this, this.getLspManager(), routed),
       lspAvailability: (language) => this.lspAvailability(language),
     });
+    result.summary = summarizeCodeQuery(result);
+    return result;
   }
 
   /**

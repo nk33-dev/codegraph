@@ -42,6 +42,16 @@ afterEach(() => {
 });
 
 describe('structured graph queries', () => {
+  it('warns about invisible string calls across frontend and backend files', async () => {
+    write('src/commands.rs', 'pub fn local_command() -> u32 { 1 }\n');
+    write('frontend.ts', 'export async function click() { return invoke("local_command"); }\n');
+    await cg.indexAll();
+    const result = cg.queryCode({ mode: 'callers', query: 'local_command' });
+    expect(result.status).toBe('ok');
+    expect(result.target?.status).toBe('found');
+    expect(result.page.total).toBe(0);
+    expect(result.warnings.join('\n')).toContain('string-keyed or runtime dispatch');
+  });
   it('definitions keep same-name ambiguity, paginate stably, and honor file filters', () => {
     const all = cg.queryCode({ mode: 'definitions', query: 'run' });
     expect(all.status).toBe('ok');
@@ -90,6 +100,14 @@ describe('structured graph queries', () => {
     const callees = cg.queryCode({ mode: 'callees', query: 'entry' });
     expect((callees.items as CodeReference[]).some((item) => item.target.name === 'run')).toBe(true);
     expect(cg.queryCode({ mode: 'callers', query: 'run', file: 'a/service.ts' }).page.total).toBe(1);
+  });
+
+  it('distinguishes an existing symbol with no callers from a missing symbol', () => {
+    const result = cg.queryCode({ mode: 'callers', query: 'rust_entry' });
+    expect(result.status).toBe('ok');
+    expect(result.target).toMatchObject({ status: 'found', count: 1 });
+    expect(result.items).toEqual([]);
+    expect(result.warnings.join('\n')).toContain('Target exists');
   });
 
   it('Rust and JS reuse the existing parsers and outlines keep symbol hierarchy', () => {
