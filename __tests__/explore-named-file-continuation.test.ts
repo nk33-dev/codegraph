@@ -168,8 +168,9 @@ describe('a file pinned by path keeps its head', () => {
     const text = await explore(`${HUGE} hugePanel helper`);
     const lines = [...renderedLines(text, HUGE)].sort((a, b) => a - b);
     expect(lines.length, 'the file rendered').toBeGreaterThan(0);
-    expect(lines[lines.length - 1], 'it really did stop short')
+    expect(lines.length, 'the section omits source')
       .toBeLessThan(contentLines(HUGE));
+    expect(noteFor(text, HUGE), 'omitted regions have a continuation').not.toBe('');
     expect(lines[0], 'and the head is still there').toBe(1);
   });
 });

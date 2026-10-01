@@ -6576,7 +6576,7 @@ export class ToolHandler {
     // Step 3: Build relationship map
     const trustNotices = [...indexTrustWarnings(buildIndexBlock(cg, { checkFiles: false, includeStats: false })),
       ...frameworkRelationWarnings(cg, fileGroups.keys())];
-    const trustPrefix = trustNotices.length ? `${trustNotices.join('\n')}\n\n` : '';
+    let trustPrefix = trustNotices.length ? `${trustNotices.join('\n')}\n\n` : '';
     const lines: string[] = [
       `**Exploration: ${query}**`,
       `**Index content:** ${cg.getIndexVersion() ?? 'unknown'} (all symbols, line numbers, source slices, and trail edges below use this content marker)`,
@@ -6598,8 +6598,8 @@ export class ToolHandler {
         'Use file or a file#qualifiedName selector to query one definition.', '');
     }
     const coverage = buildRelationshipCoverage(cg, exactCandidates.length ? exactCandidates : [...subgraph.nodes.values()], subgraph.edges.filter((edge) => edge.kind !== 'contains'));
-    lines.push(`**Relationship coverage — partial:** static ${coverage.resolvedStatic}, inferred ${coverage.inferred}, candidates ${coverage.runtimeCandidates}. Runtime links may be missing; empty ≠ absent.`,
-      ...coverage.dynamicSites.map((site) => `- Possible dynamic omission: ${site.form} at ${site.filePath}:${site.line} (${site.symbol}).`), '');
+    trustPrefix += [`**Relationship coverage — partial:** static ${coverage.resolvedStatic}, inferred ${coverage.inferred}, candidates ${coverage.runtimeCandidates}. Runtime links may be missing; empty ≠ absent.`,
+      ...coverage.dynamicSites.map((site) => `- Possible dynamic omission: ${site.form} at ${site.filePath}:${site.line} (${site.symbol}).`), '', ''].join('\n');
 
     if (incompleteFlow) {
       const touchesVue = sortedFiles.some(([filePath]) => filePath.endsWith('.vue'));
@@ -9176,7 +9176,7 @@ export class ToolHandler {
     // emitted in document order.
     const roomFor = roomForLines;
     // Less what the final answer block can grow by when its sentinel is filled in.
-    let room = hardCeiling - (flow.text.length + lines.join('\n').length)
+    let room = hardCeiling - trustPrefix.length - (flow.text.length + lines.join('\n').length)
       - Math.max(0, answerReserve - SUMMARY_SENTINEL.length);
 
     const fitted = fitExploreEpilogue({
@@ -9356,7 +9356,10 @@ export class ToolHandler {
       }
     }
 
-    if (trustPrefix && !finalText.startsWith(trustPrefix)) finalText = trustPrefix + finalText.replace(trustPrefix, '');
+    if (trustPrefix) {
+      finalText = finalText.replace(trustPrefix, '');
+      finalText = finalText.replace(answerLines, answerLines + '\n\n' + trustPrefix.trim());
+    }
 
     // Emit the allocation diagnostic from the FINAL text, so per-file bytes and
     // shares account for the hard-ceiling truncation above (CG-4).

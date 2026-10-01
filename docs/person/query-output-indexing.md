@@ -2,6 +2,7 @@
 
 ## 当前契约
 
+- 索引可信度与动态覆盖提示紧跟首段摘要，独立计入响应开销；点名源码的分配额度保持独立，总响应仍受字符上限约束。
 - `codegraph_explore` 默认优先输出查询符号之间的主路径和关键节点；字段、局部变量、实体属性以及短 getter/setter 只保留在符号头部或图关系中。`symbolTypes`、`excludeTypes` 可以覆盖默认展示范围。
 - 请求“只列主链路”或等价的 main/primary chain 时，只返回确认过的主调用链和位置；旁支与源码默认折叠，传 `expand: true` 或明确请求 source/details 才展开。
 - 结构化查询先给 `summary`；`file` + `line`（可选 `column`）自动走 LSP，缺少组合项时直接说明补哪个参数。LSP 冷启动的空结果标为 `indexing`，不冒充“查无此物”。
