@@ -2839,21 +2839,10 @@ export class ExtractionOrchestrator {
     // `references` edges from callers that import it via module-attribute
     // access (`pkg.mod.fn(...)`).
     //
-    // We snapshot the edge plus the target node's (name, kind) so we can
-    // re-resolve to the re-indexed target's NEW id. Node ids are
-    // `sha256(filePath:kind:name:line)`, so any line shift in the callee file
-    // (e.g. a docstring-only edit above the symbol) changes every target id and
-    // a naive re-insert by old id would silently drop every edge. Matching by
-    // (filePath, kind, name) is stable across line shifts; if the symbol was
-    // renamed/removed, no match is found and the edge stays dropped (correct).
-    const crossFileIncomingEdges = existingFile
-      ? this.queries.getCrossFileIncomingEdgesWithTarget(filePath)
-      : [];
-
-    // Delete existing data for this file
-    if (existingFile) {
-      this.queries.deleteFile(filePath);
-    }
+    // Stamped edges become durable pending refs before deletion and resolve
+    // against the new graph. Unstamped edges can only follow an unambiguous
+    // (kind, qualifiedName) target; a bare method name may belong to another class.
+    const crossFileIncomingEdges = this.queries.getCrossFileIncomingEdgesWithTarget(filePath);
 
     // Filter out nodes with missing required fields before insertion.
     // This prevents FK violations when edges reference nodes that would
@@ -2870,6 +2859,12 @@ export class ExtractionOrchestrator {
         filePath: ref.filePath ?? filePath,
         language: ref.language ?? language,
       }));
+
+    this.rememberDefinitionDelta(filePath, validNodes);
+    const incomingRefs = crossFileIncomingEdges.map(resurrectRefFromDroppedEdge)
+      .filter((ref): ref is UnresolvedReference => ref !== null);
+    // An interrupted chunked store may have nodes without a committed file record.
+    this.queries.deleteFile(filePath, incomingRefs);
 
     // Fast path for the common case (everything fits one chunk): the whole
     // file — nodes, edges, refs, file record — lands in ONE transaction with
@@ -2918,24 +2913,8 @@ export class ExtractionOrchestrator {
       }
     }
 
-    // Re-insert cross-file incoming edges snapshotted before the delete,
-    // re-resolving each edge's target to the re-indexed node's new id by
-    // (filePath, kind, name). Node ids include the source line, so any line
-    // shift in the callee file (e.g. a docstring-only edit above the symbol)
-    // changes every target id and a naive re-insert by old id would drop them
-    // all. `insertEdges` still filters to endpoints that exist. This closes
-    // the #899 edge-drop on `sync`.
-    //
-    // Edges whose callee (target) was renamed/removed during the re-index (no
-    // match in `newNodesByKindName`) are not silently dropped anymore: each is
-    // resurrected as its ORIGINAL unresolved ref (stamped on the edge as
-    // metadata.refName/refKind at creation) so the same sync's resolution
-    // sweep can rebind it to an alternative definition elsewhere, or park it
-    // as status='failed' to be retried when the symbol reappears — the
-    // removal-side counterpart of #1240. Edges without refName (built before
-    // the stamp existed, or synthesized) still drop silently: reconstructing
-    // a ref from the target's plain name would strip receiver/qualifier
-    // context and risk a rebind a full re-index would never make.
+    // Reattach only unstamped edges here; stamped callers survive in pending refs.
+    // The resolver retains the original receiver/qualifier when their target moved.
     if (crossFileIncomingEdges.length > 0) {
       this.reattachCrossFileEdges(crossFileIncomingEdges, validNodes);
     }
@@ -3008,36 +2987,43 @@ export class ExtractionOrchestrator {
 
   /**
    * Re-attach cross-file incoming edges snapshotted before a re-index delete
-   * (#899): re-resolve each edge's target to the re-indexed node's new id by
-   * (kind, name); targets that vanished are resurrected as their original
-   * unresolved ref (#1240's removal-side counterpart) when the edge carries
-   * its refName stamp.
+   * (#899). Stamped callers are already pending; unstamped edges follow only
+   * one matching (kind, qualifiedName) target after IDs change.
    */
   private reattachCrossFileEdges(
-    crossFileIncomingEdges: Array<Edge & { targetKind: string; targetName: string; sourceFilePath: string; sourceLanguage: Language }>,
+    crossFileIncomingEdges: Array<Edge & { targetKind: string; targetName: string; targetQualifiedName: string; sourceFilePath: string; sourceLanguage: Language }>,
     validNodes: Node[]
   ): void {
-    const newNodesByKindName = new Map<string, string>();
+    const newNodesByKindName = new Map<string, string[]>();
     for (const n of validNodes) {
-      newNodesByKindName.set(`${n.kind}\0${n.name}`, n.id);
+      const key = `${n.kind}\0${n.qualifiedName}`;
+      const ids = newNodesByKindName.get(key) ?? [];
+      ids.push(n.id);
+      newNodesByKindName.set(key, ids);
     }
     const reinserted: Edge[] = [];
-    const resurrected: UnresolvedReference[] = [];
     for (const e of crossFileIncomingEdges) {
-      const newTargetId = newNodesByKindName.get(`${e.targetKind}\0${e.targetName}`);
+      // Stamped edges already have durable pending refs; resolve their receiver again.
+      if (resurrectRefFromDroppedEdge(e)) continue;
+      const targets = newNodesByKindName.get(`${e.targetKind}\0${e.targetQualifiedName}`);
+      const newTargetId = targets?.length === 1 ? targets[0] : undefined;
       if (newTargetId) {
         reinserted.push({ source: e.source, target: newTargetId, kind: e.kind, metadata: e.metadata, line: e.line, column: e.column, provenance: e.provenance });
-      } else {
-        const ref = resurrectRefFromDroppedEdge(e);
-        if (ref) resurrected.push(ref);
       }
     }
     if (reinserted.length > 0) {
       this.queries.insertEdges(reinserted);
     }
-    if (resurrected.length > 0) {
-      this.queries.insertUnresolvedRefsBatch(resurrected);
-    }
+  }
+
+  private rememberDefinitionDelta(filePath: string, nodes: Node[]): void {
+    const before = new Set(this.queries.getNodeNamesByFiles([filePath]));
+    const after = new Set(nodes.map(node => node.name));
+    const delta = [...before].filter(name => !after.has(name));
+    for (const name of after) if (!before.has(name)) delta.push(name);
+    if (delta.length === 0) return;
+    // File hashes can commit before rebind runs; retain changed names across restarts.
+    this.queries.addPendingDefinitionDelta(filePath, delta);
   }
 
   /**
@@ -3230,17 +3216,18 @@ export class ExtractionOrchestrator {
       // Every name this file defined is about to stop existing here, which
       // narrows the candidate set for that name repo-wide (CG-33).
       for (const pair of this.queries.getNodeNamePairsByFiles([tracked.path])) pairsBefore.add(pair);
+      this.rememberDefinitionDelta(tracked.path, []);
       const incoming = this.queries.getCrossFileIncomingEdgesWithTarget(tracked.path);
       if (incoming.length > 0) {
         const resurrected = incoming
           .map((e) => resurrectRefFromDroppedEdge(e))
           .filter((r): r is UnresolvedReference => r !== null);
-        if (resurrected.length > 0) {
-          this.queries.insertUnresolvedRefsBatch(resurrected);
-        }
+        onFileChange?.(tracked.path);
+        this.queries.deleteFile(tracked.path, resurrected);
+      } else {
+        onFileChange?.(tracked.path);
+        this.queries.deleteFile(tracked.path);
       }
-      onFileChange?.(tracked.path);
-      this.queries.deleteFile(tracked.path);
       filesRemoved++;
     };
     for (const tracked of trackedFiles) {

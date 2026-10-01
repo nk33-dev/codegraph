@@ -750,7 +750,10 @@ export class DatabaseConnection {
 
   /**
    * Lightweight maintenance to run after bulk writes (indexAll, sync).
-   * Two operations:
+   * Maintenance tasks:
+   *
+   *   - Remove name-segment rows with no surviving symbol, so renames do not
+   *     accumulate obsolete vocabulary across incremental syncs.
    *
    *   - `PRAGMA optimize` — incremental ANALYZE; SQLite only re-analyzes
    *     tables whose row counts changed materially since the last
@@ -771,21 +774,25 @@ export class DatabaseConnection {
    * connection benefits the same. The main thread just awaits a message,
    * so the event loop — and the watchdog heartbeat — keep turning.
    *
-   * Everything is silently swallowed on failure — best-effort
-   * optimization, never load-bearing for correctness. If worker threads
+   * Failures are reported but do not block indexing. If worker threads
    * are unavailable, falls back to a bounded in-line `PRAGMA optimize`
    * and SKIPS the checkpoint (the final close() checkpoints after the
    * CLI has already disarmed its watchdog).
    */
   async runMaintenance(): Promise<void> {
+    const pruneVocab = `DELETE FROM name_segment_vocab WHERE NOT EXISTS (
+      SELECT 1 FROM nodes WHERE nodes.name = name_segment_vocab.name AND nodes.kind NOT IN ('file', 'import')
+    )`;
     // In-memory / test databases: nothing worth a worker round-trip.
     if (!this.dbPath || this.dbPath === ':memory:') {
+      try { this.db.exec(pruneVocab); }
+      catch (error) { console.warn('[CodeGraph] Vocabulary maintenance failed:', error); }
       try { this.db.exec('PRAGMA optimize'); } catch { /* ignore */ }
       try { this.db.exec('PRAGMA wal_checkpoint(PASSIVE)'); } catch { /* ignore */ }
       return;
     }
     await this.runPragmasOffThread(
-      ['PRAGMA analysis_limit=1000', 'PRAGMA optimize', 'PRAGMA wal_checkpoint(PASSIVE)'],
+      [pruneVocab, 'PRAGMA analysis_limit=1000', 'PRAGMA optimize', 'PRAGMA wal_checkpoint(PASSIVE)'],
       // Worker threads unavailable — bounded in-line fallback, no checkpoint.
       ['PRAGMA analysis_limit=1000', 'PRAGMA optimize']
     );
@@ -807,9 +814,12 @@ export class DatabaseConnection {
         try {
           const { DatabaseSync } = require('node:sqlite');
           const db = new DatabaseSync(workerData.dbPath);
-          for (const p of workerData.pragmas) { try { db.exec(p); } catch {} }
+          for (const p of workerData.pragmas) {
+            try { db.exec(p); }
+            catch (error) { console.warn('[CodeGraph] Database maintenance failed:', error.message); }
+          }
           try { db.close(); } catch {}
-        } catch {}
+        } catch (error) { console.warn('[CodeGraph] Database maintenance could not open the index:', error.message); }
         parentPort.postMessage('done');
       `;
       await new Promise<void>((resolve) => {

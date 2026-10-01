@@ -9,7 +9,10 @@ const MAX_SCAN_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SCAN_BYTES = 8 * 1024 * 1024;
 const MAX_SCAN_FILES = 32;
 
-function textFileStat(root: string, filePath: string, maxBytes = MAX_FILE_BYTES): fs.Stats | null {
+function textFileStat(
+  root: string, filePath: string, maxBytes = MAX_FILE_BYTES,
+  previous?: { size: number; modified_at: number },
+): fs.Stats | null {
   if (filePath.split('/').some((part) => part === '.git' || part === '.codegraph' || part === 'node_modules')
     || /(?:^|\/)(?:\.env(?:\..*)?|[^/]+\.(?:pem|key|p12|pfx))$/i.test(filePath)) return null;
   const absolute = validatePathWithinRoot(root, filePath);
@@ -17,6 +20,7 @@ function textFileStat(root: string, filePath: string, maxBytes = MAX_FILE_BYTES)
   try {
     const stat = fs.statSync(absolute);
     if (!stat.isFile() || stat.size > maxBytes) return null;
+    if (previous?.size === stat.size && previous.modified_at === stat.mtimeMs) return stat;
     const descriptor = fs.openSync(absolute, 'r');
     try {
       const sample = Buffer.alloc(Math.min(stat.size, 1024));
@@ -44,9 +48,9 @@ export function getFileTextChanges(db: SqliteDatabase, root: string): TextIndexC
   const changes: TextIndexChanges = { added: [], modified: [], removed: [] };
   for (const rawPath of scanTextFiles(root)) {
     const filePath = rawPath.replace(/\\/g, '/').replace(/^\.\//, '');
-    const stat = textFileStat(root, filePath);
-    if (!stat) continue;
     const record = records.get(filePath);
+    const stat = textFileStat(root, filePath, MAX_FILE_BYTES, record);
+    if (!stat) continue;
     if (!record) changes.added.push(filePath);
     else if (record.size !== stat.size || record.modified_at !== stat.mtimeMs) changes.modified.push(filePath);
     records.delete(filePath);
@@ -100,9 +104,10 @@ export async function refreshFileTextIndex(
 ): Promise<void> {
   const candidates = paths ? [...paths] : scanTextFiles(root);
   const existing = new Map<string, { size: number; modified_at: number }>(
-    (db.prepare('SELECT path, size, modified_at FROM file_text').all() as Array<{ path: string; size: number; modified_at: number }>)
+    (paths ? [] : db.prepare('SELECT path, size, modified_at FROM file_text').all() as Array<{ path: string; size: number; modified_at: number }>)
       .map((record) => [record.path, record]),
   );
+  const lookup = paths ? db.prepare('SELECT size, modified_at FROM file_text WHERE path = ?') : undefined;
   const upsert = db.prepare(`INSERT INTO file_text(path, content, size, modified_at, indexed_at)
     VALUES (?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET
     content = excluded.content, size = excluded.size, modified_at = excluded.modified_at, indexed_at = excluded.indexed_at`);
@@ -111,27 +116,28 @@ export async function refreshFileTextIndex(
   const unskip = db.prepare('DELETE FROM file_text_skipped WHERE path = ?');
   const seen = new Set<string>();
   for (let index = 0; index < candidates.length; index++) {
+    // Unchanged and skipped files must yield too, so catch-up keeps MCP responsive.
+    if (index % 100 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
     const rawPath = candidates[index]!;
     const filePath = (path.isAbsolute(rawPath) ? path.relative(root, rawPath) : rawPath)
       .replace(/\\/g, '/').replace(/^\.\//, '');
     if (seen.has(filePath)) continue;
     seen.add(filePath);
-    const stat = textFileStat(root, filePath, Number.MAX_SAFE_INTEGER);
+    const previous = lookup ? lookup.get(filePath) : existing.get(filePath);
+    const stat = textFileStat(root, filePath, Number.MAX_SAFE_INTEGER, previous);
     if (!stat) { remove.run(filePath); unskip.run(filePath); continue; }
     if (stat.size > MAX_FILE_BYTES) { remove.run(filePath); skip.run(filePath, stat.size); continue; }
     unskip.run(filePath);
+    if (previous?.size === stat.size && previous.modified_at === stat.mtimeMs) continue;
     const absolute = validatePathWithinRoot(root, filePath);
     if (!absolute) continue;
     try {
-      const previous = existing.get(filePath);
-      if (previous?.size === stat.size && previous.modified_at === stat.mtimeMs) continue;
       const bytes = fs.readFileSync(absolute);
       if (bytes.includes(0)) { remove.run(filePath); continue; }
       upsert.run(filePath, bytes.toString('utf8'), stat.size, stat.mtimeMs, Date.now());
     } catch {
       remove.run(filePath);
     }
-    if (index % 100 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
   }
   if (!paths) {
     for (const filePath of existing.keys()) if (!seen.has(filePath)) remove.run(filePath);

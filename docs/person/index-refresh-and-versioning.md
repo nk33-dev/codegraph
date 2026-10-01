@@ -12,6 +12,19 @@
 - 结构化 `warnings`、`codegraph_status` 的 `**Watch:**` 行和 explore 文本横幅共用 `watchInactiveWarning()` 一句文案。`disabled-lock` 不等于索引会变旧：持锁进程仍在同步，本会话在其退出后接管，因此这一条只说“本会话未监听、由对方维护”，不提示 `codegraph sync`——否则会引导 agent 去和持锁进程抢写；其余策略才明确要求手工同步。没有 project lifecycle 的一次性 handler 不在文本响应里重复这条（结构化状态块仍然报告）。
 - explore/node 的文件漂移提示按是否真在监听改写结尾句（`staleRecoveryNote()`），不再无条件承诺改动“会在下次索引同步时自动被拾取”。
 
+## 同步一致性与恢复
+
+- 边身份由 `(source, target, kind, IFNULL(line, -1), IFNULL(col, -1))` 唯一约束保证；不同调用点保留为不同边。重复同步验证比较完整节点和边集合，不能仅比较总数。
+- 文件替换或删除时，把带 `refName/refKind` 的跨文件入边还原成待解析引用，与删除目标节点放在同一事务。重解析沿用原接收者、限定名和调用位置；无引用印记的边只重挂到唯一的 `(kind, qualifiedName)` 目标。旧边缺少印记时，不能保证中断后重建其原始引用。
+- 分块存储未写入文件记录便中断时，下次提取先清除该路径的残留节点；文件在恢复前再次修改，也不会留下上一轮的半成品符号。
+- 每个变更文件的定义名称差异先保存在 `project_metadata` 的 `resolution_rebind_pending:<path>`，成功完成同步后删除。进程在提取与重解析之间退出时，下次同步即使没有磁盘变更，也继续重解析其他文件的受影响引用。`CODEGRAPH_NO_REBIND=1` 保留待处理记录。
+- 节点缓存用 SQLite `data_version` 识别其他连接提交，在单节点和批量读取前失效；事务内节点不进入缓存，数据库重开后清除连接相关缓存。这适用于 MCP 查询 worker、CLI 与公共 API。
+- 结构化编辑的 `indexFiles()` 仍负责提取；后续 `resolveReferencesForFiles()` 委托公共 `sync({ paths })`，同时恢复未修改调用方的引用与历史失败引用。
+- 文本索引局部刷新按路径读取旧记录；未变更文本保留路径与文件状态检查，跳过内容采样和重复路径解析。扫描每 100 个候选让出事件循环，未变更或跳过的文件也计入，让 MCP catch-up 可响应并发请求。
+- 索引/同步后的数据库维护在 worker 中删除已无有效节点的词表名称，并清空写入端的名称去重缓存，允许名称重新出现。清理是可重试的维护工作：SQL 错误记录英文告警，读端仍验证词表候选；worker 不可用时沿用有界维护降级，清理等待后续正常维护。SQLite 可复用已释放页，物理文件不因清理立即缩小；统计需区分主库、WAL、空闲页和有效记录。
+
+恢复与多连接用例见 `__tests__/index-reliability.test.ts`；规模测量入口见[索引可靠性审查](index-reliability.md)。这些改动尚未发布。
+
 ## 数据库与提取版本
 
 - schema 版本由 `CURRENT_SCHEMA_VERSION` 单点声明，**v1.6.1 同步后为 13**。上游用 10 表示 synthesis、11 表示它的索引守卫；个人自己的 `file_text` 迁移让位到 13，12 是桥接迁移，只在 `synthesis_inputs` 缺失时重放上游 v10，所以对上游库和全新库都是 no-op。编号纪律见[维护流程](maintenance.md)的「迁移编号纪律」。

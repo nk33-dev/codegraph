@@ -251,6 +251,8 @@ export class QueryBuilder {
   // Node cache for frequently accessed nodes (LRU-style, max 1000 entries)
   private nodeCache: Map<string, Node> = new Map();
   private readonly maxCacheSize = 1000;
+  private nodeCacheDataVersion: number | undefined;
+  private nodeCacheVersionStmt: SqliteStatement | undefined;
 
   // getDominantFile()'s answer, tagged with the database change stamp it was
   // computed under (see getChangeStamp). Query-independent, so one value
@@ -385,6 +387,9 @@ export class QueryBuilder {
    */
   rebind(db: SqliteDatabase): void {
     this.db = db;
+    this.nodeCacheVersionStmt = undefined;
+    this.nodeCacheDataVersion = undefined;
+    this.nodeCache.clear();
     this.stmts = {};
     this.batchStmts.clear();
     this.edgeKindStmts.clear();
@@ -499,9 +504,9 @@ export class QueryBuilder {
     });
 
     // Segment vocabulary rides the same write path (and transaction) so it can
-    // never drift ahead of the nodes it describes. Deletes intentionally leave
-    // orphans behind — vocab rows are proposals re-verified against nodes
-    // before use, and a full index clears the table at its start. File nodes
+    // never drift ahead of the nodes it describes. Deletes can leave orphans
+    // until post-sync maintenance prunes them; reads re-verify against nodes.
+    // A full index also clears the table at its start. File nodes
     // are excluded: a file's basename duplicates the symbols inside it
     // (state-machine.ts / OrderStateMachine), which double-counts every
     // concept and defeats the singleton-vs-cluster rarity statistics. Import
@@ -769,6 +774,11 @@ export class QueryBuilder {
     this.segmentedNames.clear();
   }
 
+  /** Maintenance removes obsolete names; allow those names to be indexed again. */
+  resetNameSegmentCache(): void {
+    this.segmentedNames.clear();
+  }
+
   /** True when the vocab has no rows — an index built before the table existed.
    *  `sync` uses this to heal such databases (see rebuildNameSegmentVocabFrom). */
   isNameSegmentVocabEmpty(): boolean {
@@ -866,6 +876,7 @@ export class QueryBuilder {
    * Get a node by ID
    */
   getNodeById(id: string): Node | null {
+    this.refreshNodeCache();
     // Check cache first
     if (this.nodeCache.has(id)) {
       const cached = this.nodeCache.get(id)!;
@@ -909,6 +920,7 @@ export class QueryBuilder {
   getNodesByIds(ids: readonly string[]): Map<string, Node> {
     const out = new Map<string, Node>();
     if (ids.length === 0) return out;
+    this.refreshNodeCache();
 
     // Serve cache hits first; build the miss list for SQL.
     const misses: string[] = [];
@@ -973,6 +985,7 @@ export class QueryBuilder {
    * Add a node to the cache, evicting oldest if needed
    */
   private cacheNode(node: Node): void {
+    if (this.db.inTransaction !== false) return;
     if (this.nodeCache.size >= this.maxCacheSize) {
       // Evict oldest (first) entry
       const firstKey = this.nodeCache.keys().next().value;
@@ -988,6 +1001,16 @@ export class QueryBuilder {
    */
   clearCache(): void {
     this.nodeCache.clear();
+  }
+
+  private refreshNodeCache(): void {
+    // Other connections can replace or delete cached rows while MCP stays open.
+    this.nodeCacheVersionStmt ??= this.db.prepare('PRAGMA data_version');
+    const version = this.nodeCacheVersionStmt.get().data_version as number;
+    if (version !== this.nodeCacheDataVersion) this.nodeCache.clear();
+    this.nodeCacheDataVersion = version;
+    // A cached row read inside a transaction must not survive its rollback.
+    if (this.db.inTransaction !== false) this.nodeCache.clear();
   }
 
   /**
@@ -2918,7 +2941,7 @@ export class QueryBuilder {
 
   /**
    * Cross-file edges whose TARGET is a node in `filePath` and whose SOURCE is a
-   * node in a *different* file, paired with the target node's (name, kind) so a
+   * node in a *different* file, paired with the target's qualified name and kind so a
    * caller can re-resolve the edge to the re-indexed target's new ID (node IDs
    * are `sha256(filePath:kind:name:line)`, so any line shift in the callee file
    * changes target IDs and a naive re-insert by old ID silently drops them).
@@ -2928,8 +2951,9 @@ export class QueryBuilder {
    */
   getCrossFileIncomingEdgesWithTarget(
     filePath: string
-  ): Array<Edge & { targetName: string; targetKind: NodeKind; sourceFilePath: string; sourceLanguage: Language }> {
+  ): Array<Edge & { targetName: string; targetKind: NodeKind; targetQualifiedName: string; sourceFilePath: string; sourceLanguage: Language }> {
     const sql = `SELECT e.*, tgt.name AS target_name, tgt.kind AS target_kind,
+        tgt.qualified_name AS target_qualified_name,
         src.file_path AS source_file_path, src.language AS source_language
       FROM edges e
       JOIN nodes tgt ON tgt.id = e.target
@@ -2938,12 +2962,13 @@ export class QueryBuilder {
         AND e.kind != 'contains'
         AND src.file_path != ?`;
     const rows = this.db.prepare(sql).all(filePath, filePath) as Array<
-      EdgeRow & { target_name: string; target_kind: NodeKind; source_file_path: string; source_language: Language }
+      EdgeRow & { target_name: string; target_kind: NodeKind; target_qualified_name: string; source_file_path: string; source_language: Language }
     >;
     return rows.map(row => ({
       ...rowToEdge(row),
       targetName: row.target_name,
       targetKind: row.target_kind,
+      targetQualifiedName: row.target_qualified_name,
       sourceFilePath: row.source_file_path,
       sourceLanguage: row.source_language,
     }));
@@ -3162,8 +3187,10 @@ export class QueryBuilder {
   /**
    * Delete a file record and its nodes
    */
-  deleteFile(filePath: string): void {
+  deleteFile(filePath: string, incomingRefs: UnresolvedReference[] = []): void {
     this.db.transaction(() => {
+      // Persist callers before the target cascade so interrupted stores can retry them.
+      this.insertUnresolvedRefsBatch(incomingRefs);
       this.deleteNodesByFile(filePath);
       if (!this.stmts.deleteFile) {
         this.stmts.deleteFile = this.db.prepare('DELETE FROM files WHERE path = ?');
@@ -3933,6 +3960,24 @@ export class QueryBuilder {
   getMetadata(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM project_metadata WHERE key = ?').get(key) as { value: string } | undefined;
     return row?.value ?? null;
+  }
+
+  addPendingDefinitionDelta(filePath: string, names: string[]): void {
+    const key = `resolution_rebind_pending:${filePath}`;
+    const prior: string[] = JSON.parse(this.getMetadata(key) ?? '[]');
+    this.setMetadata(key, JSON.stringify([...new Set([...prior, ...names])]));
+  }
+
+  getPendingDefinitionDelta(): string[] {
+    const rows = this.db.prepare("SELECT value FROM project_metadata WHERE key GLOB 'resolution_rebind_pending:*'")
+      .all() as Array<{ value: string }>;
+    const names = new Set<string>();
+    for (const row of rows) for (const name of JSON.parse(row.value) as string[]) names.add(name);
+    return [...names];
+  }
+
+  clearPendingDefinitionDelta(): void {
+    this.db.exec("DELETE FROM project_metadata WHERE key GLOB 'resolution_rebind_pending:*'");
   }
 
   /**
