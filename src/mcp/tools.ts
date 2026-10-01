@@ -5,6 +5,7 @@
  */
 
 import type CodeGraph from '../index';
+import { frameworkRelationWarnings } from '../graph/framework-gaps';
 import type { RefreshResult } from '../index';
 import type { QueryPool } from './query-pool';
 import { createHash } from 'crypto';
@@ -36,7 +37,7 @@ import {
 } from '../sync/worktree';
 import { pendingFileState, sortPendingFiles, type PendingFile, type WatchPolicy } from '../sync';
 import { indexedFileFreshness } from '../sync/file-freshness';
-import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, buildIndexBlock, defaultCodeQueryBackend, emptyCodeQueryResult, summarizeCodeQuery, watchInactiveWarning, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
+import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, buildIndexBlock, defaultCodeQueryBackend, emptyCodeQueryResult, indexTrustWarnings, summarizeCodeQuery, watchInactiveWarning, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
 import { NODE_KINDS, LANGUAGES, type Node, type Edge, type EdgeKind, type SearchResult, type Subgraph, type NodeKind, type Language } from '../types';
 import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, formatCodeEditText, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
 import { editTools } from './edit-tool';
@@ -1993,6 +1994,7 @@ export interface ToolResult {
     | CodeEditResult
     | ExploreStructuredContent
     | RefreshResult
+    | { index: import('../graph/code-query').IndexBlock }
     | { freshness: Record<string, unknown> };
   content: Array<{
     type: 'text';
@@ -2013,6 +2015,7 @@ export interface ToolResult {
 }
 
 export interface ExploreStructuredContent {
+  index?: import('../graph/code-query').IndexBlock;
   schemaVersion: 1;
   kind: 'explore';
   query: string;
@@ -3205,7 +3208,7 @@ export class ToolHandler {
     return !(policy === 'unwatched-projectPath' && !this.projectLifecycle);
   }
 
-  private withStalenessNotice(result: ToolResult, projectPath?: string): ToolResult {
+  private withStalenessNotice(result: ToolResult, projectPath?: string, files: string[] = []): ToolResult {
     if (result.isError) return result;
 
     let cg: CodeGraph;
@@ -3227,6 +3230,17 @@ export class ToolHandler {
         if (sameProject) cg = this.cg;
       } catch {
         /* getProjectRoot may throw on a closed instance — leave cg as is */
+      }
+    }
+
+    if (typeof cg.getIndexStatus === 'function' && typeof cg.getPendingReferenceCount === 'function') {
+      const index = buildIndexBlock(cg, { checkFiles: false, includeStats: false });
+      const notices = [...indexTrustWarnings(index), ...frameworkRelationWarnings(cg, files)]
+        .filter(message => !result.content[0]?.text.includes(message));
+      const [head, ...tail] = result.content;
+      result = { ...result, structuredContent: { ...result.structuredContent, index } };
+      if (head?.type === 'text' && notices.length) {
+        result = { ...result, content: [{ type: 'text', text: `${notices.join('\n')}\n\n${head.text}` }, ...tail], structuredContent: { ...result.structuredContent, index } };
       }
     }
 
@@ -3473,7 +3487,15 @@ export class ToolHandler {
       // caller passed session state.
       const result = this.takeExploreEmission(raw, sessionState);
       const withWorktree = this.withWorktreeNotice(result, args.projectPath as string | undefined);
-      return finish(this.withStalenessNotice(withWorktree, args.projectPath as string | undefined));
+      const noticed = this.withStalenessNotice(withWorktree, args.projectPath as string | undefined, answeredFrom?.map(file => file.path));
+      if (noticed.structuredContent && 'kind' in noticed.structuredContent && noticed.structuredContent.kind === 'explore') {
+        const text = noticed.content[0]?.text ?? null;
+        const truncated = (text?.length ?? 0) > 12000;
+        noticed.structuredContent = { ...noticed.structuredContent, rendered: { ...noticed.structuredContent.rendered,
+          text: truncated ? null : text, chars: text?.length ?? 0, truncated,
+          hint: truncated ? 'Use mode:"source" with file, offset, and limit for a narrower source slice.' : null } };
+      }
+      return finish(noticed);
     } catch (err) {
       // Expected condition, not a malfunction: answer as a SUCCESS so the
       // agent keeps trusting the toolset for projects that ARE indexed.
@@ -6509,6 +6531,9 @@ export class ToolHandler {
     }
 
     // Step 3: Build relationship map
+    const trustNotices = [...indexTrustWarnings(buildIndexBlock(cg, { checkFiles: false, includeStats: false })),
+      ...frameworkRelationWarnings(cg, fileGroups.keys())];
+    const trustPrefix = trustNotices.length ? `${trustNotices.join('\n')}\n\n` : '';
     const lines: string[] = [
       `**Exploration: ${query}**`,
       `**Index content:** ${cg.getIndexVersion() ?? 'unknown'} (all symbols, line numbers, source slices, and trail edges below use this content marker)`,
@@ -6811,7 +6836,7 @@ export class ToolHandler {
       : '**Answer**\n- Status: Indexed evidence found in the current indexed project.\n- Scope: '.length);
     const epilogueFloor = Math.max(
       EXPLORE_FALLBACK_NOTES.lost.complete.length, EXPLORE_FALLBACK_NOTES.lost.trimmed.length,
-    ) + 2 + cliffPointerFloor + answerReserve;
+    ) + 2 + cliffPointerFloor + answerReserve + trustPrefix.length;
     // Absolute stop for the render loop. Reservations already fit the envelope, so
     // this only catches their bounded overshoot (the whole-file grace, an oversize
     // first cluster) — and catches it HERE, where a file can be skipped cleanly and
@@ -6826,6 +6851,7 @@ export class ToolHandler {
     // displacement guard dutifully held bytes back to pay for that section —
     // taking them off a file the agent DOES receive and handing them to one it
     // never sees.
+    // The final cap pays for trust notices without reducing reserved source slices.
     let totalChars = flow.text.length + lines.join('\n').length;
     let filesIncluded = 0;
     // Paths we actually render source for below. Drives the curated header count
@@ -9162,7 +9188,7 @@ export class ToolHandler {
       return note ? `\n\n${note}` : '';
     };
 
-    const output = flow.text + lines.join('\n');
+    const output = trustPrefix + flow.text + lines.join('\n');
     let finalText: string;
     // The epilogue costs less than a file section, so it is cut FIRST (CG-31).
     // Dropping a trailing section throws away source the render loop had already
@@ -9171,7 +9197,7 @@ export class ToolHandler {
     // its work. The epilogue is a pointer list and two reminders; its own
     // "explore these names" instruction survives in the note below.
     const epilogueOnlyCut = epilogueStart < lines.length
-      ? flow.text + lines.slice(0, epilogueStart).join('\n')
+      ? trustPrefix + flow.text + lines.slice(0, epilogueStart).join('\n')
       : null;
     const EPILOGUE_CUT_NOTE = EXPLORE_FALLBACK_NOTES.cut[
       epilogueOnlyCut !== null && trimmedIn(epilogueOnlyCut) ? 'trimmed' : 'complete'];
@@ -9277,6 +9303,8 @@ export class ToolHandler {
           .filter(Boolean).join('\n\n');
       }
     }
+
+    if (trustPrefix && !finalText.startsWith(trustPrefix)) finalText = trustPrefix + finalText.replace(trustPrefix, '');
 
     // Emit the allocation diagnostic from the FINAL text, so per-file bytes and
     // shares account for the hard-ceiling truncation above (CG-4).
@@ -9951,8 +9979,8 @@ export class ToolHandler {
     }
     const stats = cg.getStats();
     const pendingAtStart = cg.getPendingFiles();
-    const indexStatus = cg.getIndexStatus();
-    const indexView = buildIndexBlock(cg, { checkFiles: false, includeStats: false });
+    const indexView = buildIndexBlock(cg, { checkFiles: true, includeStats: false });
+    const indexStatus = indexView;
     const runtime = runtimeBuildIdentity();
 
     // Warn when this index actually belongs to a different git working tree
@@ -9979,6 +10007,8 @@ export class ToolHandler {
       `**Last updated:** ${indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never'}`,
       `**Lagging files:** ${indexStatus.laggingFileCount}`,
       `**Freshness:** ${indexView.freshness}${indexView.freshnessReason ? ` — ${indexView.freshnessReason}` : ''}`,
+      `**Revision:** ${indexView.revision}`,
+      ...indexTrustWarnings(indexView),
       ...(indexStatus.textChanges ? [
         `**Text index changes:** +${indexStatus.textChanges.added.length} ~${indexStatus.textChanges.modified.length} -${indexStatus.textChanges.removed.length}`,
         ...indexStatus.textChanges.added.slice(0, 10).map((filePath) => `- not indexed: ${filePath}`),
@@ -10109,6 +10139,7 @@ export class ToolHandler {
     }
 
     return { ...this.textResult(lines.join('\n')), structuredContent: {
+      index: indexView,
       freshness: { lastIndexedAt, changes, complete: changes !== null },
     } };
   }

@@ -79,6 +79,7 @@ import {
   ResolutionResult,
 } from './resolution';
 import { hasSynthesisPattern } from './resolution/callback-synthesizer';
+import { indexRevision, type RevisionStatus } from './graph/index-health';
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
@@ -213,6 +214,7 @@ export interface IndexOptions {
 }
 
 export interface IndexStatus {
+  revision: RevisionStatus;
   version: string | null;
   contentVersion: string | null;
   taskId: string | null;
@@ -1752,9 +1754,9 @@ export class CodeGraph {
     const textChanges = checkFiles ? getFileTextChanges(this.db.getDb(), this.projectRoot) : null;
     const pending = this.getPendingFiles();
     const rawLevel = this.queries.getMetadata('index_task_level');
-    const taskLevel = rawLevel === 'ordinary' || rawLevel === 'interface' || rawLevel === 'global' ? rawLevel : null;
+    const taskLevel: IndexTaskLevel | null = rawLevel === 'ordinary' || rawLevel === 'interface' || rawLevel === 'global' ? rawLevel : null;
     const lastUpdatedAt = this.getLastIndexedAt();
-    return {
+    const status = {
       version: this.getIndexVersion(),
       contentVersion: this.getIndexContentFingerprint(),
       taskId: this.getIndexTaskId(),
@@ -1769,6 +1771,7 @@ export class CodeGraph {
       failureReason: this.queries.getMetadata('index_failure_reason') || null,
       taskLevel,
     };
+    return { ...status, revision: indexRevision(status, checkFiles) };
   }
 
   /**
@@ -1882,6 +1885,11 @@ export class CodeGraph {
    */
   getPendingReferenceCount(): number {
     return this.queries.getUnresolvedReferencesCount();
+  }
+
+  /** Returns bounded source paths and the full count; downstream dependents may extend beyond them. */
+  getPendingReferenceFiles(limit = 100): { files: string[]; fileCount: number } {
+    return this.queries.getPendingReferenceFiles(limit);
   }
 
   /**

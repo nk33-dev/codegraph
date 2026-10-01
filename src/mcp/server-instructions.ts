@@ -25,8 +25,8 @@ Codegraph reads an indexed local code graph. Its default MCP surface has two too
 
 ## Boundaries
 
-- Graph relationships are best-effort static evidence; LSP/compiler/tests remain the authority for language correctness. Runtime candidates and inferred edges are labelled, not presented as confirmed calls.
-- Heed pending, stale, or degraded-index warnings: unflagged shown source is current, but a \`changed on disk after the last index sync\` flag means Read that file and retry after sync.
+- Graph edges are static evidence; LSP/compiler/tests govern correctness. Vue/React props/emits and runtime candidates are labelled as inferred; computed bindings and events may be missing.
+- Heed index warnings: callers/impact may miss results. Revision separates verified HEAD, unchanged files without commit provenance, stale and unverified. Verify disk-drift flags against files.
 - Use \`projectPath\` for another indexed project or when this session has no default project.
 `;
 

@@ -3406,6 +3406,12 @@ export class QueryBuilder {
     return row.count;
   }
 
+  getPendingReferenceFiles(limit = 100): { files: string[]; fileCount: number } {
+    const rows = this.db.prepare("SELECT DISTINCT file_path FROM unresolved_refs WHERE status = 'pending' ORDER BY file_path LIMIT ?").all(limit) as { file_path: string }[];
+    const count = this.db.prepare("SELECT COUNT(DISTINCT file_path) AS count FROM unresolved_refs WHERE status = 'pending'").get() as { count: number };
+    return { files: rows.map(row => row.file_path), fileCount: count.count };
+  }
+
   /**
    * Get a batch of PENDING unresolved references using LIMIT/OFFSET
    * pagination. Used to process references in bounded memory chunks; failed

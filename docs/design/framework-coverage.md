@@ -52,6 +52,17 @@ despite where it lives) and the object-literal walker in
 
 ---
 
+## Frontend binding coverage (2026-10-01)
+
+The current worktree extends existing Vue/React support with imported `useRouter`
+aliases, explicit returned composable members, Vue literal emits and callback
+props, and React named callback props. These edges retain heuristic provenance
+and registration sites. Static identifier props also expose value dependencies.
+Computed destinations, dynamic components, spread props, inline callback bindings
+and runtime event names remain coverage gaps and are labelled in queries.
+Fixture validation is recorded in `component-bindings.test.ts`; real-repository
+recall/precision and agent A/B have not been measured for this change.
+
 ## What is left
 
 Ordered by cost-to-value. Each row says what is missing, not merely that

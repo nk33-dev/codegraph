@@ -12,6 +12,15 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- Vue/React 支持更多 composable、路由别名、props 与 emits 关系，查询会提示框架及动态关系的覆盖边界。
+
+### Fixes
+
+- 查询在索引不完整时显示原因、待解析数量和受影响文件，并提示 callers 与 impact 可能漏项。
+- 索引状态区分提交已核对、文件检查通过但提交信息缺失、已落后及尚未核验。
+
 ### Personal fork
 
 - Vue 路由接收者不再只认字面 `router`。把 `useRouter()` 的返回值命名为 `nav`、`appRouter` 是常规写法，此前这类导航一条边都建不出来；现在按词法作用域确认该名字确实绑定到 `useRouter()` 才连边，参数或局部变量同名遮蔽时不会误连，数组的 `paths.push('/login')` 也仍然不会被当成导航。

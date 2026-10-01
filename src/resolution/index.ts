@@ -40,7 +40,7 @@ import { lexicalPathWithinRoot } from '../utils';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { JS_BUILT_INS } from './js-builtins';
-import { resolveStoreBinding, STORE_BINDING_SHADOWED } from './store-binding';
+import { resolveStoreBinding, resolveComposableBinding, STORE_BINDING_SHADOWED } from './store-binding';
 import { dynamicNamespaceImportMapping } from '../graph/dynamic-import';
 
 /** Node kinds that can declare supertypes (extends/implements). */
@@ -1009,6 +1009,8 @@ export class ReferenceResolver {
     const storeBinding = resolveStoreBinding(ref, this.context);
     if (storeBinding === STORE_BINDING_SHADOWED) return null;
     if (storeBinding) return storeBinding;
+    const composable = resolveComposableBinding(ref, this.context);
+    if (composable) return composable;
 
     if (isUnresolvedJsMemberChain(ref)) {
       // React Native bridges have explicit module identity; other unknown chains skip import, framework, and fuzzy guesses.

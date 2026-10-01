@@ -16,7 +16,7 @@ export const SYNTHESIZED_EDGE = "CASE WHEN json_valid(metadata) THEN json_extrac
  * out of the replacement instead: deleting the target node, or resolving that
  * store's own files again, is what keeps it current.
  */
-export const STAGE_KEPT_SYNTHESIZERS = ['zustand-binding'] as const;
+export const STAGE_KEPT_SYNTHESIZERS = ['zustand-binding', 'composable-binding'] as const;
 
 /** {@link SYNTHESIZED_EDGE}, minus the markers the stage must leave in place. */
 const REPLACEABLE_SYNTHESIZED_EDGE =
