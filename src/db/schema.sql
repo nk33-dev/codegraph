@@ -159,8 +159,8 @@ END;
 -- singleton-vs-cluster rarity statistics. FTS can't serve this lookup (its
 -- tokenizer keeps camelCase names as single tokens), so segments are
 -- materialized on the node write path.
--- Deletions leave orphan rows ON PURPOSE: rows are PROPOSALS, always
--- re-verified against nodes before being surfaced (CodeGraph.getSegmentMatches),
+-- Deletions may leave orphan rows until post-sync maintenance prunes them.
+-- Reads verify proposals against nodes (CodeGraph.getSegmentMatches),
 -- and a full index clears the table at its start. Populated lazily on old
 -- databases (empty until the next index/sync heals it).
 CREATE TABLE IF NOT EXISTS name_segment_vocab (

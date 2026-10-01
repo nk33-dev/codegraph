@@ -172,6 +172,29 @@ describe('insertNode cache invalidation', () => {
     const afterReplace = q.getNodeById('n1');
     expect(afterReplace!.name).toBe('newName');
   });
+
+  it('does not retain a node read from a rolled-back transaction', () => {
+    q.insertNode(makeNode('n1', 'original'));
+    expect(q.getNodeById('n1')?.name).toBe('original');
+    expect(() => db.getDb().transaction(() => {
+      db.getDb().prepare('UPDATE nodes SET name = ? WHERE id = ?').run('temporary', 'n1');
+      expect(q.getNodeById('n1')?.name).toBe('temporary');
+      throw new Error('Roll back');
+    })()).toThrow('Roll back');
+    expect(q.getNodeById('n1')?.name).toBe('original');
+  });
+
+  it('resets cache statements when rebound to a new database connection', () => {
+    q.insertNode(makeNode('n1', 'old'));
+    expect(q.getNodeById('n1')?.name).toBe('old');
+    const replacement = DatabaseConnection.initialize(path.join(dir, 'replacement.db'));
+    try {
+      new QueryBuilder(replacement.getDb()).insertNode(makeNode('n1', 'new'));
+      q.rebind(replacement.getDb());
+      expect(q.getNodeById('n1')?.name).toBe('new');
+      expect(q.getNodesByIds(['n1']).get('n1')?.name).toBe('new');
+    } finally { replacement.close(); }
+  });
 });
 
 describe('insertEdges endpoint validation', () => {

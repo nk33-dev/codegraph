@@ -1,0 +1,393 @@
+{
+  "startedAt": "2026-10-01T12:19:03.306Z",
+  "baseCommit": "95ca2893f766cd12029cd12ec52155b1a2b4d131",
+  "sourceSha256": "29b11eee9e8deb9fb5d9b279c8e3747229216a9c5d9f56db78c6cab52b12465d",
+  "platform": "win32",
+  "node": "v24.16.0",
+  "cpu": "AMD Ryzen 7 6800H with Radeon Graphics",
+  "coldDefinition": "New SQLite connection plus first query in the same warmed Node process; OS file cache is retained.",
+  "fixtures": "Synthetic Go projects with unique methods and bounded fan-out; no production latency or precision claim.",
+  "results": [
+    {
+      "count": 100,
+      "lines": 1100,
+      "indexMs": 1767.4347999999995,
+      "initial": {
+        "files": 100,
+        "nodes": 400,
+        "edges": 600,
+        "duplicates": 0,
+        "vocabRows": 300,
+        "dbBytes": 745472,
+        "walBytes": 24752,
+        "allocatedBytes": 745472,
+        "freePages": 2
+      },
+      "afterSync": {
+        "files": 100,
+        "nodes": 400,
+        "edges": 600,
+        "duplicates": 0,
+        "vocabRows": 300,
+        "dbBytes": 786432,
+        "walBytes": 37112,
+        "allocatedBytes": 786432,
+        "freePages": 16
+      },
+      "afterEdits": {
+        "files": 100,
+        "nodes": 400,
+        "edges": 600,
+        "duplicates": 0,
+        "vocabRows": 300,
+        "dbBytes": 786432,
+        "walBytes": 383192,
+        "allocatedBytes": 786432,
+        "freePages": 14
+      },
+      "bytesPer1000Files": 7864320,
+      "bytesPer10000Lines": 7149381.818181818,
+      "noChangeSync": {
+        "samples": 5,
+        "p50Ms": 818.946899999999,
+        "p95Ms": 901.1252000000004
+      },
+      "beforeQueries": [
+        {
+          "mode": "explore",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 30.923499999998967,
+            "p95Ms": 127.51010000000133
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 13.890000000001237,
+            "p95Ms": 18.153299999999945
+          }
+        },
+        {
+          "mode": "callers",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 208.95470000000023,
+            "p95Ms": 238.4346999999998
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 5.918300000001182,
+            "p95Ms": 8.628900000001522
+          }
+        },
+        {
+          "mode": "impact",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 199.8091999999997,
+            "p95Ms": 210.0691999999999
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 3.4853000000002794,
+            "p95Ms": 5.620699999999488
+          }
+        }
+      ],
+      "afterQueries": [
+        {
+          "mode": "explore",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 23.470499999999447,
+            "p95Ms": 27.105200000001787
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 11.473300000001473,
+            "p95Ms": 14.255400000001828
+          }
+        },
+        {
+          "mode": "callers",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 201.84549999999945,
+            "p95Ms": 225.78639999999723
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 5.594199999999546,
+            "p95Ms": 7.764999999999418
+          }
+        },
+        {
+          "mode": "impact",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 194.98359999999957,
+            "p95Ms": 204.16150000000198
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 2.9094999999979336,
+            "p95Ms": 4.802299999999377
+          }
+        }
+      ]
+    },
+    {
+      "count": 1000,
+      "lines": 11000,
+      "indexMs": 10731.5318,
+      "initial": {
+        "files": 1000,
+        "nodes": 4000,
+        "edges": 6000,
+        "duplicates": 0,
+        "vocabRows": 3000,
+        "dbBytes": 5103616,
+        "walBytes": 24752,
+        "allocatedBytes": 5103616,
+        "freePages": 2
+      },
+      "afterSync": {
+        "files": 1000,
+        "nodes": 4000,
+        "edges": 6000,
+        "duplicates": 0,
+        "vocabRows": 3000,
+        "dbBytes": 5652480,
+        "walBytes": 37112,
+        "allocatedBytes": 5652480,
+        "freePages": 177
+      },
+      "afterEdits": {
+        "files": 1000,
+        "nodes": 4000,
+        "edges": 6000,
+        "duplicates": 0,
+        "vocabRows": 3000,
+        "dbBytes": 5652480,
+        "walBytes": 440872,
+        "allocatedBytes": 5652480,
+        "freePages": 175
+      },
+      "bytesPer1000Files": 5652480,
+      "bytesPer10000Lines": 5138618.181818182,
+      "noChangeSync": {
+        "samples": 5,
+        "p50Ms": 2117.2295000000013,
+        "p95Ms": 2735.8107999999993
+      },
+      "beforeQueries": [
+        {
+          "mode": "explore",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 39.44569999999658,
+            "p95Ms": 48.60229999999865
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 11.834900000001653,
+            "p95Ms": 15.03009999999631
+          }
+        },
+        {
+          "mode": "callers",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 196.8535999999949,
+            "p95Ms": 211.36119999999937
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 5.19380000000092,
+            "p95Ms": 6.5953000000008615
+          }
+        },
+        {
+          "mode": "impact",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 200.13649999999325,
+            "p95Ms": 206.39319999999861
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 2.8378000000011525,
+            "p95Ms": 4.780100000003586
+          }
+        }
+      ],
+      "afterQueries": [
+        {
+          "mode": "explore",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 37.664099999994505,
+            "p95Ms": 44.81710000000021
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 11.86590000000433,
+            "p95Ms": 16.6788000000015
+          }
+        },
+        {
+          "mode": "callers",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 200.86770000000251,
+            "p95Ms": 209.01929999999993
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 5.056799999998475,
+            "p95Ms": 6.44270000000688
+          }
+        },
+        {
+          "mode": "impact",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 198.8990000000049,
+            "p95Ms": 207.08909999999742
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 3.077900000003865,
+            "p95Ms": 4.950799999998708
+          }
+        }
+      ]
+    },
+    {
+      "count": 5000,
+      "lines": 55000,
+      "indexMs": 64505.72439999999,
+      "initial": {
+        "files": 5000,
+        "nodes": 20000,
+        "edges": 30000,
+        "duplicates": 0,
+        "vocabRows": 15000,
+        "dbBytes": 24907776,
+        "walBytes": 24752,
+        "allocatedBytes": 24907776,
+        "freePages": 64
+      },
+      "afterSync": {
+        "files": 5000,
+        "nodes": 20000,
+        "edges": 30000,
+        "duplicates": 0,
+        "vocabRows": 15000,
+        "dbBytes": 26578944,
+        "walBytes": 37112,
+        "allocatedBytes": 26578944,
+        "freePages": 664
+      },
+      "afterEdits": {
+        "files": 5000,
+        "nodes": 20000,
+        "edges": 30000,
+        "duplicates": 0,
+        "vocabRows": 15000,
+        "dbBytes": 26578944,
+        "walBytes": 638632,
+        "allocatedBytes": 26578944,
+        "freePages": 664
+      },
+      "bytesPer1000Files": 5315788.8,
+      "bytesPer10000Lines": 4832535.2727272725,
+      "noChangeSync": {
+        "samples": 5,
+        "p50Ms": 11236.453600000008,
+        "p95Ms": 19811.367800000007
+      },
+      "beforeQueries": [
+        {
+          "mode": "explore",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 148.21100000001024,
+            "p95Ms": 177.46930000002612
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 21.379699999990407,
+            "p95Ms": 27.35989999998128
+          }
+        },
+        {
+          "mode": "callers",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 298.68249999999534,
+            "p95Ms": 307.6001999999862
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 7.96830000000773,
+            "p95Ms": 11.246899999998277
+          }
+        },
+        {
+          "mode": "impact",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 295.2241999999969,
+            "p95Ms": 331.17149999999674
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 5.283599999995204,
+            "p95Ms": 6.981900000013411
+          }
+        }
+      ],
+      "afterQueries": [
+        {
+          "mode": "explore",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 140.48889999999665,
+            "p95Ms": 149.9377000000095
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 19.887199999997392,
+            "p95Ms": 27.417799999995623
+          }
+        },
+        {
+          "mode": "callers",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 297.50779999999213,
+            "p95Ms": 307.85330000001704
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 6.971599999989849,
+            "p95Ms": 13.509200000000419
+          }
+        },
+        {
+          "mode": "impact",
+          "coldConnection": {
+            "samples": 10,
+            "p50Ms": 287.45389999999315,
+            "p95Ms": 294.5935999999929
+          },
+          "hot": {
+            "samples": 30,
+            "p50Ms": 4.413899999985006,
+            "p95Ms": 9.27359999998589
+          }
+        }
+      ]
+    }
+  ]
+}

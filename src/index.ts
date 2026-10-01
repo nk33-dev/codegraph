@@ -910,6 +910,7 @@ export class CodeGraph {
           // (the loser would silently no-op and leave the WAL unfolded).
           if (walValve) { walValve.stop(); await walValve.drain(); }
           await this.db.runMaintenance();
+          this.queries.resetNameSegmentCache();
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) console.error(`[phase-timing] maintenance: ${Date.now() - tMaint}ms`);
         }
 
@@ -1047,20 +1048,13 @@ export class CodeGraph {
    *
    * `indexFiles()` intentionally remains extraction-only because recovery tests rely on the
    * intermediate state where nodes exist but resolution has not run. Edit refreshes call this
-   * second step explicitly, matching incremental sync: resolve references from changed files,
-   * then retry historical failures that their newly introduced names may satisfy (#1240).
+   * second step explicitly through sync, including incoming callers and interrupted rebinds.
    */
   async resolveReferencesForFiles(filePaths: string[]): Promise<void> {
     const normalized = [...new Set(filePaths.map((filePath) => filePath.replace(/\\/g, '/')))];
     if (normalized.length === 0) return;
 
-    const unresolvedRefs = this.queries.getUnresolvedReferencesByFiles(normalized);
-    if (unresolvedRefs.length > 0) this.resolver.resolveAndPersist(unresolvedRefs);
-
-    const retryable = this.queries.getRetryableFailedReferences(
-      this.queries.getNodeNamesByFiles(normalized),
-    );
-    if (retryable.length > 0) await this.resolver.resolveAndPersistListYielding(retryable);
+    await this.sync({ paths: normalized });
   }
 
   /**
@@ -1199,7 +1193,10 @@ export class CodeGraph {
         // resolution/synthesis. Detect those orphans BEFORE this sync adds refs.
         let refreshSynthesis = this.queries.getMetadata('synthesis_pending') === '1' ||
           this.queries.getUnresolvedReferencesCount() > 0;
-        if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
+        if (refreshSynthesis) {
+          this.queries.setMetadata('synthesis_pending', '1');
+          this.resolver.clearCaches();
+        }
         const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure,
           (filePath, content) => {
             if (!refreshSynthesis && (this.queries.hasSynthesizedEdgesTouchingFile(filePath) ||
@@ -1326,15 +1323,22 @@ export class CodeGraph {
         //
         // `definitionDelta` is empty for a body-only edit, so the overwhelmingly
         // common sync pays one branch. CODEGRAPH_NO_REBIND=1 disables it.
-        if (result.definitionDelta && process.env.CODEGRAPH_NO_REBIND !== '1') {
+        const pendingDefinitionDelta = this.queries.getPendingDefinitionDelta();
+        const definitionDelta = [...new Set([...pendingDefinitionDelta, ...(result.definitionDelta ?? [])])];
+        if (!filesChanged && pendingDefinitionDelta.length > 0) {
+          this.resolver.runPostExtract();
+          const retryable = this.queries.getRetryableFailedReferences(pendingDefinitionDelta);
+          if (retryable.length > 0) await this.resolver.resolveAndPersistListYielding(retryable);
+        }
+        if (definitionDelta.length > 0 && process.env.CODEGRAPH_NO_REBIND !== '1') {
           const tRebind = Date.now();
           const rebound = this.orchestrator.resurrectStaleResolutionEdges(
-            result.definitionDelta,
+            definitionDelta,
             result.changedFilePaths ?? []
           );
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
             console.error(
-              `[phase-timing] sync-rebind: ${Date.now() - tRebind}ms (${result.definitionDelta.length} changed names, ${rebound} edges re-opened)`
+              `[phase-timing] sync-rebind: ${Date.now() - tRebind}ms (${definitionDelta.length} changed names, ${rebound} edges re-opened)`
             );
           }
         }
@@ -1410,6 +1414,7 @@ export class CodeGraph {
         // Off-thread — see indexAll's call site.
         if (filesChanged || result.filesRemoved > 0 || orphanCount > 0 || refreshSynthesis) {
           await this.db.runMaintenance();
+          this.queries.resetNameSegmentCache();
         }
 
         // Heal the segment vocabulary on indexes built before the table
@@ -1432,6 +1437,10 @@ export class CodeGraph {
         }
 
         this.orchestrator.finishGitIndexState(gitState, fullReconcile, result.failedFilePaths);
+
+        if (pendingDefinitionDelta.length > 0 && process.env.CODEGRAPH_NO_REBIND !== '1') {
+          this.queries.clearPendingDefinitionDelta();
+        }
 
         if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
         return result;

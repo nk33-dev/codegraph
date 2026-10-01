@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import CodeGraph from '../src/index';
 import { DatabaseConnection, getDatabasePath } from '../src/db';
 import { ToolHandler } from '../src/mcp/tools';
+import { refreshFileTextIndex } from '../src/db/file-text';
 
 describe('file text search', () => {
   let root: string;
@@ -91,6 +92,17 @@ describe('file text search', () => {
       { filePath: 'README.md', lines: [{ line: 1 }] },
       { filePath: 'settings.json', lines: [{ line: 1 }] },
     ]);
+  });
+
+  it('lets the event loop serve work while unchanged text files are reconciled', async () => {
+    const connection = DatabaseConnection.open(getDatabasePath(root));
+    try {
+      let served = false;
+      setImmediate(() => { served = true; });
+      await refreshFileTextIndex(connection.getDb(), root, ['src/main.ts']);
+      expect(served).toBe(true);
+      expect(graph.queryCode({ mode: 'text', query: 'api.timeout', file: 'src/main.ts' }).page.total).toBe(1);
+    } finally { connection.close(); }
   });
 
   it('upgrades a word FTS index transactionally and keeps literal punctuation searchable', async () => {
