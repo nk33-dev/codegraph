@@ -11,6 +11,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { mayHaveGitRepository } from './git-presence';
+import { gitExcludeFile } from './git-config';
 import {
   Language,
   FileRecord,
@@ -397,11 +398,7 @@ function readGitExcludeExtraPatterns(rootDir: string): string {
     }
   }
   try {
-    const configured = execFileSync(
-      'git',
-      ['-C', rootDir, 'config', '--get', 'core.excludesFile'],
-      { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
-    ).trim();
+    const configured = gitExcludeFile(rootDir);
     if (configured) {
       const abs = expandUserPath(configured);
       if (fs.existsSync(abs)) {

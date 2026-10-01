@@ -29,7 +29,7 @@
 | Explore stale 输出、跨调用去重边界与点名文件的头部保留和续读脚注 | [Explore 响应稳定性](explore-response.md) |
 | 查询输出折叠、过滤、新文件状态与失败分类 | [查询输出、过滤与索引状态](query-output-indexing.md) |
 | 首调用 catch-up 时延、alwaysLoad 固定成本与 explore→Read 回退比例 | [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md) |
-| 本地 Git 探测成本、测试选择与性能项目分离 | [测试性能](test-performance.md) |
+| Git 调用成本、测试选择与 Windows CI 分片 | [测试性能](test-performance.md) |
 | Steps、Windows 清理、WASM 测试运行与性能修复 | [开发验证记录](test-repairs.md) |
 
 CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_explore` 和 `codegraph_edit`，局部刷新通过 CLI `codegraph refresh <file>` 与公共 API 提供。可视化沿用上游功能；上游 v1.6.1 起 viewer 默认不随发布开放，`codegraph ui` / `web` 需要显式设置 `CODEGRAPH_UI=1` 才会启动，不设置就完全不运行 HTTP 服务。
@@ -48,7 +48,7 @@ Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘
 
 当前已发布版本为 [v1.6.0-personal.13](releases/v1.6.0-personal.13.md)（2026-10-01 的 GitHub prerelease），标签指向 `4477e92`。同提交三平台 CI `36870702413` 和 Personal Release `36874630766` 均成功；详细测试数字与资产校验只保留在发行说明。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
 
-本地已有测试耗时优化，尚未推送或发布；实现、测量与范围见[测试性能](test-performance.md)。
+本地已减少测试中的 Git 调用，并将 Windows CI 测试分到三台 runner；尚未推送或发布。实现、测量与范围见[测试性能](test-performance.md)。
 
 个人版从 [GitHub Release 安装](personal-usage.md)，不通过上游 npm 包获得个人改动。`personal` 分支的同一提交通过三平台 CI 后，才由 `Personal Release` 在 GitHub runner 构建、隔离验证、打包并创建 prerelease；本机不承担发布构建和上传。
 

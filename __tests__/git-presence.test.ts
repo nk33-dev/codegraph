@@ -33,7 +33,11 @@ describe('Git repository discovery before subprocess work', () => {
     vi.mocked(execFileSync).mockClear();
     cg = CodeGraph.initSync(root);
     await cg.indexAll();
+    const configReads = () => vi.mocked(execFileSync).mock.calls.filter(([file, args]) =>
+      file === 'git' && Array.isArray(args) && args.includes('core.excludesFile')).length;
+    expect(configReads()).toBe(1);
     await cg.sync();
+    expect(configReads()).toBe(2);
     expect(cg.getNodesByName('hello')).toHaveLength(1);
     const probes = vi.mocked(execFileSync).mock.calls.filter(([file, args]) =>
       file === 'git' && Array.isArray(args) && ['rev-parse', 'status', 'ls-files'].includes(args[0]));

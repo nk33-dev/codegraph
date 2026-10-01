@@ -1,5 +1,15 @@
 # 个人版开发验证记录
 
+## 2026-10-01：Git 配置复用与 Windows CI 分片
+
+接续本地提交 `5513cf8`，本轮仍只提交到 `personal`，不推送。当前方案见[测试性能](test-performance.md)。
+
+- 单次 indexAll/indexFiles/sync 复用 Git ignore 配置路径，任务之间独立；ignore 内容重读，Git 状态与提交查询保持实时。新增测试覆盖异步隔离、目录和环境变更、未设置配置、退出码 128/超时类失败重试及配置更新。
+- 本机 Windows / Node v24.16.0，真实 Git 单文件项目三次“建索引＋无变更同步”中位数 2,646→2,226 ms，Git 调用 33→27；非 Git 单文件项目在两轮优化后，中位数 1,365→453 ms，Git 调用 17→2。日志与测量脚本保存在 `C:/Temp/codegraph-integration-20261001`。这些是小样本测量，未推算全量 CI 比例。
+- 最终 `check:quick` 类型检查与 Git 配置/仓库探测/Windows 子进程三文件 11 项通过。Git 索引新鲜度、旧 Git 兼容及未跟踪目录三文件 16 项通过；extraction 的 ignore/fallback 定向 3 项通过、其余 691 项未运行。上述七文件合计 30 项通过，没有运行本地完整构建或全量测试。
+- 通过已安装 Vitest 2.1.9 的实际测试发现及默认 sequencer 按 pool 分片，engine/ui 共 381 文件，三片各 127 文件，交集为零、并集完整。`vitest list --shard` 仍列出全部文件，初次列表不能作为分片覆盖证据。未运行 GitHub 分片作业。
+- 原发行提交 `4477e92` 的成功 CI `36870702413`：Windows 30 分 4 秒，Linux 5 分 55 秒，macOS 3 分 50 秒。新配置使用三台 Windows runner 各两个 worker；实际并行耗时及排队情况待推送后测量，版本与 .13 发行资产未变化。
+
 ## 2026-10-01：本地测试耗时优化
 
 以发行提交 `4477e92` 为基线；用户要求本轮优化不推送。Windows、Node v24.16.0，实现和测量契约见[测试性能](test-performance.md)。

@@ -10,6 +10,7 @@ import * as path from 'path';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mayHaveGitRepository } from './extraction/git-presence';
+import { withGitConfigSnapshot } from './extraction/git-config';
 import { getFileTextChanges, refreshFileTextIndex, searchFileText, type TextHit, type TextIndexChanges } from './db/file-text';
 import {
   queryCode,
@@ -1017,7 +1018,8 @@ export class CodeGraph {
         if (!writerHeld) this.fileLock.release();
       }
     };
-    return writerHeld ? run() : this.indexMutex.withLock(run);
+    const task = () => withGitConfigSnapshot(run);
+    return writerHeld ? task() : this.indexMutex.withLock(task);
   }
 
   /** Keep the writer lock across re-extraction, resolution and relation comparison. */
@@ -1095,7 +1097,8 @@ export class CodeGraph {
         if (!writerHeld) this.fileLock.release();
       }
     };
-    return writerHeld ? run() : this.indexMutex.withLock(run);
+    const task = () => withGitConfigSnapshot(run);
+    return writerHeld ? task() : this.indexMutex.withLock(task);
   }
 
   /**
@@ -1534,7 +1537,8 @@ export class CodeGraph {
         if (!writerHeld) this.fileLock.release();
       }
     };
-    return writerHeld ? run() : this.indexMutex.withLock(run);
+    const task = () => withGitConfigSnapshot(run);
+    return writerHeld ? task() : this.indexMutex.withLock(task);
   }
 
   /**
