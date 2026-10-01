@@ -40,6 +40,8 @@ export interface UnresolvedRef {
  * A resolved reference
  */
 export interface ResolvedRef {
+  /** Compiler-provided references are consumed without drawing a self-call. */
+  selfResolvedBuiltin?: boolean;
   /** Original unresolved reference */
   original: UnresolvedRef;
   /** ID of the target node */

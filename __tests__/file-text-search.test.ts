@@ -118,7 +118,8 @@ describe('file text search', () => {
     await graph.sync();
     const removed = graph.queryCode({ mode: 'text', query: 'secretNeedle' });
     expect(removed.items).toEqual([]);
-    expect(removed.warnings).toEqual([]);
+    expect(removed.index?.revision).toBe('unverified');
+    expect(removed.warnings.join('\n')).not.toContain('large or unreadable');
   });
 
   it('bounds live scans and merges their matches into stable indexed pagination', async () => {
@@ -136,6 +137,7 @@ describe('file text search', () => {
     expect(first.warnings.join('\n')).toContain('1 large or unreadable file(s) were not searched');
     const narrowed = graph.queryCode({ mode: 'text', query: 'budgetNeedle', file: 'large-4.md' });
     expect(narrowed.page.total).toBe(1);
-    expect(narrowed.warnings).toEqual([]);
+    expect(narrowed.index?.revision).toBe('unverified');
+    expect(narrowed.warnings.join('\n')).not.toContain('large or unreadable');
   });
 });

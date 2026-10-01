@@ -12,6 +12,15 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- Vue/React 支持更多 composable、路由别名、props 与 emits 关系，查询会提示框架及动态关系的覆盖边界。
+
+### Fixes
+
+- 查询在索引不完整时显示原因、待解析数量和受影响文件，并提示 callers 与 impact 可能漏项。
+- 索引状态区分提交已核对、文件检查通过但提交信息缺失、已落后及尚未核验。
+
 ### Personal fork
 
 - 重排 MCP 常驻说明，让「怎么选」在截断下也能活下来。真实客户端会截断过长的 `instructions`（本轮在 Claude Code 里实测到 codegraph 说明的结尾被截掉，尾部整段 Boundaries 没送到模型），而「项目没有 `.codegraph/` 就别用 Codegraph」原本压在最后一段——被截掉等于没写，已前移到 How to use。同时补上 LSP 的选择依据：原文只有「diagnostics 自动走 LSP」和「LSP 是语言正确性的权威」，没有任何一句告诉模型该主动索要 LSP，`backend:"lsp"` 事实上不可发现；现在写明图答案有歧义、仅按名字跨文件、或需要类型精确的定义/引用时显式要 LSP。Boundaries 压缩一句冗余，净增 147 字符，上限相应调整为 instructions 2,700、combined 8,050。

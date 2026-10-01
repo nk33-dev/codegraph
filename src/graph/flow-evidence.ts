@@ -16,6 +16,7 @@ export type FlowBreakReason =
   | 'unindexed'
   | 'unsupported'
   | 'no_syntax_edge'
+  | 'framework_dynamic'
   | 'dynamic_key'
   | 'ambiguous_candidates'
   | 'language_boundary'
@@ -549,8 +550,10 @@ export function buildFlowEvidenceReport(
     const languages = new Set(
       [...flow.named.values(), ...flow.namedTypes.values(), ...flow.dynNamed.values()].map((node) => node.language),
     );
-    const reason: FlowBreakReason = languages.size > 1 ? 'language_boundary' : 'no_syntax_edge';
-    const detail = languages.size > 1
+    const frontend = [...flow.named.values(), ...flow.namedTypes.values()].some(node => /\.(?:vue|tsx|jsx)$/.test(node.filePath));
+    const reason: FlowBreakReason = frontend ? 'framework_dynamic' : languages.size > 1 ? 'language_boundary' : 'no_syntax_edge';
+    const detail = frontend ? 'No confirmed connection; a framework or dynamic relationship may be missing (composable, store, route, props or emits)'
+      : languages.size > 1
       ? 'The resolved symbols cross a language boundary with no confirmed graph connection'
       : 'The resolved symbols have no confirmed syntax or graph relation';
     const item = breakEvidence(reason, detail, null);

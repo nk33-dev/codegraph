@@ -14,6 +14,8 @@ import type { TextHit } from '../db/file-text';
 import type { TextIndexChanges } from '../db/file-text';
 import { runtimeBuildIdentity, type RuntimeBuildIdentity } from '../runtime-info';
 import { buildTypeHierarchy } from './type-hierarchy';
+import { indexRevision, REVISION_MESSAGES } from './index-health';
+import { frameworkRelationWarnings } from './framework-gaps';
 
 export const CODE_QUERY_MODES = [
   'definitions', 'type-definition', 'implementations', 'references', 'symbols', 'hover',
@@ -255,6 +257,14 @@ export type CodeQueryItem =
 export type MergedCodeQueryItem = CodeQueryItem & { origin: CodeQuerySource; corroborated: boolean };
 
 export interface IndexBlock {
+  revision: import('./index-health').RevisionStatus;
+  completeness: {
+    status: 'complete' | 'incomplete' | 'unknown';
+    reasons: string[];
+    pendingReferenceFiles: string[];
+    pendingReferenceFileCount: number;
+    scope: 'listed-files-and-dependents' | 'project' | 'unknown';
+  };
   version: string | null;
   indexedCommit: string | null;
   currentCommit: string | null;
@@ -284,7 +294,7 @@ export interface IndexBlock {
   changes: ReturnType<CodeGraph['getChangedFiles']> | null;
   changeCounts: { added: number; modified: number; removed: number } | null;
   /** 供调用方快速判断索引和工作区是否同步的摘要。 */
-  freshness: 'current' | 'syncing' | 'stale' | 'degraded';
+  freshness: 'current' | 'syncing' | 'stale' | 'degraded' | 'unverified';
   freshnessReason: string | null;
   stats: GraphStats | null;
 }
@@ -529,12 +539,22 @@ export function buildIndexBlock(
     || status.textChanges.removed.length > 0
   ));
   const hasCommitDrift = Boolean(status.indexedCommit && status.currentCommit && status.indexedCommit !== status.currentCommit);
+  const revision = status.revision ?? indexRevision(status, options.checkFiles || options.includeStats);
+  const pendingReferences = cg.getPendingReferenceCount();
+  const referenceFiles = pendingReferences ? cg.getPendingReferenceFiles?.() ?? { files: [], fileCount: 0 } : { files: [], fileCount: 0 };
+  const reasons: string[] = [];
+  if (pendingReferences) reasons.push(`${pendingReferences} references have not been resolved`);
+  if (pending.length) reasons.push(`${pending.length} files await reconciliation`);
+  if (status.state === 'indexing' || status.state === 'partial' || status.state === 'failed') {
+    reasons.push(`index task state is ${status.state}${status.failureReason ? `: ${status.failureReason}` : ''}`);
+  }
+  const projectIncomplete = status.state === 'indexing' || status.state === 'partial' || status.state === 'failed';
   let freshness: IndexBlock['freshness'] = 'current';
   let freshnessReason: string | null = null;
   if (cg.isWatcherDegraded()) {
     freshness = 'degraded';
     freshnessReason = cg.getWatcherDegradedReason() ?? 'live file watching stopped';
-  } else if (pending.length > 0 || cg.getPendingReferenceCount() > 0 || status.state === 'indexing') {
+  } else if (pending.length > 0 || pendingReferences > 0 || status.state === 'indexing') {
     freshness = 'syncing';
     freshnessReason = 'the index still has files or references waiting for reconciliation';
   } else if (hasCommitDrift || hasTextChanges || status.laggingFileCount > 0 || status.state === 'partial' || status.state === 'failed') {
@@ -544,8 +564,19 @@ export function buildIndexBlock(
       : status.laggingFileCount > 0 || hasTextChanges
         ? 'the working tree has indexed files that differ from disk without a pending reconciliation'
         : 'the last index task did not complete';
+  } else if (revision === 'unverified') {
+    freshness = 'unverified';
+    freshnessReason = REVISION_MESSAGES.unverified;
   }
   return {
+    revision,
+    completeness: {
+      status: reasons.length ? 'incomplete' : status.state === 'complete' ? 'complete' : 'unknown',
+      reasons,
+      pendingReferenceFiles: referenceFiles.files,
+      pendingReferenceFileCount: referenceFiles.fileCount,
+      scope: projectIncomplete ? 'project' : reasons.length ? 'listed-files-and-dependents' : 'unknown',
+    },
     version: status.version,
     indexedCommit: status.indexedCommit,
     currentCommit: status.currentCommit,
@@ -565,7 +596,7 @@ export function buildIndexBlock(
     watchPolicyReason: watching ? undefined : cg.getWatchPolicyReason?.() ?? undefined,
     degraded: cg.isWatcherDegraded(), degradedReason: cg.getWatcherDegradedReason(),
     pendingFiles: sortPendingFiles(pending).slice(0, STATE_PATH_LIMIT), pendingFileCount: pending.length,
-    pendingReferences: cg.getPendingReferenceCount(),
+    pendingReferences,
     changes: changes ? {
       added: changes.added.slice(0, STATE_PATH_LIMIT), modified: changes.modified.slice(0, STATE_PATH_LIMIT),
       removed: changes.removed.slice(0, STATE_PATH_LIMIT),
@@ -611,13 +642,28 @@ export function indexWarnings(index: IndexBlock): string[] {
     warnings.push(watchInactiveWarning(index.watchPolicy, index.watchPolicyReason ?? null));
   }
 
-  if (index.pendingReferences) warnings.push('Reference resolution is incomplete; results may omit edges.');
+  warnings.push(...indexTrustWarnings(index));
   if (index.freshness !== 'current' && index.freshnessReason) {
     warnings.push(`Index freshness is ${index.freshness}: ${index.freshnessReason}.`);
   }
   if (index.state === 'complete' && index.laggingFileCount > 0 && index.pendingFileCount === 0) {
     warnings.push('The index reports lagging files without pending paths; recheck status before trusting a complete blast radius.');
   }
+  return warnings;
+}
+
+export function indexTrustWarnings(index: IndexBlock): string[] {
+  const warnings: string[] = [];
+  if (index.completeness.status === 'incomplete') {
+    const paths = [...new Set([...index.completeness.pendingReferenceFiles, ...index.pendingFiles.map(file => file.path)])];
+    const files = paths.slice(0, 5);
+    const scope = index.completeness.scope === 'project' ? 'project-wide; missing files and edges cannot be fully enumerated'
+      : `${index.completeness.pendingReferenceFileCount} reference-source files and ${index.pendingFileCount} pending files${files.length ? ` (${files.join(', ')}${paths.length > files.length || index.completeness.pendingReferenceFileCount > paths.length ? ', …' : ''})` : ''}, plus their dependents; downstream scope may extend beyond these files`;
+    warnings.push(`Index incomplete: ${index.completeness.reasons.join('; ')}. Affected scope: ${scope}. Callers and impact may omit results; an empty result does not prove no callers or dependents. Run codegraph sync; if the index task remains partial or failed, run codegraph index.`);
+  } else if (index.completeness.status === 'unknown') {
+    warnings.push('Index completeness is unknown: this index has no completed-task marker; missing files or edges cannot be ruled out.');
+  }
+  if (index.revision !== 'verified') warnings.push(REVISION_MESSAGES[index.revision]);
   return warnings;
 }
 
@@ -839,6 +885,7 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     : lookup!.nodes.filter(n => file === undefined || n.filePath === file))
     .filter((node) => (impactFile !== null && node.kind === 'file') || isQueryEligibleNode(root, node)).sort(compareNodes);
   result.ambiguous = request.mode !== 'symbols' && impactFile === null && nodes.length > 1;
+  result.warnings.push(...frameworkRelationWarnings(cg, nodes.map(node => node.filePath)));
   if (!nodes.length) {
     if (request.mode !== 'impact') result.status = 'not_found';
     if (request.mode !== 'symbols' && !impactFile) {

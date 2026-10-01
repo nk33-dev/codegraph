@@ -50,6 +50,7 @@ import type {
 import { stripCommentsForRegex } from '../strip-comments';
 import { matchBracket, readFields, topLevelObjects } from './object-literal';
 import { dependsOn } from './package-deps';
+import { callBinding } from '../store-binding';
 import {
   addRouteTo,
   appRootFor,
@@ -295,7 +296,7 @@ export const vueRouterResolver: FrameworkResolver = {
   },
 
   claimsReference(name: string): boolean {
-    return NAV_CALL.test(name);
+    return NAV_CALL.test(name) || /^[\w$]+\.(?:push|replace)$/.test(name);
   },
 
   extract(filePath: string, content: string): FrameworkExtractionResult {
@@ -356,7 +357,13 @@ export const vueRouterResolver: FrameworkResolver = {
         : null;
     }
 
-    const verb = vueNavVerb(ref.referenceName);
+    const receiver = /^([\w$]+)\.(push|replace)$/.exec(ref.referenceName);
+    const binding = receiver ? callBinding(receiver[1]!, ref, context) : null;
+    const routerImport = binding?.callee && context.getImportMappings(ref.filePath, ref.language).some(imp =>
+      imp.localName === binding.callee && ['useRouter', 'createRouter'].includes(imp.exportedName) && imp.source === 'vue-router');
+    const nuxtRouter = binding?.callee === 'useRouter' && dependsOn(context, 'nuxt', 'nuxt3');
+    if (binding && (!routerImport && !nuxtRouter || binding.callee && callBinding(binding.callee, ref, context)?.local)) return null;
+    const verb = receiver && (routerImport || nuxtRouter) ? receiver[2]! : vueNavVerb(ref.referenceName);
     if (!verb) return null;
     if (!ROUTE_LANGUAGES.includes(ref.language)) return null;
     const routes = routesForFile(vueRouteTable(context), ref.filePath);

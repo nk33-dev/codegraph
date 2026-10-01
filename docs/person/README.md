@@ -4,6 +4,8 @@
 
 ## 已实现
 
+- 查询可信度：不完整索引显示原因和已知影响范围，提交对应状态单独报告；Vue/React 的 composable、路由别名、props 和 emits 关系及静态边界见[查询契约](query-output-indexing.md)和[索引状态](index-refresh-and-versioning.md)。验证记录见查询契约，待个人版 .13 发布。
+
 - [Explore 宽问句与能力判断](mcp-experience-review.md)：清单、比较、能力和存在性问句的首段摘要，以及索引证据与运行时支持的边界。
 - [统一证据、置信度与实现者展开](flow-evidence.md)：`codegraph_explore` 的版本化证据、自然语言流程意图区分、关系来源分级与调用点位置、失败优先输出、接口/抽象方法运行时候选、跨轮证据去重与会话字节预算。
 - [高价值动态分派补全](dynamic-dispatch.md)：接口/DI、事件与队列、RPC/handler、ORM/repository、状态管理和插件注册的共享桥接，以及不可证明运行时键的诚实 boundary。

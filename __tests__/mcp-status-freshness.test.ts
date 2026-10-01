@@ -42,7 +42,7 @@ describe('MCP status freshness (#1959)', () => {
     fs.writeFileSync(path.join(root, 'add.ts'), 'export const added = 1;\n');
 
     const result = await handler.execute('codegraph_status', {});
-    expect(result.structuredContent).toEqual({ freshness: {
+    expect(result.structuredContent).toEqual({ index: expect.objectContaining({ revision: 'stale' }), freshness: {
       lastIndexedAt: cg.getLastIndexedAt(), changes: { added: 1, modified: 1, removed: 1 }, complete: true,
     } });
     const changed = result.content[0].text;

@@ -76,6 +76,7 @@ describe('watchInactiveWarning', () => {
 /** The minimum an IndexBlock needs for the watch branches under test. */
 function indexBlock(patch: Partial<IndexBlock>): IndexBlock {
   return {
+    revision: 'unverified', completeness: { status: 'complete', reasons: [], pendingReferenceFiles: [], pendingReferenceFileCount: 0, scope: 'unknown' },
     version: null, indexedCommit: null, currentCommit: null, textChanges: null,
     state: 'complete', phase: null, lastUpdatedAt: null, laggingFileCount: 0,
     failureReason: null, taskLevel: null, lastIndexedAt: null,

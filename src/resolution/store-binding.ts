@@ -1,5 +1,6 @@
 import type { Node as SyntaxNode } from 'web-tree-sitter';
 import { getParser } from '../extraction/grammars';
+import { vueScriptSource } from '../extraction/vue-script-source';
 import type { Node } from '../types';
 import { resolveViaImport } from './import-resolver';
 import type { ResolutionContext, ResolvedRef, UnresolvedRef } from './types';
@@ -9,8 +10,10 @@ interface Binding {
   start: number;
   end: number;
   local: boolean;
+  parameter?: boolean;
   store?: string;
   action?: string;
+  callee?: string;
 }
 
 const JS = new Set(['typescript', 'tsx', 'javascript', 'jsx']);
@@ -41,7 +44,8 @@ function bindingsFor(ref: UnresolvedRef, context: ResolutionContext, source: str
   if (!files) { files = new Map(); cache.set(context, files); }
   const hit = files.get(ref.filePath);
   if (hit?.source === source) return hit.bindings;
-  const tree = getParser(ref.language)?.parse(source);
+  const parseSource = ref.language === 'vue' ? vueScriptSource(source) : source;
+  const tree = getParser(ref.language === 'vue' ? 'typescript' : ref.language)?.parse(parseSource);
   if (!tree) return [];
   const bindings: Binding[] = [];
   const add = (pattern: SyntaxNode, scope: SyntaxNode) => {
@@ -61,7 +65,7 @@ function bindingsFor(ref: UnresolvedRef, context: ResolutionContext, source: str
       scope = node;
       functionScope = node;
       const params = node.childForFieldName('parameters') ?? node.childForFieldName('parameter');
-      if (params) add(params, scope);
+      if (params) for (const entry of add(params, scope)) entry.parameter = true;
     } else if (node.type === 'statement_block' || node.type === 'catch_clause' || node.type === 'for_statement' || node.type === 'for_in_statement') {
       scope = node;
       const param = node.childForFieldName('parameter');
@@ -76,6 +80,7 @@ function bindingsFor(ref: UnresolvedRef, context: ResolutionContext, source: str
           const callee = value.childForFieldName('function')?.text.replace(/\s+/g, '');
           const args = value.childForFieldName('arguments')?.namedChildren ?? [];
           const store = callee?.match(/^([A-Za-z_$][\w$]*)(?:\.getState)?$/)?.[1];
+          if (store && pattern.type === 'identifier') Object.assign(entries[0]!, { callee: store });
           if (store && args.length === 0 && pattern.type === 'object_pattern') {
             for (const prop of pattern.namedChildren) {
               const key = prop.type === 'pair_pattern' ? prop.childForFieldName('key')?.text : prop.text;
@@ -119,7 +124,15 @@ function storeNode(name: string, ref: UnresolvedRef, context: ResolutionContext)
 
 function callOffset(source: string, ref: UnresolvedRef): number {
   const prefix = source.split('\n').slice(0, ref.line - 1).join('\n');
-  return Buffer.byteLength(prefix, 'utf8') + (ref.line > 1 ? 1 : 0) + ref.column;
+  return prefix.length + (ref.line > 1 ? 1 : 0) + ref.column;
+}
+
+export function callBinding(name: string, ref: UnresolvedRef, context: ResolutionContext): Readonly<Binding> | null {
+  const source = context.readFile(ref.filePath);
+  if (!source) return null;
+  const offset = callOffset(source, ref);
+  return bindingsFor(ref, context, source).filter(binding => binding.name === name && binding.start <= offset && offset < binding.end)
+    .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0] ?? null;
 }
 
 function actionOnStore(store: Node, action: string, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
@@ -148,6 +161,48 @@ function actionOnStore(store: Node, action: string, ref: UnresolvedRef, context:
       registeredAt: `${target.filePath}:${target.startLine}`,
     },
   };
+}
+
+export function resolveComposableBinding(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  if (ref.referenceKind !== 'calls' || ![...JS, 'vue'].includes(ref.language)) return null;
+  const member = /^([\w$]+)\.([\w$]+)$/.exec(ref.referenceName);
+  const binding = callBinding(member?.[1] ?? ref.referenceName, ref, context);
+  const factoryName = member ? binding?.callee : binding?.store;
+  const action = member?.[2] ?? binding?.action;
+  if (!factoryName || !action || !/^use[A-Z]/.test(factoryName)) return null;
+  if (callBinding(factoryName, ref, context)?.local) return null;
+  const imported = resolveViaImport({ ...ref, referenceKind: 'references', referenceName: factoryName }, context);
+  const local = context.getNodesInFile(ref.filePath).filter(n => n.name === factoryName && n.kind === 'function');
+  const factory = imported ? context.getNodeById?.(imported.targetNodeId) : local.length === 1 ? local[0] : null;
+  if (!factory || factory.kind !== 'function') return null;
+  const source = context.readFile(factory.filePath)?.split('\n').slice(factory.startLine - 1, factory.endLine).join('\n');
+  if (!source) return null;
+  const tree = getParser(factory.language)?.parse(source);
+  if (!tree) return null;
+  const returned = new Set<string>();
+  const declaration = tree.rootNode.namedChildren.flatMap(n => n.type === 'export_statement' ? n.namedChildren : [n])
+    .find(n => ['function_declaration', 'lexical_declaration'].includes(n.type));
+  const rootFn = declaration?.type === 'lexical_declaration'
+    ? declaration.namedChildren[0]?.childForFieldName('value') : declaration;
+  const visit = (syntax: SyntaxNode): void => {
+    if (syntax !== rootFn && ['function_declaration', 'arrow_function', 'function_expression'].includes(syntax.type)) return;
+    if (syntax.type === 'return_statement') {
+      const object = syntax.namedChildren[0];
+      if (object?.type === 'object') for (const field of object.namedChildren) {
+        if (field.type === 'shorthand_property_identifier' && field.text === action) returned.add(action);
+        if (field.type === 'pair' && field.childForFieldName('key')?.text === action) {
+          const value = field.childForFieldName('value');
+          if (value?.type === 'identifier') returned.add(value.text);
+        }
+      }
+    }
+    for (const child of syntax.namedChildren) visit(child);
+  };
+  try { if (rootFn) visit(rootFn); } finally { tree.delete(); }
+  const targets = context.getNodesInFile(factory.filePath).filter(n => returned.has(n.name) && (n.kind === 'function' || n.kind === 'method') && n.startLine >= factory.startLine && n.endLine <= factory.endLine);
+  if (targets.length !== 1) return null;
+  return { original: ref, targetNodeId: targets[0]!.id, confidence: 0.9, resolvedBy: 'framework', provenance: 'heuristic',
+    metadata: { synthesizedBy: 'composable-binding', via: `${factoryName}.${action}`, registeredAt: `${ref.filePath}:${ref.line}` } };
 }
 
 /**

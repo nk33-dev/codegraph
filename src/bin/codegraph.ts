@@ -31,6 +31,12 @@
 // launcher is (almost certainly) still alive. A launcher killed mid-startup
 // otherwise blinds the PPID watchdog forever (#1185) — see early-ppid.ts.
 import '../mcp/early-ppid';
+import { buildIndexBlock, indexTrustWarnings } from '../graph/code-query';
+import { REVISION_MESSAGES } from '../graph/index-health';
+
+function printQueryTrust(cg: import('../index').CodeGraph): void {
+  for (const message of indexTrustWarnings(buildIndexBlock(cg, { checkFiles: false, includeStats: false }))) console.error(message);
+}
 
 // The browser viewer is not part of a release yet (see viewer-gate). Refuse
 // `ui` / `web` — also as `help ui` or `ui --help` — before any startup work,
@@ -1414,6 +1420,7 @@ program
       const reindexRecommended = cg.isIndexStale();
       const indexState = cg.getIndexState();
       const indexStatus = cg.getIndexStatus();
+      const indexView = buildIndexBlock(cg, { checkFiles: true, includeStats: false });
       // Zero on a healthy index; non-zero at rest means a resolution pass was
       // interrupted, so some files' call edges are missing (#1187).
       const pendingRefs = cg.getPendingReferenceCount();
@@ -1447,6 +1454,9 @@ program
             ? { worktreeRoot: worktreeMismatch.worktreeRoot, indexRoot: worktreeMismatch.indexRoot }
             : null,
           index: {
+            revision: indexView.revision,
+            completeness: indexView.completeness,
+            warnings: indexTrustWarnings(indexView),
             version: indexStatus.version,
             indexedCommit: indexStatus.indexedCommit,
             currentCommit: indexStatus.currentCommit,
@@ -1492,6 +1502,7 @@ program
       console.log(chalk.cyan('Index generation:'), indexStatus.version ?? 'unknown');
       console.log(chalk.cyan('Indexed commit:'), indexStatus.indexedCommit ?? 'unknown');
       console.log(chalk.cyan('Current commit:'), indexStatus.currentCommit ?? 'unknown');
+      console.log(chalk.cyan('Revision:'), indexView.revision);
       console.log(chalk.cyan('Last updated:'), indexStatus.lastUpdatedAt ? new Date(indexStatus.lastUpdatedAt).toISOString() : 'never');
       console.log(chalk.cyan('Lagging files:'), formatNumber(indexStatus.laggingFileCount));
       if (indexStatus.textChanges) {
@@ -1643,7 +1654,13 @@ program
         }
         info('Run "codegraph sync" to update the index');
       } else {
-        success('Index is up to date');
+        if (indexView.completeness.status !== 'complete') {
+          for (const message of indexTrustWarnings(indexView)) warn(message);
+        } else if (indexView.revision === 'verified') {
+          success('Index commit matches HEAD; no file changes detected');
+        } else {
+          info(REVISION_MESSAGES[indexView.revision]);
+        }
       }
       console.log();
 
@@ -1684,6 +1701,7 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      printQueryTrust(cg);
 
       const limit = parseInt(options.limit || '10', 10);
       const rawResults = cg.searchNodes(search, {
@@ -2000,6 +2018,7 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      printQueryTrust(cg);
 
       const result = await cg.buildContext(taskParts.join(' '), {
         format,
@@ -2250,6 +2269,7 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      printQueryTrust(cg);
       let files = cg.getFiles();
 
       if (files.length === 0) {
@@ -2850,6 +2870,7 @@ for (const direction of ['callers', 'callees'] as const) {
 
         const { default: CodeGraph } = await loadCodeGraph();
         const cg = await CodeGraph.open(projectPath);
+        printQueryTrust(cg);
         try {
           const limit = parseInt(options.limit || '20', 10);
           const { nodes: targets } = lookupSymbolNodes(cg, symbol);
@@ -2974,6 +2995,7 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      printQueryTrust(cg);
       try {
         const depth = Math.min(Math.max(parseInt(options.depth || '2', 10), 1), 10);
         const { nodes: targets } = lookupSymbolNodes(cg, symbol);
@@ -3117,6 +3139,7 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      printQueryTrust(cg);
       const maxDepth = parseInt(options.depth || '5', 10);
 
       // Custom filter pattern

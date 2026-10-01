@@ -56,9 +56,9 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   svelteResolver,
   // SvelteKit — `src/routes/**/+page.svelte` routes are `svelteResolver`'s; `goto('/x')` / `redirect(303, '/x')` → navigates edges
   svelteKitRouterResolver,
-  vueResolver,
   // Vue Router — `createRouter({ routes })` → route nodes; `router.push({ name })` / `router.push('/x')` → navigates edges
   vueRouterResolver,
+  vueResolver,
   astroResolver,
   // Python
   djangoResolver,

@@ -2,9 +2,13 @@
 
 ## 当前契约
 
+- `CodeGraph.getIndexStatus().revision`、CLI 状态与查询响应的 `index.revision` 区分四种状态：`verified` 表示索引提交与 HEAD 相同，未扫描的工作区改动仍可能存在；`files-current` 表示文件检查未发现变化，但 Git 提交信息缺失（包括非 Git 项目）；`stale` 表示已知文件或提交漂移；`unverified` 表示提交信息缺失且未检查文件。提交未知时不再显示笼统的 `up to date`。
+- 查询响应的 `index.completeness` 与提交对应状态分开报告。待解析引用、待同步文件及 `indexing`、`partial`、`failed` 任务都会标为 `incomplete`，给出原因、待解析引用来源文件总数和最多 100 个路径；没有完成标记的旧索引为 `unknown`。已尝试但无法解析的外部引用不计入待解析数量。
+- CLI 搜索、调用关系、影响分析、文件和上下文查询，以及 MCP 文本和结构化查询都会显示不完整警告；CLI 的数组 JSON 契约保留，警告写入 stderr。文本最多列出五个引用来源文件，强调下游依赖可能超出所列范围；部分或失败任务按项目报告影响范围，无法完整枚举。零 callers 或零 impact 不能证明没有调用者或依赖。
+
 - `CodeGraph.getIndexStatus()` 是 CLI、MCP 和 UI 共用的状态入口，包含生成版本、最后更新时间、落后文件数、阶段、任务等级和失败原因。`indexedCommit` 是上次索引/同步时的 HEAD，`currentCommit` 在各查询模式都读取 HEAD，普通查询共用最长 1 秒的进程内缓存；显式状态查询和索引写入读取最新 HEAD。非 Git 项目的 HEAD 可以为 `null`，旧索引的 `indexedCommit` 可以为 `null`。两者不同时警告，但相同也不意味着工作区无改动。
 - `checkFiles: true` 同时检查源图文件与文本索引中的配置、脚本和文档：`textChanges` 分别列出新增、修改、移除路径，`laggingFileCount` 去重汇总两者与待同步队列；未扫描时 `textChanges: null`。文件检查依据大小和修改时间，不是原子快照；`lastUpdatedAt` 是最近源文件索引时间，不是 Git 提交时间。
-- 结构化查询的 `index` 带有 `freshness` 和 `freshnessReason`：`current` 表示没有已知漂移（未扫描文件时不保证磁盘一致），`syncing` 表示索引任务或待处理文件/引用未完成，`stale` 表示提交、工作区文件已漂移或索引任务未成功完成，`degraded` 表示 watcher 已停止。原始 `state` 即使为 `complete`，`laggingFileCount` 非零且无待处理队列也会标成 `stale`；这些字段只是风险摘要，按文件编辑仍以磁盘内容核验为准。
+- 结构化查询的 `index` 带有 `freshness` 和 `freshnessReason`：`current` 表示没有已知漂移（未扫描文件时不保证磁盘一致），`syncing` 表示索引任务或待处理文件/引用未完成，`stale` 表示提交、工作区文件已漂移或索引任务未成功完成，`degraded` 表示 watcher 已停止，`unverified` 表示缺少提交信息且未检查文件。原始 `state` 即使为 `complete`，`laggingFileCount` 非零且无待处理队列也会标成 `stale`；这些字段只是风险摘要，按文件编辑仍以磁盘内容核验为准。
 - `codegraph refresh <file>` 与 `CodeGraph.refresh()` 只刷新指定文件；普通正文变更保持 `file` 范围，接口、导出、路由等结构变更扩大到 `related`，项目配置变更使用 `project` 范围。
 - 文件 watcher 继续使用尾沿防抖，把连续保存合并成一次同步。局部刷新不会绕过已有 writer lock 或引用解析流程。
 - 每次成功取得写锁的索引任务生成一个 `index_generation` 版本。结构化响应的状态块以及 explore/node 的符号、源码和调用链都声明该版本；文件漂移时禁止按旧行号切当前源码，改为整文件或省略正文。

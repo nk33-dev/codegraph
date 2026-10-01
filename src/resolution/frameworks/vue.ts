@@ -7,6 +7,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { dependsOn } from './package-deps';
 
 /**
  * Vue 3 compiler macros — compiler-provided, not user code
@@ -100,23 +101,29 @@ export const vueResolver: FrameworkResolver = {
     return allFiles.some((f) => f.endsWith('.vue'));
   },
 
+  claimsReference(name: string): boolean {
+    return VUE_COMPILER_MACROS.has(name) || NUXT_AUTO_IMPORTS.has(name);
+  },
+
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
     // Pattern 1: Vue compiler macros (defineProps, defineEmits, etc.)
-    if (VUE_COMPILER_MACROS.has(ref.referenceName)) {
+    if (ref.language === 'vue' && VUE_COMPILER_MACROS.has(ref.referenceName)) {
       return {
         original: ref,
         targetNodeId: ref.fromNodeId,
-        confidence: 1.0,
+        confidence: 0.85,
+        selfResolvedBuiltin: true,
         resolvedBy: 'framework',
       };
     }
 
     // Pattern 2: Nuxt auto-imported composables
-    if (NUXT_AUTO_IMPORTS.has(ref.referenceName)) {
+    if (NUXT_AUTO_IMPORTS.has(ref.referenceName) && dependsOn(context, 'nuxt', 'nuxt3')) {
       return {
         original: ref,
         targetNodeId: ref.fromNodeId,
-        confidence: 1.0,
+        confidence: 0.85,
+        selfResolvedBuiltin: true,
         resolvedBy: 'framework',
       };
     }
@@ -127,7 +134,8 @@ export const vueResolver: FrameworkResolver = {
         return {
           original: ref,
           targetNodeId: ref.fromNodeId,
-          confidence: 1.0,
+          confidence: 0.85,
+          selfResolvedBuiltin: true,
           resolvedBy: 'framework',
         };
       }
