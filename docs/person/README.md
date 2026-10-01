@@ -45,9 +45,7 @@ Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘
 
 ## 验证与发布
 
-本次发布准备版本为 [v1.6.0-personal.13](releases/v1.6.0-personal.13.md)。当前已发布版本与实时结果以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)和[Personal Release](https://github.com/nk33-dev/codegraph/actions/workflows/personal-package.yml)为准；准备版本在同提交三平台 CI 成功后才发起发布。
-
-先前已核验的发行记录是 [v1.6.0-personal.12](releases/v1.6.0-personal.12.md)（2026-09-30），标签指向 `bb10a99`。历史 CI、隔离安装和资产校验结果只保留在对应发行说明。
+当前已发布版本为 [v1.6.0-personal.13](releases/v1.6.0-personal.13.md)（2026-10-01 的 GitHub prerelease），标签指向 `4477e92`。同提交三平台 CI `36870702413` 和 Personal Release `36874630766` 均成功；详细测试数字与资产校验只保留在发行说明。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
 
 个人版从 [GitHub Release 安装](personal-usage.md)，不通过上游 npm 包获得个人改动。`personal` 分支的同一提交通过三平台 CI 后，才由 `Personal Release` 在 GitHub runner 构建、隔离验证、打包并创建 prerelease；本机不承担发布构建和上传。
 
