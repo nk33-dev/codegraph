@@ -5,8 +5,9 @@ import { sortPendingFiles, type PendingFile, type WatchPolicy } from '../sync';
 import type { LspCapabilities, LspServerState, LspServerStatus } from '../lsp/manager';
 import { indexedFileFreshness, type FileFreshness } from '../sync/file-freshness';
 import { isConfigLeafNode, validatePathWithinRoot } from '../utils';
-import { isTestFile } from '../search/query-utils';
-import { lookupSymbolNodes } from './symbol-lookup';
+import { lookupSymbolNodes, symbolSelector, sourcePathPriority } from './symbol-lookup';
+import { describeEdgeEvidence, type RelationEvidence } from './edge-provenance';
+import { buildRelationshipCoverage, type RelationshipCoverage } from './relationship-coverage';
 import { analyzeImpact, findAffectedTests, DEFAULT_IMPACT_DEPTH, DEFAULT_TESTS_DEPTH } from './change-impact';
 import type { TestType } from './change-impact';
 import { collectIncomingRelations } from './incoming-relations';
@@ -48,6 +49,8 @@ export interface CodeQueryRequest {
   query: string;
   /** An exact project-relative path; a wrong file qualifier is not replaced by a fuzzy suffix. */
   file?: string;
+  /** Rank same-name candidates using this file's scope, imports and language. */
+  contextFile?: string;
   offset?: number;
   limit?: number;
   /** Used only by status + graph: scan the working tree for changes without triggering a sync or building an index. */
@@ -80,6 +83,7 @@ export interface CodeSymbol {
   id: string;
   name: string;
   qualifiedName: string;
+  selector?: string;
   kind: Node['kind'];
   language: Node['language'];
   filePath: string;
@@ -99,6 +103,7 @@ export interface CodeReference {
   kind: Edge['kind'];
   provenance: Edge['provenance'] | 'unknown';
   confidence?: 'direct' | 'inferred' | 'unknown';
+  evidence?: RelationEvidence;
   /** Stays null when there is no call-site coordinate; it must not impersonate the source function's definition position. */
   site: { filePath: string; line: number | null; column: number | null };
   /** 同一关系的所有去重位置；只有多个位置时才出现。 */
@@ -349,6 +354,8 @@ export interface CodeQueryResult {
   coordinates: { lineBase: 1; columnBase: 0; columnEncoding: 'utf-8' | 'utf-16' };
   ambiguous: boolean;
   items: CodeQueryItem[];
+  target?: { status: 'found' | 'not_found'; total: number; candidates: CodeSymbol[] };
+  coverage?: RelationshipCoverage;
   filenameCandidates?: import('./change-impact').AffectedTestsAnalysis['filenameCandidates'];
   page: { offset: number; limit: number; total: number; nextOffset: number | null };
   index: IndexBlock | null;
@@ -427,6 +434,12 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
     throw new Error('query must be a non-empty string of at most 2000 characters');
   }
   if (request.checkFiles !== undefined && typeof request.checkFiles !== 'boolean') throw new Error('checkFiles must be boolean');
+  if (request.contextFile !== undefined) {
+    if (typeof request.contextFile !== 'string' || !request.contextFile.trim()) throw new Error('contextFile must be a non-empty project-relative file');
+    if (['status', 'symbols', 'text', 'tests', 'diagnostics', 'code-actions'].includes(request.mode) || request.line !== undefined) {
+      throw new Error('contextFile is only supported for symbol-name queries');
+    }
+  }
   if (request.checkFiles && request.mode !== 'status') throw new Error('checkFiles is only supported in status mode');
   if (request.line !== undefined && (!Number.isSafeInteger(request.line) || request.line < 1)) {
     throw new Error('line must be a 1-based integer');
@@ -621,10 +634,7 @@ export function indexWarnings(index: IndexBlock): string[] {
   return warnings;
 }
 
-export function sourcePathPriority(filePath: string): number {
-  if (/(?:^|[\\/])(?:fixtures?|testdata|__fixtures__)(?:[\\/]|$)/i.test(filePath)) return 2;
-  return isTestFile(filePath) ? 1 : 0;
-}
+export { sourcePathPriority };
 
 function compareNodes(a: Node, b: Node): number {
   return sourcePathPriority(a.filePath) - sourcePathPriority(b.filePath) || a.filePath.localeCompare(b.filePath) || a.startLine - b.startLine
@@ -695,7 +705,7 @@ export function makeSymbolBuilder(cg: CodeGraph, root: string): (node: Node) => 
       freshness.set(node.filePath, state);
     }
     return {
-      id: node.id, name: node.name, qualifiedName: node.qualifiedName, kind: node.kind,
+      id: node.id, name: node.name, qualifiedName: node.qualifiedName, selector: symbolSelector(node), kind: node.kind,
       language: node.language, filePath: node.filePath, startLine: node.startLine, endLine: node.endLine,
       startColumn: node.startColumn, endColumn: node.endColumn,
       parentId: cg.getIncomingEdges(node.id).find(e => e.kind === 'contains')?.source ?? null,
@@ -715,7 +725,8 @@ function groupGraphRelations(
   for (const relation of relations) {
     const { edge, source, target } = relation;
     const provenance = edge.provenance ?? 'unknown';
-    const key = `${source.id}\0${target.id}\0${edge.kind}\0${provenance}`;
+    const evidence = describeEdgeEvidence(edge);
+    const key = `${source.id}\0${target.id}\0${edge.kind}\0${provenance}\0${JSON.stringify(evidence)}`;
     const site = { filePath: source.filePath, line: edge.line ?? null, column: edge.column ?? null };
     const current = grouped.get(key);
     if (!current) {
@@ -735,7 +746,8 @@ function groupGraphRelations(
       target: symbol(relation.target),
       kind: relation.edge.kind,
       provenance: relation.edge.provenance ?? 'unknown',
-      confidence: relation.edge.provenance === 'heuristic' ? 'inferred' : relation.edge.provenance ? 'direct' : 'unknown',
+      confidence: describeEdgeEvidence(relation.edge).confidence,
+      evidence: describeEdgeEvidence(relation.edge),
       site: sites[0]!,
       ...(sites.length > 1 ? { sites } : {}),
     } satisfies CodeReference));
@@ -833,12 +845,25 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
     : null;
   const impactFile = impactPath && cg.getFile(impactPath) ? impactPath : null;
   const file = resolveFileInput(root, request) ?? impactFile ?? undefined;
-  const lookup = request.mode === 'symbols' || impactFile !== null ? null : lookupSymbolNodes(cg, result.query);
+  const contextFile = request.contextFile === undefined ? undefined
+    : resolveFileInput(root, { mode: 'definitions', query: '', file: request.contextFile })!;
+  const lookup = request.mode === 'symbols' || impactFile !== null ? null : lookupSymbolNodes(cg, result.query, {
+    file, contextFiles: contextFile ? [contextFile] : [],
+  });
   const nodes = (request.mode === 'symbols' || impactFile !== null
     ? cg.getNodesInFile(file!)
     : lookup!.nodes.filter(n => file === undefined || n.filePath === file))
-    .filter((node) => (impactFile !== null && node.kind === 'file') || isQueryEligibleNode(root, node)).sort(compareNodes);
+    .filter((node) => (impactFile !== null && node.kind === 'file') || isQueryEligibleNode(root, node));
+  if (request.mode === 'symbols' || impactFile !== null) nodes.sort(compareNodes);
   result.ambiguous = request.mode !== 'symbols' && impactFile === null && nodes.length > 1;
+  if (request.mode !== 'symbols') {
+    result.target = { status: nodes.length ? 'found' : 'not_found', total: nodes.length, candidates: nodes.slice(0, 20).map(symbol) };
+    if (result.ambiguous) result.warnings.push(`The name matches ${nodes.length} definitions; results retain target ownership. Use file or a file#qualifiedName selector to narrow the query.`);
+  }
+  if (['impact', 'implementations', 'type-hierarchy'].includes(request.mode)) {
+    result.coverage = buildRelationshipCoverage(cg, nodes, []);
+    result.warnings.push(result.coverage.limitations[0]!);
+  }
   if (!nodes.length) {
     if (request.mode !== 'impact') result.status = 'not_found';
     if (request.mode !== 'symbols' && !impactFile) {
@@ -916,6 +941,8 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
         .filter((item): item is { edge: Edge; source: Node; target: Node } => item.target !== null));
     const eligible = relations.filter(({ source, target }) => isQueryEligibleNode(root, source) && isQueryEligibleNode(root, target));
     const grouped = groupGraphRelations(eligible, symbol);
+    result.coverage = buildRelationshipCoverage(cg, nodes, eligible.map(({ edge }) => edge));
+    result.warnings.push(result.coverage.limitations[0]!);
     result.page.total = grouped.length;
     result.items = grouped.slice(offset, offset + limit);
     result.routing.sources.graph = grouped.length;
@@ -929,6 +956,8 @@ export function queryCode(cg: CodeGraph, request: CodeQueryRequest): CodeQueryRe
         && !isConfigLeafNode(source)
         && Boolean(validatePathWithinRoot(root, source.filePath)));
     const grouped = groupGraphRelations(references, symbol);
+    result.coverage = buildRelationshipCoverage(cg, nodes, references.map(({ edge }) => edge));
+    result.warnings.push(result.coverage.limitations[0]!);
     result.page.total = grouped.length;
     result.items = grouped.slice(offset, offset + limit);
     if (grouped.length < references.length) {

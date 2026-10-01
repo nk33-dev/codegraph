@@ -1,5 +1,14 @@
 # 个人版开发验证记录
 
+## 2026-10-01：符号消歧、关系证据与索引升级报告
+
+实现位于 `codex/query-provenance` worktree，尚未提交、合并或发布。查询契约见[结构化查询](structured-queries.md)，升级契约见[索引状态与升级](index-refresh-and-versioning.md)。验证环境为 Windows / Node 24.16.0。
+
+- 最终 `npm run typecheck` 通过。
+- 设置 `CODEGRAPH_SKIP_TEST_BUILD=1` 后，`npm run test:focused -- __tests__/query-evidence-and-upgrade.test.ts __tests__/server-instructions.test.ts __tests__/code-query-routing.test.ts __tests__/sync-upgrade-index.test.ts __tests__/symbol-lookup.test.ts __tests__/explore-named-file-valve.test.ts __tests__/explore-exact-target.test.ts __tests__/explore-blast-radius.test.ts __tests__/mcp-experience.test.ts __tests__/index-refresh-version.test.ts --maxWorkers=2`：10 个文件、120 项通过。覆盖 Vue 同名变量、文件限定查询、作用域边界、上下文与 imports 排序、Graph/LSP 合并、关系证据分组、动态位置/零调用方、两种升级范围、节点 ID 重建、去重、部分失败和异常清理。
+- `npm run check:quick` 的扩展检查在迭代期间运行，选择 200 个测试文件并列出 36 个缺少 dist 的跳过项；最终该轮结果为 189 个文件通过、12 个失败、3 个跳过，不能称为整体通过。本次展示和排序回归已由上述最终定向检查复核。其余失败涉及缺少 `dist/mcp/engine`、`query-worker.js`、`index-freshness-worker.js` 或 viewer 资产；没有在本地补做完整构建，产物相关检查留给 CI。
+- 本次升级比较在测试临时数据库中验证，未操作用户现有索引；临时 ATTACH 文件的删除、DETACH 与主连接 temp_store 保持原值均有断言。未改 schema、提取版本号和发布版本号。
+
 ## 2026-09-30：四个 worktree 合并与 personal.12 发布准备
 
 ### 合并与业务复核

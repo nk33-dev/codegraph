@@ -77,6 +77,12 @@ import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError, planRefresh, watchDisabledPolicy, type RefreshPlan, type WatchPolicy } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
+import { planIndexUpgrade, type IndexUpgradeAssessment } from './sync/upgrade-index';
+import { IndexRelationSnapshot, type IndexRelationChanges } from './graph/index-relation-delta';
+export type { IndexRelationChanges } from './graph/index-relation-delta';
+export type { RelationshipCoverage } from './graph/relationship-coverage';
+export type { RelationEvidence } from './graph/edge-provenance';
+export { formatIndexRelationChanges } from './graph/index-relation-delta';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
 import ignore from 'ignore';
@@ -201,6 +207,17 @@ export interface IndexOptions {
   paths?: string[];
   /** 资源调度等级；普通保存、接口结构变化或全局配置变化。 */
   taskLevel?: IndexTaskLevel;
+  /** Re-extract unchanged files when upgrading extraction rules. */
+  forceExtraction?: boolean;
+}
+
+export interface IndexUpgradeResult {
+  success: boolean;
+  assessment: IndexUpgradeAssessment;
+  relations: IndexRelationChanges | null;
+  filesIndexed: number;
+  durationMs: number;
+  errors: string[];
 }
 
 export interface IndexStatus {
@@ -657,13 +674,17 @@ export class CodeGraph {
    * 与后续阶段的「索引时间相对阶段一基线增长」比较；记录本身不参与索引逻辑。
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
+    return this.completeIndexAll(options, false);
+  }
+
+  private async completeIndexAll(options: IndexOptions, writerHeld: boolean): Promise<IndexResult> {
     const wrapped: IndexOptions = {
       ...options,
       onProgress: (progress) => { this.updateIndexProgress(progress); options.onProgress?.(progress); },
     };
     let result: IndexResult;
     try {
-      result = await this.runIndexAll(wrapped);
+      result = await this.runIndexAll(wrapped, writerHeld);
     } catch (error) {
       this.finishIndexGeneration('failed', error instanceof Error ? error.message : String(error));
       throw error;
@@ -679,10 +700,10 @@ export class CodeGraph {
     return result;
   }
 
-  private async runIndexAll(options: IndexOptions = {}): Promise<IndexResult> {
-    return this.indexMutex.withLock(async () => {
+  private async runIndexAll(options: IndexOptions = {}, writerHeld = false): Promise<IndexResult> {
+    const run = async () => {
       try {
-        this.fileLock.acquire();
+        if (!writerHeld) this.fileLock.acquire();
       } catch {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
@@ -759,7 +780,8 @@ export class CodeGraph {
             // data the store path must read (existing-file checks, cross-file
             // edge snapshots) and delete, which belongs on one thread.
             freshDb ? { dbPath: this.db.getPath(), fastInit } : null,
-            options.taskLevel ?? 'global'
+            options.taskLevel ?? 'global',
+            options.forceExtraction === true
           );
         } finally {
           if (freshDb) {
@@ -969,26 +991,77 @@ export class CodeGraph {
             this.db.getDb().pragma('journal_mode = WAL');
           } catch { /* connection may be closing */ }
         }
-        this.fileLock.release();
+        if (!writerHeld) this.fileLock.release();
+      }
+    };
+    return writerHeld ? run() : this.indexMutex.withLock(run);
+  }
+
+  /** Keep the writer lock across re-extraction, resolution and relation comparison. */
+  async upgradeIndex(options: IndexOptions = {}): Promise<IndexUpgradeResult> {
+    return this.indexMutex.withLock(async () => {
+      this.fileLock.acquire();
+      let snapshot: IndexRelationSnapshot | undefined;
+      let previousBuild: ReturnType<CodeGraph['getIndexBuildInfo']> | undefined;
+      let completed = false;
+      try {
+        this.reopenReplacedDatabase();
+        previousBuild = this.getIndexBuildInfo();
+        const assessment = planIndexUpgrade(this);
+        const started = Date.now();
+        if (!assessment.needed || !assessment.plan) {
+          return { success: true, assessment, relations: null, filesIndexed: 0, durationMs: 0, errors: [] };
+        }
+        snapshot = new IndexRelationSnapshot(this.db.getDb());
+        const scope = assessment.plan.scope;
+        const upgradeOptions: IndexOptions = { ...options, paths: undefined, taskLevel: 'global' };
+        const result = scope === 'all'
+          ? await this.completeIndexAll({ ...upgradeOptions, forceExtraction: true }, true)
+          : await this.runIndexFiles(this.getFiles().filter((file) => scope.includes(file.language)).map((file) => file.path), 'global', true, true);
+        const errors = result.errors.filter((entry) => entry.severity === 'error').map((entry) => entry.message);
+        let success = result.success && result.filesErrored === 0 && this.getIndexState() !== 'partial';
+        if (success && scope !== 'all') {
+          const synced = await this.completeSync(upgradeOptions, true);
+          success = (synced.failedFilePaths?.length ?? 0) === 0;
+          if (!success) errors.push(`Sync failed to refresh: ${synced.failedFilePaths!.join(', ')}`);
+          if (success) this.stampExtractionVersion();
+        }
+        if (!success) {
+          this.queries.setMetadata('indexed_with_extraction_version', String(assessment.builtWith ?? ''));
+          this.queries.setMetadata('indexed_with_version', previousBuild.version ?? '');
+          this.finishIndexGeneration('partial', errors[0] ?? 'Index upgrade did not refresh every affected file.');
+        }
+        success = success && !this.isIndexStale();
+        completed = success;
+        if (!success && errors.length === 0) errors.push('Index upgrade is incomplete; the extraction version was not advanced.');
+        const relations = snapshot.compare();
+        return { success, assessment, relations, filesIndexed: result.filesIndexed, durationMs: Date.now() - started, errors };
+      } catch (error) {
+        if (!completed && previousBuild) {
+          this.queries.setMetadata('indexed_with_extraction_version', String(previousBuild.extractionVersion ?? ''));
+          this.queries.setMetadata('indexed_with_version', previousBuild.version ?? '');
+        }
+        throw error;
+      } finally {
+        try { snapshot?.close(); } finally { this.fileLock.release(); }
       }
     });
   }
 
-  /**
-   * Index specific files
-   *
-   * Uses a mutex to prevent concurrent indexing operations.
-   */
   async indexFiles(filePaths: string[], taskLevel: IndexTaskLevel = 'interface'): Promise<IndexResult> {
-    return this.indexMutex.withLock(async () => {
+    return this.runIndexFiles(filePaths, taskLevel, false);
+  }
+
+  private async runIndexFiles(filePaths: string[], taskLevel: IndexTaskLevel, writerHeld: boolean, forceExtraction = false): Promise<IndexResult> {
+    const run = async () => {
       try {
-        this.fileLock.acquire();
+        if (!writerHeld) this.fileLock.acquire();
       } catch {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
       this.beginIndexGeneration(taskLevel, filePaths);
       try {
-        const result = await this.orchestrator.indexFiles(filePaths);
+        const result = await this.orchestrator.indexFiles(filePaths, forceExtraction);
         if (result.success) await refreshFileTextIndex(this.db.getDb(), this.projectRoot, filePaths);
         this.finishIndexGeneration(result.success ? 'complete' : 'failed', result.errors.find((entry) => entry.severity === 'error')?.message);
         return result;
@@ -996,9 +1069,10 @@ export class CodeGraph {
         this.finishIndexGeneration('failed', error instanceof Error ? error.message : String(error));
         throw error;
       } finally {
-        this.fileLock.release();
+        if (!writerHeld) this.fileLock.release();
       }
-    });
+    };
+    return writerHeld ? run() : this.indexMutex.withLock(run);
   }
 
   /**
@@ -1051,6 +1125,10 @@ export class CodeGraph {
    * （durationMs 为 0）不计入基线，避免把「被别的进程挡住」误当成一次增量。
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
+    return this.completeSync(options, false);
+  }
+
+  private async completeSync(options: IndexOptions, writerHeld: boolean): Promise<SyncResult> {
     // 进程被中断后，局部同步只修复指定文件，不能宣称整个索引已恢复完整；
     // 保留 indexing 标记，等下一次全量 reconcile 再关闭它（#1556）。
     const recoveringPartialIndex = options.paths !== undefined
@@ -1062,7 +1140,7 @@ export class CodeGraph {
     };
     let result: SyncResult;
     try {
-      result = await this.runSync(wrapped);
+      result = await this.runSync(wrapped, writerHeld);
     } catch (error) {
       this.finishIndexGeneration('failed', error instanceof Error ? error.message : String(error));
       throw error;
@@ -1087,10 +1165,10 @@ export class CodeGraph {
     return result;
   }
 
-  private async runSync(options: IndexOptions = {}): Promise<SyncResult> {
-    return this.indexMutex.withLock(async () => {
+  private async runSync(options: IndexOptions = {}, writerHeld = false): Promise<SyncResult> {
+    const run = async () => {
       try {
-        this.fileLock.acquire();
+        if (!writerHeld) this.fileLock.acquire();
       } catch (err) {
         throw new LockUnavailableError(
           `Sync could not acquire the file lock; retry when the index is available. ${err instanceof Error ? err.message : String(err)}`
@@ -1108,7 +1186,7 @@ export class CodeGraph {
       try {
         this.reopenReplacedDatabase();
       } catch (err) {
-        this.fileLock.release();
+        if (!writerHeld) this.fileLock.release();
         throw new LockUnavailableError(
           `Sync could not open the rebuilt index yet; retry when the rebuild finishes. ${err instanceof Error ? err.message : String(err)}`
         );
@@ -1122,7 +1200,7 @@ export class CodeGraph {
         // full once it is done. Bounded, so a rebuild that died before
         // indexing does not park the watcher forever.
         if (this.getIndexState() === null && this.isFreshlyRecreated()) {
-          this.fileLock.release();
+          if (!writerHeld) this.fileLock.release();
           throw new LockUnavailableError('A rebuild of this index is in progress; retry when it finishes.');
         }
         // Cleared only once this run completes (below): a sync that throws
@@ -1422,9 +1500,10 @@ export class CodeGraph {
         if (deferWal) {
           try { this.db.setWalAutocheckpoint(priorAutocheckpoint); } catch { /* connection may be closing */ }
         }
-        this.fileLock.release();
+        if (!writerHeld) this.fileLock.release();
       }
-    });
+    };
+    return writerHeld ? run() : this.indexMutex.withLock(run);
   }
 
   /**

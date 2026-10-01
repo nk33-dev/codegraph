@@ -15,13 +15,13 @@
 
 | 功能 | 文档 |
 | --- | --- |
-| Graph 定义、引用、调用方、文件符号、全文检索、行范围、文件级影响与启动入口 | [结构化查询](structured-queries.md) |
+| Graph 定义、同名消歧、关系证据/动态覆盖、引用、调用方、文件符号、全文检索、行范围、文件级影响与启动入口 | [结构化查询](structured-queries.md) |
 | C/C++、JS/TS、Java、Rust、Go、Python 的按需语言服务 | [LSP](lsp-mvp.md) |
 | Graph/LSP 自动路由、结果合并、影响分析与多窗口共享 | [统一路由与影响分析](unified-routing.md) |
 | 符号重命名、正文替换、前后插入与默认预览 | [结构化编辑](structured-edits.md) |
 | 本地入口、doctor、GitHub 安装、版本切换、daemon 版本切换与索引升级 | [个人使用与安装](personal-usage.md) |
 | 资源档位、查询池自动缩容与 LSP 预算 | [资源档位与自动回收](resource-governance.md) |
-| 索引状态、生成版本、监听原因与局部刷新 | [索引状态、局部刷新与生成版本](index-refresh-and-versioning.md) |
+| 索引状态、升级关系差异、生成版本、监听原因与局部刷新 | [索引状态、局部刷新与生成版本](index-refresh-and-versioning.md) |
 | MCP 固定表面、缓存稳定性与字符开销边界 | [MCP 表面与缓存稳定性](mcp-surface.md) |
 | Explore stale 输出、跨调用去重边界与点名文件的头部保留和续读脚注 | [Explore 响应稳定性](explore-response.md) |
 | 查询输出折叠、过滤、新文件状态与失败分类 | [查询输出、过滤与索引状态](query-output-indexing.md) |
@@ -35,6 +35,8 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 MCP 状态会同时报告索引 freshness 与当前服务构建身份；`tests` 结构化模式支持只传 `files`，并把文件名主题明确相关的测试排在同置信度候选之前。流程问句中的 `codegraph_*` 工具名只在能唯一映射到真实 handler 和 calls 边时提升为调度主路径。
 
 本轮 Claude Code 体验报告的逐项处理、性能回归与验证范围见[MCP 体验问题处理记录](mcp-experience-review.md)。
+
+同名消歧、关系来源/动态覆盖与升级关系报告已实现，回归测试与当前验证范围见[开发验证记录](test-repairs.md)。待个人版 .13 发布。
 
 ## 验证与发布
 

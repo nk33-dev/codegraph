@@ -20,6 +20,14 @@
 - 桥接迁移会置 `project_metadata.synthesis_pending = '1'`，下一次同步据此重建合成边并把它清回 0；迁移本身不重建，所以升级后要跑一次 `codegraph sync`（或 `--upgrade-index`）才算真正补齐。
 - 旧构建读新库的推演：旧版看到的 `MAX(schema_versions)` 大于自己的 `CURRENT_SCHEMA_VERSION`，因此不迁移也能打开，且不认识新表新列。这是按代码推演的结论，**本轮未在旧产物上实测**；回滚仍以备份恢复为准，不是 `git checkout`。
 
+## 升级关系报告
+
+`codegraph sync --upgrade-index` 调用公共 `CodeGraph.upgradeIndex()`，在同一 writer lock 内完成重抽取、解析与前后比较。升级会强制存储哈希未变的文件，普通索引/同步仍沿用内容哈希跳过规则；提取或同步未完成时保留旧提取版本戳。API 返回 `success`、`assessment`、`relations`、处理文件数、耗时和错误；已是当前版本时 `relations: null`。CLI 非 quiet 模式直接输出关系分类与最多二十个示例。
+
+`relations` 汇总 `added`、`removed`、`deduplicated`，按 calls、references、imports 等实际 EdgeKind 和共享证据等级分组，每组携带来源、可信度与原始数字置信度。比较标识使用两端的文件/限定名、符号种类/语言/签名、关系类型、位置和证据字段，不依赖重建后的节点 ID。调用点位置变更或来源变更记为删除加新增；`before / after` 统计去重后的关系位置。去重只统计仍然保留的位置减少的重复记录，不把关系删除算作去重，也不把 INSERT OR IGNORE 的尝试数当作实际变化。
+
+前后快照存入独立的临时 SQLite 文件，通过 ATTACH 在持锁连接上比较，避免把两份全图边集载入内存；不更改主连接的 temp_store。异常和成功路径均 DETACH、删除临时文件并释放写锁。本报告比较打开索引后的提取升级，不追溯打开时已执行的 schema 迁移。没有改动持久 schema 或提取版本号。快照增加升级期间的临时磁盘与查询成本；计划中的峰值估算包含快照余量，实际规模仍由关系标识长度决定。
+
 ## 资源调度
 
 `CODEGRAPH_RESOURCE_PROFILE` 只接受显式的 `battery`、`balanced`、`performance`。解析 worker 还按 `ordinary`、`interface`、`global` 任务等级限流。默认普通保存只启用一个解析 worker，不检测充电状态，也不默认把机器打满；现有 `CODEGRAPH_PARSE_WORKERS` 等显式覆盖仍然有效。

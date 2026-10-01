@@ -1094,6 +1094,7 @@ async function runIndexUpgrade(
         : 'per-file heuristic; no full-index baseline recorded yet') + ').',
     `Estimated peak disk: ~${formatUpgradeBytes(plan.estimatedPeakDiskBytes)} of index data ` +
       `(+${formatUpgradeBytes(plan.estimatedGrowthBytes)} over the current ${formatUpgradeBytes(plan.currentDbBytes + plan.walBytes)}).`,
+    'The disk estimate includes two temporary relation snapshots; long symbol selectors can exceed it. Snapshot/diff scan time is additional to the extraction estimate.',
     ...(plan.reasons.length > 0 ? ['Included versions:', ...plan.reasons.map((reason) => `  - ${reason}`)] : []),
   ].join('\n');
 
@@ -1121,50 +1122,19 @@ async function runIndexUpgrade(
     info(lines);
   }
 
-  const started = Date.now();
-  if (plan.scope === 'all') {
-    const result = await cg.indexAll();
-    if (!options.quiet) {
-      info(`Rebuilt ${formatNumber(result.filesIndexed)} file(s) in ${formatDuration(result.durationMs)}.`);
-    }
-  } else {
-    const languages = new Set(plan.scope);
-    const paths = cg.getFiles().filter((file) => languages.has(file.language)).map((file) => file.path);
-    const result = await cg.indexFiles(paths);
-    if (!result.success || result.filesErrored > 0) {
-      // 有文件没提取成功时绝不能盖新戳：那会让 status 谎称索引已是当前版本。
-      error(
-        `Re-extraction failed for ${result.filesErrored} file(s); the extraction stamp was left unchanged. ` +
-        'Run "codegraph index -f ." for a full rebuild.',
-      );
-      process.exitCode = 1;
-      return;
-    }
-    // 重新提取之后必须走一次同步：受影响语言之外的文件仍可能引用它们，解析与孤边清理在这里完成。
-    try {
-      await cg.sync();
-    } catch (err) {
-      // Loaded here, not at module scope: the CLI keeps the sync chain off its
-      // startup path (see loadCodeGraph above).
-      const { LockUnavailableError } = await import('../sync');
-      if (!(err instanceof LockUnavailableError)) throw err;
-      error('Another CodeGraph process holds the index writer lock; the extraction stamp was left unchanged. Retry after it finishes.');
-      process.exitCode = 1;
-      return;
-    }
-    cg.stampExtractionVersion();
-    if (!options.quiet) {
-      info(`Re-extracted ${formatNumber(result.filesIndexed)} file(s) in ${formatDuration(Date.now() - started)}.`);
-    }
+  const result = await cg.upgradeIndex();
+  if (!options.quiet) {
+    const { formatIndexRelationChanges } = await import('../graph/index-relation-delta');
+    info(`Re-extracted ${formatNumber(result.filesIndexed)} file(s) in ${formatDuration(result.durationMs)}.`);
+    if (result.relations) info(formatIndexRelationChanges(result.relations));
   }
-
-  if (cg.isIndexStale()) {
-    // 走到这里说明迁移没有真正完成 —— 不能报成功（提取版本戳没跟上或仍有陈旧数据）。
-    error('The index still reports a stale extraction version; run "codegraph index -f ." for a full rebuild.');
+  if (!result.success) {
+    for (const message of result.errors) error(message);
     process.exitCode = 1;
-  } else if (!options.quiet) {
-    info(`Index upgraded to extraction version ${assessment.current} in ${formatDuration(Date.now() - started)}.`);
+    return;
   }
+  if (!options.quiet) info(`Index upgraded to extraction version ${result.assessment.current}.`);
+
   persistResourceBaseline(projectPath);
 }
 
@@ -1766,7 +1736,8 @@ program
   .option('--exclude-type <kind...>', 'Fold these symbol kinds out of source excerpts')
   .option('--mode <mode>', 'explore, source, definitions, type-definition, implementations, references, symbols, hover, callers, callees, type-hierarchy, diagnostics, code-actions, impact, tests, status, or text', 'explore')
   .option('--backend <backend>', 'Structured query backend: graph (default), lsp, auto, or both; diagnostics defaults to auto')
-  .option('--file <file>', 'Exact project-relative file for structured queries')
+  .option('--file <file>', 'Exact project-relative file for symbol queries')
+  .option('--context-file <file>', '按此文件、导入关系和语言排列同名符号')
   .option('--line <number>', 'backend=lsp position query: 1-based line')
   .option('--column <number>', 'backend=lsp position query: 0-based UTF-16 column (default 0)')
   .option('--end-line <number>', 'mode=code-actions: optional 1-based range end line')
@@ -1783,7 +1754,7 @@ program
   .option('--base <ref>', 'Git commit/ref used as the change-analysis baseline (default: HEAD)')
   .option('--deep-changes', 'Build an isolated temporary baseline index for resolved semantic edge comparison')
   .option('--json', 'Output structured exploration evidence as JSON')
-  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; directory?: string; language?: string[]; framework?: string[]; symbolType?: string[]; excludeType?: string[]; mode?: string; backend?: string; file?: string; line?: string; column?: string; endLine?: string; endColumn?: string; actionKind?: string[]; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean; json?: boolean }) => {
+  .action(async (queryParts: string[], options: { path?: string; maxFiles?: string; directory?: string; language?: string[]; framework?: string[]; symbolType?: string[]; excludeType?: string[]; mode?: string; backend?: string; file?: string; contextFile?: string; line?: string; column?: string; endLine?: string; endColumn?: string; actionKind?: string[]; severity?: string; excludeDeclaration?: boolean; depth?: string; includeIndirect?: boolean; offset?: string; limit?: string; checkFiles?: boolean; changes?: boolean; base?: string; deepChanges?: boolean; json?: boolean }) => {
     const projectPath = resolveProjectPath(options.path);
 
     try {
@@ -1802,6 +1773,7 @@ program
       args.mode = options.mode;
       args.backend = options.backend;
       if (options.file !== undefined) args.file = options.file;
+      if (options.contextFile !== undefined) args.contextFile = options.contextFile;
       if (options.line !== undefined) args.line = Number(options.line);
       if (options.column !== undefined) args.column = Number(options.column);
       if (options.endLine !== undefined) args.endLine = Number(options.endLine);

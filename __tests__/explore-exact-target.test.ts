@@ -238,7 +238,7 @@ class IExact:
   it('fixture sanity: the flow runs as_sql → get_qualify_sql → get_select and compiler.py goes focused', async () => {
     const text = await explore('SQLCompiler.as_sql pre_sql_setup get_select');
     expect(text).toContain('**Flow (call path among the symbols you queried)');
-    expect(text).toMatch(/1\. as_sql \(compiler\.py:\d+\)[\s\S]*2\. as_sql \(compiler\.py:\d+\) -\[calls, (?:resolved|inferred|candidate)\]-> get_qualify_sql \(compiler\.py:\d+\)[\s\S]*3\. get_qualify_sql \(compiler\.py:\d+\) -\[calls, (?:resolved|inferred|candidate)\]-> get_select \(compiler\.py:\d+\)/);
+    expect(text).toMatch(/1\. as_sql \(compiler\.py:\d+\)[\s\S]*2\. SQLCompiler::as_sql \(compiler\.py:\d+\) -\[calls, (?:resolved|inferred|candidate)\]-> SQLCompiler::get_qualify_sql \(compiler\.py:\d+\)[\s\S]*3\. SQLCompiler::get_qualify_sql \(compiler\.py:\d+\) -\[calls, (?:resolved|inferred|candidate)\]-> SQLCompiler::get_select \(compiler\.py:\d+\)/);
     expect(sectionFor(text, COMPILER), 'the family file renders as a per-symbol view').toContain('· focused');
   });
 

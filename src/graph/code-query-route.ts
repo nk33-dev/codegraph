@@ -416,6 +416,7 @@ export function projectRequest(request: CodeQueryRequest, source: CodeQuerySourc
     query: request.query,
     backend: source,
     ...(request.file !== undefined ? { file: request.file } : {}),
+    ...(request.contextFile !== undefined ? { contextFile: request.contextFile } : {}),
     ...(request.offset !== undefined ? { offset: request.offset } : {}),
     ...(request.limit !== undefined ? { limit: request.limit } : {}),
     ...(request.depth !== undefined ? { depth: request.depth } : {}),
@@ -564,12 +565,19 @@ export function mergeResults(
 ): CodeQueryResult {
   const root = graph.projectRoot ?? lsp.projectRoot ?? '';
   const merged = mergeItems(root, graph.items, lsp.items);
+  if (request.mode === 'definitions') {
+    const ranks = new Map(graph.items.map((item, rank) => [mergeKey(item), rank]));
+    merged.items.sort((a, b) => (ranks.get(mergeKey(a)) ?? Number.MAX_SAFE_INTEGER)
+      - (ranks.get(mergeKey(b)) ?? Number.MAX_SAFE_INTEGER));
+  }
   const result = emptyCodeQueryResult(request.mode, request.query.trim(), 'both');
   result.projectRoot = graph.projectRoot ?? lsp.projectRoot;
   result.coordinates = { lineBase: 1, columnBase: 0, columnEncoding: 'utf-16' };
   result.index = graph.index ?? lsp.index;
   result.lsp = lsp.lsp ?? graph.lsp;
   result.ambiguous = graph.ambiguous || lsp.ambiguous;
+  result.target = graph.target;
+  result.coverage = graph.coverage;
   result.items = merged.items.slice(options.offset, options.offset + options.limit);
   result.page = {
     offset: options.offset,

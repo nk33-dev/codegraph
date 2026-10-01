@@ -17,7 +17,6 @@ import type CodeGraph from '../index';
 import type { Language, Node } from '../types';
 import {
   buildIndexBlock,
-  compareNodes,
   emptyCodeQueryResult,
   indexWarnings,
   isQueryEligibleNode,
@@ -38,6 +37,7 @@ import {
 } from '../graph/code-query';
 import { assertRoutableMode } from '../graph/code-query-route';
 import { lookupSymbolNodes } from '../graph/symbol-lookup';
+import { buildRelationshipCoverage } from '../graph/relationship-coverage';
 import { EXTENSION_MAP } from '../extraction/grammars';
 import { loadExtensionOverrides } from '../project-config';
 import {
@@ -458,10 +458,11 @@ function resolveCandidates(
     };
   }
 
-  const nodes = lookupSymbolNodes(cg, request.query).nodes
+  const contextFile = request.contextFile === undefined ? undefined
+    : resolveFileInput(root, { mode: 'definitions', query: '', file: request.contextFile })!;
+  const nodes = lookupSymbolNodes(cg, request.query, { file: file ?? undefined, contextFiles: contextFile ? [contextFile] : [] }).nodes
     .filter((node) => file === null || node.filePath === file)
-    .filter((node) => isQueryEligibleNode(root, node))
-    .sort(compareNodes);
+    .filter((node) => isQueryEligibleNode(root, node));
 
   const cap = request.mode === 'references' ? MAX_CANDIDATES_REFERENCES : MAX_CANDIDATES_DEFINITIONS;
   const candidates = nodes.slice(0, cap).map((node) => {
@@ -604,6 +605,17 @@ export async function queryCodeLsp(
   const context = new LspQueryContext(cg, manager, root);
   const language = file ? context.languageFor(path.resolve(root, file)) : null;
   let family: LspFamily | null = familyForLanguage(language);
+  const relationshipQuery = ['references', 'callers', 'callees', 'impact', 'implementations', 'type-hierarchy'].includes(request.mode);
+  if (relationshipQuery) {
+    const contextFile = request.contextFile === undefined ? undefined
+      : resolveFileInput(root, { mode: 'definitions', query: '', file: request.contextFile })!;
+    const nodes = lookupSymbolNodes(cg, request.query, { file: file ?? undefined, contextFiles: contextFile ? [contextFile] : [] }).nodes
+      .filter((node) => isQueryEligibleNode(root, node));
+    result.coverage = buildRelationshipCoverage(cg, nodes, []);
+    result.coverage.basis = 'lsp';
+    if (request.line === undefined) result.target = { status: nodes.length ? 'found' : 'not_found', total: nodes.length, candidates: nodes.slice(0, 20).map(makeSymbolBuilder(cg, root)) };
+    result.warnings.push(result.coverage.limitations[0]!);
+  }
 
   try {
     switch (request.mode) {
@@ -980,5 +992,6 @@ export async function queryCodeLsp(
   result.page.nextOffset = offset + result.items.length < result.page.total ? offset + result.items.length : null;
   result.routing.families = family ? [family] : [];
   result.routing.sources.lsp = result.page.total;
+  if (result.coverage) result.coverage.resolvedStatic = result.page.total;
   return result;
 }

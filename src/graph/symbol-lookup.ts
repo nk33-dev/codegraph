@@ -24,8 +24,19 @@
  * owns so the CLI and the MCP tools cannot drift apart again.
  */
 
-import type { Node } from '../types';
+import type { Edge, Node } from '../types';
 import { splitIdentifierSegments } from '../search/identifier-segments';
+import { isTestFile } from '../search/query-utils';
+
+export function splitSymbolSelector(query: string): { symbol: string; file?: string } {
+  const separator = query.indexOf('#');
+  if (separator < 0) return { symbol: query };
+  return { file: query.slice(0, separator).replace(/\\/g, '/').replace(/^\.\//, ''), symbol: query.slice(separator + 1) };
+}
+
+export function symbolSelector(node: Node): string {
+  return `${node.filePath}#${node.qualifiedName || node.name}`;
+}
 
 /** Rust path prefixes that name no directory (`crate::x`, `super::y`). */
 export const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
@@ -61,6 +72,10 @@ function canonicalScope(text: string): string {
  * packages) — against the path.
  */
 export function matchesSymbol(node: Node, symbol: string): boolean {
+  const selector = splitSymbolSelector(symbol);
+  if (selector.file !== undefined) {
+    return selector.file === node.filePath && Boolean(selector.symbol) && matchesSymbol(node, selector.symbol);
+  }
   // Erlang arity spelling (`fn/3`, `mod:fn/3`): when the node's qualifiedName
   // carries an arity (#1610) the written arity must match exactly, and the rest
   // of the comparison runs on the arity-less spelling. A node with no arity
@@ -85,8 +100,8 @@ export function matchesSymbol(node: Node, symbol: string): boolean {
   const lastPart = parts[parts.length - 1]!;
   if (node.name !== lastPart) return false;
 
-  // Stage 1: qualified-name containment under the extractor's `::` convention.
-  if (node.qualifiedName.includes(parts.join('::'))) return true;
+  // Match a whole scope suffix under the extractor's `::` convention.
+  if (node.qualifiedName === parts.join('::') || node.qualifiedName.endsWith(`::${parts.join('::')}`)) return true;
 
   // Stage 1b: boundary-aligned suffix under a canonical separator.
   //
@@ -97,7 +112,7 @@ export function matchesSymbol(node: Node, symbol: string): boolean {
   // `AppWeb::Format::group` cannot match and a perfectly precise query
   // resolved to nothing. Canonicalising both sides and requiring the match to
   // land on a separator boundary handles both conventions with one rule, and
-  // is strictly tighter than the `includes` above.
+  // works without splitting the stored module name.
   const canonicalQuery = canonicalScope(symbol);
   const canonicalNode = canonicalScope(node.qualifiedName);
   if (canonicalNode === canonicalQuery || canonicalNode.endsWith(`.${canonicalQuery}`)) {
@@ -110,9 +125,10 @@ export function matchesSymbol(node: Node, symbol: string): boolean {
   const containerHints = parts.slice(0, -1).filter((p) => !RUST_PATH_PREFIXES.has(p));
   if (containerHints.length === 0) return false;
   const segments = node.filePath.split('/').filter((s) => s.length > 0);
-  return containerHints.every((hint) =>
-    segments.some((seg) => seg === hint || seg.replace(/\.[^.]+$/, '') === hint)
-  );
+  const fileScope = segments.map((seg) => seg.replace(/\.[^.]+$/, '')).join('.');
+  const directoryScope = segments.slice(0, -1).join('.');
+  const wantedScope = containerHints.join('.');
+  return [fileScope, directoryScope].some((scope) => scope === wantedScope || scope.endsWith(`.${wantedScope}`));
 }
 
 /** The slice of CodeGraph a symbol lookup needs — keeps this module testable. */
@@ -120,6 +136,45 @@ export interface SymbolLookupHost {
   getNodesByName(name: string): Node[];
   searchNodes(query: string, options?: { limit?: number }): Array<{ node: Node }>;
   generatedFilePredicate(paths: string[]): (path: string) => boolean;
+  getNodesInFile?(file: string): Node[];
+  getOutgoingEdgesFrom?(ids: readonly string[], kinds?: Edge['kind'][]): Edge[];
+  getNodesByIds?(ids: readonly string[]): Map<string, Node>;
+}
+
+export interface SymbolLookupOptions {
+  file?: string;
+  contextFiles?: string[];
+  scope?: string;
+  languages?: string[];
+}
+
+export function sourcePathPriority(filePath: string): number {
+  if (/(?:^|[\\/])(?:fixtures?|testdata|__fixtures__)(?:[\\/]|$)/i.test(filePath)) return 2;
+  return isTestFile(filePath) ? 1 : 0;
+}
+
+export function rankSymbolNodes(cg: SymbolLookupHost, nodes: Node[], options: SymbolLookupOptions = {}): Node[] {
+  const contextFiles = new Set(options.contextFiles ?? []);
+  const contextNodes = [...contextFiles].flatMap((file) => cg.getNodesInFile?.(file) ?? []);
+  const languages = new Set(options.languages ?? contextNodes.map((node) => node.language));
+  const imports = cg.getOutgoingEdgesFrom?.(contextNodes.map((node) => node.id), ['imports']) ?? [];
+  const importedFiles = new Set([...(cg.getNodesByIds?.(imports.map((edge) => edge.target)).values() ?? [])].map((node) => node.filePath));
+  const isGenerated = cg.generatedFilePredicate(nodes.map((node) => node.filePath));
+  const scope = options.scope?.replace(/::/g, '.');
+  const scoped = (node: Node) => {
+    if (!scope) return 0;
+    const qualified = node.qualifiedName.replace(/::/g, '.');
+    const owner = qualified.slice(0, qualified.lastIndexOf('.'));
+    return owner === scope ? 0 : owner.endsWith(`.${scope}`) ? 1 : 2;
+  };
+  return [...nodes].sort((a, b) => scoped(a) - scoped(b)
+    || Number(!contextFiles.has(a.filePath)) - Number(!contextFiles.has(b.filePath))
+    || Number(!importedFiles.has(a.filePath)) - Number(!importedFiles.has(b.filePath))
+    || Number(!languages.has(a.language)) - Number(!languages.has(b.language))
+    || Number(isGenerated(a.filePath)) - Number(isGenerated(b.filePath))
+    || sourcePathPriority(a.filePath) - sourcePathPriority(b.filePath)
+    || a.filePath.localeCompare(b.filePath) || a.qualifiedName.localeCompare(b.qualifiedName)
+    || a.startLine - b.startLine || a.startColumn - b.startColumn || a.id.localeCompare(b.id));
 }
 
 export interface SymbolLookupResult {
@@ -173,7 +228,14 @@ export function groupDefinitions(
  * happened to rank first. FTS candidates still have to satisfy the matcher;
  * partial or mistyped names must never select the top fuzzy hit (#1473).
  */
-export function lookupSymbolNodes(cg: SymbolLookupHost, symbol: string): SymbolLookupResult {
+export function lookupSymbolNodes(cg: SymbolLookupHost, symbol: string, options: SymbolLookupOptions = {}): SymbolLookupResult {
+  const selector = splitSymbolSelector(symbol);
+  if (selector.file !== undefined && options.file !== undefined && selector.file !== options.file) {
+    return { nodes: [], ambiguous: false };
+  }
+  const file = options.file ?? selector.file;
+  symbol = selector.symbol;
+  if (!symbol || file === '') return { nodes: [], ambiguous: false };
   const qualified = isQualifiedSymbol(symbol);
 
   // Exact-name index, then filter by the qualifier the user actually wrote.
@@ -197,17 +259,21 @@ export function lookupSymbolNodes(cg: SymbolLookupHost, symbol: string): SymbolL
     // misleading fuzzy hit (#1473; qualified lookups already did this in #173).
   }
 
+  if (file !== undefined) {
+    nodes = nodes.filter((node) => node.filePath === file);
+    suggestions = suggestions.filter((node) => node.filePath === file);
+  }
+  if (options.languages?.length) nodes = nodes.filter((node) => options.languages!.includes(node.language));
   if (nodes.length === 0) return { nodes: [], ambiguous: false, ...(suggestions.length ? { suggestions } : {}) };
 
-  // Keepers before generated stubs (.pb.go and friends), stable otherwise.
-  const isGenerated = cg.generatedFilePredicate(nodes.map((n) => n.filePath));
-  const ranked = [...nodes].sort(
-    (a, b) => (isGenerated(a.filePath) ? 1 : 0) - (isGenerated(b.filePath) ? 1 : 0)
-  );
+  // Rank scope and context first, then keepers before generated stubs.
+  const canonicalQuery = canonicalScope(symbol);
+  const scope = qualified ? canonicalQuery.slice(0, canonicalQuery.lastIndexOf('.')) : undefined;
+  const ranked = rankSymbolNodes(cg, nodes, { ...options, scope: options.scope ?? scope });
   return { nodes: ranked, ambiguous: groupDefinitions(ranked).groups.length > 1 };
 }
 
 /** One-line "kind at path:line" label used when disclosing an ambiguous query. */
 export function describeSymbolNode(node: Node): string {
-  return `${node.kind} ${node.qualifiedName || node.name} (${node.language}) — ${node.filePath}:${node.startLine}`;
+  return `${node.kind} ${symbolSelector(node)} (${node.language}) — ${node.filePath}:${node.startLine}`;
 }

@@ -24,8 +24,8 @@ import type { Language } from '../types';
  */
 const HEURISTIC_MS_PER_FILE = 60;
 
-/** 重建期间的峰值磁盘系数：旧行不会立刻回收，叠加 WAL 后按现有占用的一倍半估计。 */
-const PEAK_DISK_FACTOR = 1.5;
+/** Allow for retained DB pages, WAL and two relation snapshots; long selectors can exceed this estimate. */
+const PEAK_DISK_FACTOR = 3.5;
 
 export interface IndexUpgradePlan {
   /** 需要重新提取的范围。 */

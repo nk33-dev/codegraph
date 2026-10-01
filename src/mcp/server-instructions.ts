@@ -13,8 +13,9 @@ Codegraph reads an indexed local code graph. Its default MCP surface has two too
 
 - Call \`codegraph_explore\` first for indexed source or flows. Ask a question or name symbols/files; for a flow, name its endpoints. If the project has no \`.codegraph/\`, stop using Codegraph for it and use built-in tools instead — indexing is the user's decision, so do not run \`codegraph init\` yourself (you may mention it).
 - Default explore returns current, line-numbered source, flow evidence and blast radius. MCP exploration returns text only so clients receive the source. Treat displayed lines as already read. Gap/truncation markers mean omitted code; query the missing symbol or range before editing it. Use \`mode:"source"\` with file, startLine and limit for ranges.
-- Structured JSON modes cover definitions/types/implementations, references, symbols/hover/hierarchies, diagnostics/code-actions, impact/tests/status/text. Graph is the default; LSP-only modes route automatically. Ask for \`backend:"lsp"\` when compiler-accurate types, diagnostics, or fixes matter.
-- If an answer is empty or incomplete, call explore again with the uncovered exact names; an empty result reports the lexical matches it checked and may name indexed candidates to retry with.
+- Structured modes return JSON. Graph is default; LSP-only modes route automatically. Use \`backend:"lsp"\` for compiler-accurate types, diagnostics or fixes.
+- Select same-name definitions with \`file\` or \`file#qualifiedName\`; \`contextFile\` ranks by file/imports/language and keeps alternatives.
+- For empty/incomplete answers, query the uncovered exact names; empty results list checked lexical matches and possible indexed candidates.
 
 ## Editing
 
@@ -24,9 +25,9 @@ Codegraph reads an indexed local code graph. Its default MCP surface has two too
 
 ## Boundaries
 
-- Graph relationships are best-effort static evidence; LSP/compiler/tests remain the authority for language correctness. Runtime candidates and inferred edges are labelled, not presented as confirmed calls.
+- Relationships label static/inferred/candidate evidence and partial coverage. Empty results do not prove absence: reflection, DI, string registrations and runtime routes need source/runtime checks. LSP/compiler/tests remain the authority for language correctness.
 - Heed pending, stale, or degraded-index warnings: unflagged shown source is current, but a \`changed on disk after the last index sync\` flag means Read that file and retry after sync.
-- Use \`projectPath\` for another indexed project or when this session has no default project.
+- Use \`projectPath\` to select an indexed project.
 `;
 
 /** Initialize guidance when no indexed project can be selected as the session default. */
