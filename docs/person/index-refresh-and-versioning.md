@@ -27,15 +27,23 @@
 - 文本索引局部刷新按路径读取旧记录；未变更文本保留路径与文件状态检查，跳过内容采样和重复路径解析。扫描每 100 个候选让出事件循环，未变更或跳过的文件也计入，让 MCP catch-up 可响应并发请求。
 - 索引/同步后的数据库维护在 worker 中删除已无有效节点的词表名称，并清空写入端的名称去重缓存，允许名称重新出现。清理是可重试的维护工作：SQL 错误记录英文告警，读端仍验证词表候选；worker 不可用时沿用有界维护降级，清理等待后续正常维护。SQLite 可复用已释放页，物理文件不因清理立即缩小；统计需区分主库、WAL、空闲页和有效记录。
 
-恢复与多连接用例见 `__tests__/index-reliability.test.ts`；规模测量入口见[索引可靠性审查](index-reliability.md)。这些改动尚未发布。
+恢复与多连接用例见 `__tests__/index-reliability.test.ts`；规模测量入口见[索引可靠性审查](index-reliability.md)。发布状态见[个人版导航](README.md#验证与发布)。
 
 ## 数据库与提取版本
 
 - schema 版本由 `CURRENT_SCHEMA_VERSION` 单点声明，**v1.6.1 同步后为 13**。上游用 10 表示 synthesis、11 表示它的索引守卫；个人自己的 `file_text` 迁移让位到 13，12 是桥接迁移，只在 `synthesis_inputs` 缺失时重放上游 v10，所以对上游库和全新库都是 no-op。编号纪律见[维护流程](maintenance.md)的「迁移编号纪律」。
 - 迁移在**打开索引库时**自动执行：任何命令（含 `codegraph sync`）打开旧库都会把它升到 13。个人库从记录 10 升上来会依次跑 11、12、13，补齐 `synthesis_inputs`、宽版 `idx_nodes_kind` 与合成回填；不需要删除索引重建，也不需要手工操作。
-- 提取版本为 **28**。个人库此前记为 27，与上游同号但含义不同（上游 27 = 保留 method value 接收者），因此记 27 的个人库会被判定落后：`codegraph status` 给出 `reindexRecommended`，`codegraph sync --upgrade-index` 先打印范围、文件数、预计耗时与峰值磁盘再执行。这一步是重抽取，与上面的表结构补齐是两件事。
+- 提取版本为 **29**，全语言范围用于恢复跨文件关系并生成 Vue/React composable、路由别名、props 与 emits 关系。旧索引会被判定落后：`codegraph status` 给出 `reindexRecommended`，`codegraph sync --upgrade-index` 先打印范围、文件数、预计耗时与峰值磁盘再执行。这一步是重抽取，与上面的表结构补齐是两件事。
 - 桥接迁移会置 `project_metadata.synthesis_pending = '1'`，下一次同步据此重建合成边并把它清回 0；迁移本身不重建，所以升级后要跑一次 `codegraph sync`（或 `--upgrade-index`）才算真正补齐。
 - 旧构建读新库的推演：旧版看到的 `MAX(schema_versions)` 大于自己的 `CURRENT_SCHEMA_VERSION`，因此不迁移也能打开，且不认识新表新列。这是按代码推演的结论，**本轮未在旧产物上实测**；回滚仍以备份恢复为准，不是 `git checkout`。
+
+## 升级关系报告
+
+`codegraph sync --upgrade-index` 调用公共 `CodeGraph.upgradeIndex()`，在同一 writer lock 内完成重抽取、解析与前后比较。升级会强制存储哈希未变的文件，普通索引/同步仍沿用内容哈希跳过规则；提取或同步未完成时保留旧提取版本戳。API 返回 `success`、`assessment`、`relations`、处理文件数、耗时和错误；已是当前版本时 `relations: null`。CLI 非 quiet 模式直接输出关系分类与最多二十个示例。
+
+`relations` 汇总 `added`、`removed`、`deduplicated`，按 calls、references、imports 等实际 EdgeKind 和共享证据等级分组，每组携带来源、可信度与原始数字置信度。比较标识使用两端的文件/限定名、符号种类/语言/签名、关系类型、位置和证据字段，不依赖重建后的节点 ID。调用点位置变更或来源变更记为删除加新增；`before / after` 统计去重后的关系位置。去重只统计仍然保留的位置减少的重复记录，不把关系删除算作去重，也不把 INSERT OR IGNORE 的尝试数当作实际变化。
+
+前后快照存入独立的临时 SQLite 文件，通过 ATTACH 在持锁连接上比较，避免把两份全图边集载入内存；不更改主连接的 temp_store。异常和成功路径均 DETACH、删除临时文件并释放写锁。本报告比较打开索引后的提取升级，不追溯打开时已执行的 schema 迁移。关系报告使用临时数据库，不改变持久 schema。快照增加升级期间的临时磁盘与查询成本；计划中的峰值估算包含快照余量，实际规模仍由关系标识长度决定。
 
 ## 资源调度
 

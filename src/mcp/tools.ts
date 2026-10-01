@@ -37,12 +37,12 @@ import {
 } from '../sync/worktree';
 import { pendingFileState, sortPendingFiles, type PendingFile, type WatchPolicy } from '../sync';
 import { indexedFileFreshness } from '../sync/file-freshness';
-import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, buildIndexBlock, defaultCodeQueryBackend, emptyCodeQueryResult, indexTrustWarnings, summarizeCodeQuery, watchInactiveWarning, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
+import { CODE_QUERY_BACKENDS, CODE_QUERY_MODES, buildIndexBlock, defaultCodeQueryBackend, emptyCodeQueryResult, indexTrustWarnings, makeSymbolBuilder, resolveFileInput, summarizeCodeQuery, watchInactiveWarning, type CodeQueryBackend, type CodeQueryMode, type CodeQueryRequest, type CodeQueryResult } from '../graph/code-query';
 import { NODE_KINDS, LANGUAGES, type Node, type Edge, type EdgeKind, type SearchResult, type Subgraph, type NodeKind, type Language } from '../types';
 import { CODE_EDIT_OPERATIONS, emptyCodeEditResult, formatCodeEditText, type CodeEditOperation, type CodeEditRequest, type CodeEditResult } from '../edits/contract';
 import { editTools } from './edit-tool';
 import { isTestFile, normalizeNameToken } from '../search/query-utils';
-import { groupDefinitions, isQualifiedSymbol, lastQualifierPart, lookupSymbolNodes, matchesSymbol } from '../graph/symbol-lookup';
+import { groupDefinitions, isQualifiedSymbol, lastQualifierPart, lookupSymbolNodes, matchesSymbol, splitSymbolSelector, symbolSelector } from '../graph/symbol-lookup';
 import {
   extractQueryPaths,
   queryMightContainPaths,
@@ -51,7 +51,8 @@ import {
 } from '../search/query-paths';
 import { parseQueryIntent, removeQueryIntentWords, removeViewWords } from '../search/query-intent';
 import { collectIncomingRelations } from '../graph/incoming-relations';
-import { classifyEdgeProvenance, extractEdgeSourceLocation } from '../graph/edge-provenance';
+import { classifyEdgeProvenance, describeEdgeEvidence, extractEdgeSourceLocation } from '../graph/edge-provenance';
+import { buildRelationshipCoverage, type RelationshipCoverage } from '../graph/relationship-coverage';
 import {
   existsSync,
   readFileSync,
@@ -2022,6 +2023,8 @@ export interface ExploreStructuredContent {
   projectRoot: string;
   evidence: FlowEvidenceReport | null;
   changes: ChangeContext | null;
+  coverage?: RelationshipCoverage;
+  target?: CodeQueryResult['target'];
   source: {
     files: string[];
     bytes: number;
@@ -2235,7 +2238,11 @@ export const tools: ToolDefinition[] = [
         },
         file: {
           type: 'string',
-          description: 'Structured modes: exact project-relative file filter.',
+          description: 'Exact project-relative symbol file.',
+        },
+        contextFile: {
+          type: 'string',
+          description: 'Same-name ranking context.',
         },
         files: {
           type: 'array',
@@ -2503,8 +2510,9 @@ export const MAX_CACHED_PROJECTS = 8;
 function formatDetailedRelation(edge: Edge, source: Node, target: Node): string {
   const sourceSite = extractEdgeSourceLocation(edge, source.filePath, source.startLine);
   const provenance = classifyEdgeProvenance(edge);
-  return `${source.name} (${source.filePath}:${source.startLine}) -[${edge.kind}, ${provenance.label || 'inferred'}]-> `
-    + `${target.name} (${target.filePath}:${target.startLine}) @ ${sourceSite.file}:${sourceSite.line}`;
+  const evidence = describeEdgeEvidence(edge);
+  return `${source.qualifiedName || source.name} (${source.filePath}:${source.startLine}) -[${edge.kind}, ${provenance.label}]-> `
+    + `${target.qualifiedName || target.name} (${target.filePath}:${target.startLine}) @ ${sourceSite.file}:${sourceSite.line} [source=${evidence.source}]`;
 }
 
 /**
@@ -5076,6 +5084,11 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const projectRoot = cg.getProjectRoot();
+    const selector = splitSymbolSelector(rawQuery.trim());
+    const selectedFile = args.file === undefined && selector.file === undefined ? undefined
+      : resolveFileInput(projectRoot, { mode: 'definitions', query: '', file: (args.file ?? selector.file) as string })!;
+    const contextFile = args.contextFile === undefined ? undefined
+      : resolveFileInput(projectRoot, { mode: 'definitions', query: '', file: args.contextFile as string })!;
     if (displayFilters.frameworks.size > 0) {
       const detected = new Set(cg.getDetectedFrameworks().map((name) => name.toLowerCase()));
       const missing = [...displayFilters.frameworks].filter((name) => !detected.has(name));
@@ -5254,6 +5267,20 @@ export class ToolHandler {
       ? this.inferToolDispatchFlow(cg, query)
       : null;
     if (inferredToolFlow) matchQuery = inferredToolFlow.query;
+    if (selector.file !== undefined) matchQuery = selector.symbol;
+    const exactCandidates = /^[\w$]+(?:(?:::|\.)[\w$]+)*$/.test(matchQuery.trim())
+      ? lookupSymbolNodes(cg, selector.file !== undefined ? rawQuery.trim() : matchQuery.trim(), {
+        file: selectedFile, contextFiles: contextFile ? [contextFile] : pinnedFiles,
+        languages: displayFilters.languages.size ? [...displayFilters.languages] : undefined,
+      }).nodes.filter((node) => !['file', 'import', 'export'].includes(node.kind) && !isConfigLeafNode(node))
+      : [];
+    if (selectedFile && exactCandidates.length === 0) {
+      return this.textResult(`No exact symbol matched "${matchQuery}" in ${selectedFile}. Use mode "symbols" with file to inspect that file's definitions.`);
+    }
+    if (exactCandidates.length === 1) {
+      focusedNode = exactCandidates[0]!;
+      focusedSymbolQuery = true;
+    }
     // A same-named file the span did not pin is named in the summary line, so
     // an agent that did mean it sees where it went instead of a silent drop.
     const setAsideNote = setAsideMatches.map((s) => {
@@ -5335,6 +5362,22 @@ export class ToolHandler {
       maxNodes: 200,
       minScore: 0.2,
     });
+    if (exactCandidates.length > 1) {
+      focusedSymbolQuery = true;
+      subgraph.nodes.clear();
+      subgraph.edges.length = 0;
+      subgraph.roots = exactCandidates.map((node) => node.id);
+      for (const node of exactCandidates) subgraph.nodes.set(node.id, node);
+      for (const node of exactCandidates.slice(0, maxFiles)) {
+        const reachable = cg.traverse(node.id, { maxDepth: displayFilters.depth, direction: 'both', limit: 40,
+          edgeKinds: ['calls', 'references', 'imports', 'exports', 'extends', 'implements', 'instantiates'] });
+        for (const [id, entry] of reachable.nodes) subgraph.nodes.set(id, entry);
+        subgraph.edges.push(...reachable.edges);
+      }
+      exactCandidates.forEach((node, rank) => {
+        if (!focusedFilePriority.has(node.filePath)) focusedFilePriority.set(node.filePath, rank);
+      });
+    }
     if (inferredToolFlow) {
       subgraph.roots.unshift(inferredToolFlow.nodes[0]!.id);
       for (const node of inferredToolFlow.nodes) subgraph.nodes.set(node.id, node);
@@ -6390,7 +6433,7 @@ export class ToolHandler {
 
       if (focusedSymbolQuery) {
         const priority = (filePath: string) => !requestedTests && isTestFile(filePath)
-          ? 4 : focusedFilePriority.get(filePath) ?? 3;
+          ? Number.MAX_SAFE_INTEGER : focusedFilePriority.get(filePath) ?? Number.MAX_SAFE_INTEGER - 1;
         const difference = priority(a[0]) - priority(b[0]);
         if (difference !== 0) return difference;
       }
@@ -6548,6 +6591,15 @@ export class ToolHandler {
       '',
     ];
     const summaryLineIdx = 2;
+    if (exactCandidates.length > 1) {
+      lines.push(`**Ambiguous symbol — ${exactCandidates.length} definitions**`,
+        ...exactCandidates.slice(0, 8).map((node) => `- \`${symbolSelector(node)}\` (${node.language}, ${node.kind}) at ${node.startLine}`),
+        ...(exactCandidates.length > 8 ? [`- ${exactCandidates.length - 8} more; use mode "definitions" to paginate all candidates.`] : []),
+        'Use file or a file#qualifiedName selector to query one definition.', '');
+    }
+    const coverage = buildRelationshipCoverage(cg, exactCandidates.length ? exactCandidates : [...subgraph.nodes.values()], subgraph.edges.filter((edge) => edge.kind !== 'contains'));
+    lines.push(`**Relationship coverage — partial:** static ${coverage.resolvedStatic}, inferred ${coverage.inferred}, candidates ${coverage.runtimeCandidates}. Runtime links may be missing; empty ≠ absent.`,
+      ...coverage.dynamicSites.map((site) => `- Possible dynamic omission: ${site.form} at ${site.filePath}:${site.line} (${site.symbol}).`), '');
 
     if (incompleteFlow) {
       const touchesVue = sortedFiles.some(([filePath]) => filePath.endsWith('.vue'));
@@ -9345,7 +9397,11 @@ export class ToolHandler {
       sourceBytes,
       responseBytes: finalText.length,
       evidenceKeys: flow.evidenceKeys,
-    }, visibleEvidence, visibleChangeContext, { cg, paths: answerPaths });
+    }, visibleEvidence, visibleChangeContext, { cg, paths: answerPaths }, {
+      coverage,
+      ...(exactCandidates.length ? { target: { status: 'found', count: exactCandidates.length,
+        definitions: exactCandidates.slice(0, 50).map(makeSymbolBuilder(cg, projectRoot)) } } : {}),
+    });
   }
 
   /**
@@ -9364,6 +9420,7 @@ export class ToolHandler {
      * refusals) name no files to check.
      */
     answer?: { cg: CodeGraph; paths: Iterable<string> },
+    queryEvidence?: { coverage: RelationshipCoverage; target?: CodeQueryResult['target'] },
   ): ToolResult {
     const result = answer ? this.answerResult(answer.cg, text, answer.paths) : this.textResult(text);
     const structuredTextLimit = 12000;
@@ -9374,6 +9431,7 @@ export class ToolHandler {
       projectRoot: emission.projectRoot,
       evidence,
       changes,
+      ...queryEvidence,
       source: {
         files: emission.files.map((file) => file.path),
         bytes: emission.sourceBytes,
@@ -10347,74 +10405,9 @@ export class ToolHandler {
   // Symbol resolution helpers
   // =========================================================================
 
-  /**
-   * Find a symbol by name, handling disambiguation when multiple matches exist.
-   * Returns the best match and a note about alternatives if any.
-   */
-  /**
-   * Check if a node matches a symbol query — see `matchesSymbol` in
-   * `../graph/symbol-lookup`, which owns the rules.
-   */
-  private matchesSymbol(node: Node, symbol: string): boolean {
-    return matchesSymbol(node, symbol);
-  }
-
-  /**
-   * Find ALL definitions matching a name, ranked, so codegraph_node can return
-   * every overload instead of guessing one (the wrong guess → a Read). Keepers
-   * rank before generated stubs (.pb.go etc.); stable within a group preserves
-   * FTS order. Returns [] when nothing matches; a qualified lookup that finds no
-   * exact match returns [] rather than a misleading fuzzy file hit (#173); a
-   * bare name with no exact match falls back to the single top fuzzy result.
-   */
+  /** Keep symbol matching and ranking consistent with structured queries. */
   private findSymbolMatches(cg: CodeGraph, symbol: string): Node[] {
-    const isQualified = /[.\/]|::/.test(symbol);
-
-    // For a bare name, enumerate EVERY exact-name definition via the direct index
-    // (not FTS, which caps + ranks): tokio's `poll` has 50+ defs and the one the
-    // caller wants (`Harness::poll` at harness.rs:153) ranks below any search cut,
-    // so it could be neither rendered nor pinned by the file/line disambiguator —
-    // and the agent Read it. With the full set, the multi-overload render + the
-    // file/line filter can both reach it.
-    if (!isQualified) {
-      const exact = cg.getNodesByName(symbol);
-      if (exact.length > 0) {
-        const isGen = cg.generatedFilePredicate(exact.map((n) => n.filePath));
-        return [...exact].sort((a, b) => (isGen(a.filePath) ? 1 : 0) - (isGen(b.filePath) ? 1 : 0));
-      }
-      // No exact match — use the single top fuzzy result (e.g. a file basename).
-      const fuzzy = cg.searchNodes(symbol, { limit: 10 });
-      return fuzzy[0] ? [fuzzy[0].node] : [];
-    }
-
-    // Qualified lookup (`Session.request`, `stage_apply::run`): FTS + matchesSymbol.
-    const limit = 50;
-    let results = cg.searchNodes(symbol, { limit });
-
-    // FTS strips colons, so `stage_apply::run` searches the literal
-    // `stage_applyrun` and finds nothing. Re-search by the bare last part and
-    // let `matchesSymbol` filter by qualifier.
-    if (isQualified && results.length === 0) {
-      const tail = lastQualifierPart(symbol);
-      if (tail && tail !== symbol) results = cg.searchNodes(tail, { limit });
-    }
-
-    if (results.length === 0) return [];
-
-    const exactMatches = results.filter((r) => this.matchesSymbol(r.node, symbol));
-    if (exactMatches.length === 0) {
-      // No exact match — a qualified lookup must not fall back to a fuzzy file
-      // hit (#173); a bare name may use the single top fuzzy result.
-      return isQualified ? [] : results[0] ? [results[0].node] : [];
-    }
-
-    // Down-rank generated files (.pb.go, .pulsar.go, _grpc.pb.go, and anything
-    // whose header declares it generated) so a flow query prefers the keeper
-    // implementation over the generated stub.
-    const isGen = cg.generatedFilePredicate(exactMatches.map((r) => r.node.filePath));
-    return [...exactMatches]
-      .sort((a, b) => (isGen(a.node.filePath) ? 1 : 0) - (isGen(b.node.filePath) ? 1 : 0))
-      .map((r) => r.node);
+    return lookupSymbolNodes(cg, symbol).nodes;
   }
 
   /**

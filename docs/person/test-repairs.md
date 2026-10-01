@@ -1,5 +1,14 @@
 # 个人版开发验证记录
 
+
+## 2026-10-01：索引可信度与前端关系的独立验证（2026-10-01）
+
+- 索引可信度、Vue/React 关系、文本查询、常驻说明和 store 缓存的定向测试通过（37 项）；覆盖 2,500 条待解析引用、未知提交、失败/部分任务、Unicode、参数遮蔽、同步保留和事件解绑。
+- Explore 点名文件、完整函数正文、源码预算守恒和输出统计的定向测试通过（49 项），输出预算与按文件分配测试通过（65 项）；与前组重复的统计测试去重后共 139 项。警告占用响应开销，文件预留源码额度保持独立。
+- `npm run check:quick` 未全通过：缺少 `dist/mcp/engine`、编译 worker 和 viewer 资产，另有 36 个依赖构建产物的测试被明确跳过。执行过程中发现的源码回归已定向复测；完整构建、三平台 CI 和隔离安装仍未执行。
+- 本轮扩展已有 Vue/React 支持，真实仓库召回/精度和 Agent A/B 尚未测量；功能尚未发布。既有索引需重建或刷新相关文件后使用新增关系。
+
+
 ## 2026-10-01：Vue 框架关系与调用链修复
 
 ### 本轮实现
@@ -21,7 +30,7 @@
 
 ## 2026-10-01：索引可靠性审查
 
-基线 `95ca2893f766cd12029cd12ec52155b1a2b4d131`，Windows、Node v24.16.0，独立 worktree 分支 `codex/index-reliability`。功能契约见[索引状态](index-refresh-and-versioning.md#同步一致性与恢复)，七项审查与测量方法见[索引可靠性审查](index-reliability.md)。尚未提交、合回或发布。
+基线 `95ca2893f766cd12029cd12ec52155b1a2b4d131`，Windows、Node v24.16.0，独立 worktree 分支 `codex/index-reliability`。功能契约见[索引状态](index-refresh-and-versioning.md#同步一致性与恢复)，七项审查与测量方法见[索引可靠性审查](index-reliability.md)。独立验证发生在合并前。
 
 - 新增同名方法重挂、替换存储中断、定义重解析中断、多读连接缓存、分块中断后二次修改、历史失败引用恢复、Go 重复同步、名称反复改名与回归用例。修复前成功复现对应失败；恢复图按完整节点与调用位置边集合与空库重建比较。
 - 初始未收窄的 `check:quick`：3,913 项通过、2 项失败、252 项跳过。失败分别为分块残留节点和编辑刷新丢失调用边；分块修复在该轮运行期间完成，编辑入口当时仍漏扫其他文件。后续加入历史失败引用用例又发现 resolver 缓存缺少刷新，修复后定向四文件 54 项通过。
@@ -30,6 +39,15 @@
 - 初次定向命令意外触发测试 global setup 的 engine/viewer 自动构建，已中止该轮；后续统一设置 `CODEGRAPH_SKIP_TEST_BUILD=1`。遗留 `dist/` 是基线产物，CLI/子进程用例通过不代表修复已打包；本轮新增恢复、多连接与规模测量直接使用 `src/`，新产物与三平台仍待 CI 验证。未运行 `npm test` 或发布工作流。
 
 规模测量结果以[数据文件](index-reliability-measurements.json)的源码指纹与时间为准。
+
+## 2026-10-01：符号消歧、关系证据与索引升级报告
+
+实现位于 `codex/query-provenance` worktree，尚未提交、合并或发布。查询契约见[结构化查询](structured-queries.md)，升级契约见[索引状态与升级](index-refresh-and-versioning.md)。验证环境为 Windows / Node 24.16.0。
+
+- 最终 `npm run typecheck` 通过。
+- 设置 `CODEGRAPH_SKIP_TEST_BUILD=1` 后，`npm run test:focused -- __tests__/query-evidence-and-upgrade.test.ts __tests__/server-instructions.test.ts __tests__/code-query-routing.test.ts __tests__/sync-upgrade-index.test.ts __tests__/symbol-lookup.test.ts __tests__/explore-named-file-valve.test.ts __tests__/explore-exact-target.test.ts __tests__/explore-blast-radius.test.ts __tests__/mcp-experience.test.ts __tests__/index-refresh-version.test.ts --maxWorkers=2`：10 个文件、120 项通过。覆盖 Vue 同名变量、文件限定查询、作用域边界、上下文与 imports 排序、Graph/LSP 合并、关系证据分组、动态位置/零调用方、两种升级范围、节点 ID 重建、去重、部分失败和异常清理。
+- `npm run check:quick` 的扩展检查在迭代期间运行，选择 200 个测试文件并列出 36 个缺少 dist 的跳过项；最终该轮结果为 189 个文件通过、12 个失败、3 个跳过，不能称为整体通过。本次展示和排序回归已由上述最终定向检查复核。其余失败涉及缺少 `dist/mcp/engine`、`query-worker.js`、`index-freshness-worker.js` 或 viewer 资产；没有在本地补做完整构建，产物相关检查留给 CI。
+- 本次升级比较在测试临时数据库中验证，未操作用户现有索引；临时 ATTACH 文件的删除、DETACH 与主连接 temp_store 保持原值均有断言。未改 schema、提取版本号和发布版本号。
 
 ## 2026-09-30：四个 worktree 合并与 personal.12 发布准备
 

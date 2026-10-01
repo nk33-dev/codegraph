@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import CodeGraph from '../src/index';
-import { EXTRACTION_VERSION, extractionUpgradeScope } from '../src/extraction/extraction-version';
+import { EXTRACTION_VERSION, EXTRACTION_UPGRADES, extractionUpgradeScope } from '../src/extraction/extraction-version';
 import { planIndexUpgrade } from '../src/sync/upgrade-index';
 import { writeResourceMetricsSnapshot, type ResourceMetricsSnapshot } from '../src/resource-metrics';
 
@@ -39,10 +39,8 @@ describe('extractionUpgradeScope', () => {
   });
 
   it('treats an upgrade across unrecorded versions as a full rebuild instead of guessing', () => {
-    // The registry now records two increments (27 and 28), so the first
-    // unrecorded version sits three back — the assertion is about honesty, not
-    // about which number that is.
-    expect(extractionUpgradeScope(EXTRACTION_VERSION - 3)).toMatchObject({
+    // Cross the version before the first recorded increment.
+    expect(extractionUpgradeScope(EXTRACTION_UPGRADES[0]!.version - 2)).toMatchObject({
       scope: 'all', unrecordedHistory: true,
     });
   });

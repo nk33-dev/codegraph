@@ -17,13 +17,13 @@
 
 | 功能 | 文档 |
 | --- | --- |
-| Graph 定义、引用、调用方、文件符号、全文检索、行范围、文件级影响与启动入口 | [结构化查询](structured-queries.md) |
+| Graph 定义、同名消歧、关系证据/动态覆盖、引用、调用方、文件符号、全文检索、行范围、文件级影响与启动入口 | [结构化查询](structured-queries.md) |
 | C/C++、JS/TS、Java、Rust、Go、Python 的按需语言服务 | [LSP](lsp-mvp.md) |
 | Graph/LSP 自动路由、结果合并、影响分析与多窗口共享 | [统一路由与影响分析](unified-routing.md) |
 | 符号重命名、正文替换、前后插入与默认预览 | [结构化编辑](structured-edits.md) |
 | 本地入口、doctor、GitHub 安装、版本切换、daemon 版本切换与索引升级 | [个人使用与安装](personal-usage.md) |
 | 资源档位、查询池自动缩容与 LSP 预算 | [资源档位与自动回收](resource-governance.md) |
-| 索引状态、内容标记、监听原因与局部刷新 | [索引状态、局部刷新与内容标记](index-refresh-and-versioning.md) |
+| 索引状态、升级关系差异、内容标记、监听原因与局部刷新 | [索引状态、局部刷新与内容标记](index-refresh-and-versioning.md) |
 | 同步幂等、中断恢复、索引增长与查询测量 | [索引可靠性审查](index-reliability.md) |
 | MCP 固定表面、缓存稳定性与字符开销边界 | [MCP 表面与缓存稳定性](mcp-surface.md) |
 | Explore stale 输出、跨调用去重边界与点名文件的头部保留和续读脚注 | [Explore 响应稳定性](explore-response.md) |
@@ -40,6 +40,8 @@ MCP 状态会同时报告索引 freshness 与当前服务构建身份；`tests` 
 Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘要、LSP 索引状态和稳定索引内容标记由同一查询契约返回；安装器写入的 Agent 指令块与 MCP 初始化说明保持同一套用法。这些改动已实现，待个人版 .13 发布；本机验证范围见[开发验证记录](test-repairs.md)。
 
 本轮 Claude Code 体验报告的逐项处理、性能回归与验证范围见[MCP 体验问题处理记录](mcp-experience-review.md)。
+
+同名消歧、关系来源/动态覆盖与升级关系报告已实现，回归测试与当前验证范围见[开发验证记录](test-repairs.md)。待个人版 .13 发布。
 
 ## 验证与发布
 

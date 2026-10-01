@@ -12,6 +12,27 @@ export type ProvenanceTier =
   | 'candidate'      // 运行时候选 (inferred/confidence:candidate)
   | 'lsp';           // LSP查询时验证 (不持久化)
 
+export interface RelationEvidence {
+  tier: ProvenanceTier;
+  classification: 'resolved-static' | 'inferred' | 'runtime-candidate';
+  source: string;
+  confidence: 'direct' | 'inferred' | 'unknown';
+  resolverConfidence: number | null;
+}
+
+export function describeEdgeEvidence(edge: Edge): RelationEvidence {
+  const classified = classifyEdgeProvenance(edge);
+  const direct = ['explicit', 'resolved', 'lsp'].includes(classified.tier);
+  const unknown = classified.detail === 'unknown provenance';
+  return {
+    tier: classified.tier,
+    classification: direct ? 'resolved-static' : classified.tier === 'candidate' ? 'runtime-candidate' : 'inferred',
+    source: classified.detail ?? edge.provenance ?? 'unknown',
+    confidence: unknown ? 'unknown' : direct ? 'direct' : 'inferred',
+    resolverConfidence: typeof edge.metadata?.confidence === 'number' ? edge.metadata.confidence : null,
+  };
+}
+
 /**
  * Classify an edge's provenance tier based on its stored metadata.
  *
@@ -38,6 +59,7 @@ export function classifyEdgeProvenance(
     inferred ||
     confidence === 'candidate' ||
     confidence === 'low' ||
+    (typeof confidence === 'number' && confidence < 0.6) ||
     resolvedBy === 'fuzzy'
   ) {
     return { tier: 'candidate', label: 'candidate', detail: synthesizedBy ?? resolvedBy ?? undefined };

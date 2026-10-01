@@ -6,28 +6,27 @@
  */
 export const SERVER_INSTRUCTIONS = `# Codegraph
 
-Codegraph reads an indexed local code graph. Its default MCP surface has two tools:
-\`codegraph_explore\` for understanding code and \`codegraph_edit\` for constrained symbol edits.
+Use \`codegraph_explore\` for indexed code and \`codegraph_edit\` for constrained edits.
 
 ## How to use
 
-- Call \`codegraph_explore\` first for indexed source or flows. Ask a question or name symbols/files; for a flow, name its endpoints. If the project has no \`.codegraph/\`, stop using Codegraph for it and use built-in tools instead — indexing is the user's decision, so do not run \`codegraph init\` yourself (you may mention it).
-- Default explore returns current source, flow evidence and blast radius. “Only the main/primary call chain” collapses side branches/source; pass \`expand:true\` to open them. Treat displayed lines as already read. Gaps: query the missing symbol or range before editing it.
-- JSON modes cover definitions, references, symbols, diagnostics, LSP actions, impact, tests, status and text. Omit \`backend\` for auto Graph/LSP; position queries use \`file\` + 1-based \`line\` and optional 0-based \`column\`. Invalid combinations return a correction.
-- LSP cold starts wait for indexing where possible and mark provisional empty results as indexing. An exact target with zero callers/callees is distinct from no target.
-- If an answer is empty or incomplete, call explore again with the uncovered exact names; an empty result reports the lexical matches it checked and may name indexed candidates to retry with.
+- Call \`codegraph_explore\` first for source or flows; name symbols/files and flow endpoints. If the project has no \`.codegraph/\`, use built-in tools; do not run \`codegraph init\` yourself. Indexing is the user's decision.
+- Explore returns source and flow evidence. “Only the main/primary call chain” collapses side branches/source; \`expand:true\` opens them. Treat displayed lines as already read. Gaps: query the missing symbol or range before editing it. Use \`mode:"source"\`, file, startLine and limit for ranges.
+- JSON modes cover definitions, references, symbols, diagnostics, LSP actions, impact, tests, status and text. Omit \`backend\` for auto Graph/LSP. Positions use \`file\` + 1-based \`line\`, optional 0-based \`column\`; invalid combinations return a correction. Use \`backend:"lsp"\` for compiler-accurate types, definitions/references, diagnostics or fixes.
+- Same-name definitions: \`file\` or \`file#qualifiedName\` selects; \`contextFile\` ranks and retains alternatives.
+- LSP cold starts wait where possible; provisional empty results say indexing. Zero callers/callees and missing targets are distinct. Empty/incomplete answers list checked matches and candidates; query the uncovered exact names.
 
 ## Editing
 
-- \`codegraph_edit\` supports rename, LSP code-action, replace-body, insert-before and insert-after; it previews by default. Code actions may apply text fixes such as imports, but refuse file operations and command-only actions. Apply only when \`canApply:true\` and \`blockers\` is empty.
-- Direct \`apply:true\` replans and verifies current bytes; reviewed apply passes the preview's \`previewHash\` as \`expectPreviewHash\` and reuses \`operationId\`.
-- Rename and code-action use a configured language server. Rename completes only AST-verified Graph references; code-action applies only reviewed text edits inside the project. Ambiguous, stale, or unsafe targets are refused.
+- Rename, LSP code-action, replace-body, insert-before and insert-after preview by default. Apply only when \`canApply:true\` and \`blockers\` is empty.
+- Direct \`apply:true\` replans and verifies bytes. Reviewed apply passes \`previewHash\` as \`expectPreviewHash\` and reuses \`operationId\`.
+- Rename needs a configured language server and AST-verified references. Code-action applies text edits within the project; file operations and command execution are refused. Ambiguous/stale targets are refused.
 
 ## Boundaries
 
-- Graph edges are static evidence; LSP/compiler/tests govern correctness. Vue/React props/emits and runtime candidates are labelled as inferred; computed bindings and events may be missing.
-- Heed index warnings: callers/impact may miss results. Revision separates verified HEAD, unchanged files without commit provenance, stale and unverified. Verify disk-drift flags against files.
-- Use \`projectPath\` for another indexed project or when this session has no default project.
+- Relations label static/inferred/candidate evidence and partial coverage. Vue/React props/emits, reflection, DI and string registrations may lack edges; empty results do not prove absence. LSP/compiler/tests govern correctness.
+- Heed incomplete, pending, stale and degraded-index warnings: callers/impact may miss results. Revision separates verified HEAD, files-current without commit provenance, stale and unverified. Check disk-drift flags against files.
+- Use \`projectPath\` to select another indexed project.
 `;
 
 /** Initialize guidance when no indexed project can be selected as the session default. */

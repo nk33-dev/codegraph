@@ -26,7 +26,7 @@
  * only when every crossed extraction change has a compatible recorded scope.
  */
 import type { Language } from '../types';
-export const EXTRACTION_VERSION = 28;
+export const EXTRACTION_VERSION = 29;
 
 /**
  * Extraction scope affected by each version increment.
@@ -70,6 +70,11 @@ export const EXTRACTION_UPGRADES: readonly ExtractionUpgradeScope[] = [
     summary:
       'Re-extract for upstream v1.6.1: method-value receivers, call-graph and Steps coverage '
       + 'restored by the regression audit, and the v1.6.1 extraction fixes',
+  },
+  {
+    version: 29,
+    scope: 'all',
+    summary: 'Recover cross-file relationships after incremental edits and synthesize Vue/React composable, router, props and emits bindings',
   },
 ];
 
