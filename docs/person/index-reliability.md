@@ -1,6 +1,6 @@
 # 索引可靠性审查
 
-2026-10-01，在 `personal` 已提交版本的独立 worktree 检查七项风险。行为契约统一维护在[索引状态、局部刷新与生成版本](index-refresh-and-versioning.md#同步一致性与恢复)。修复已实现，待个人版 .13 发布。
+2026-10-01，在 `personal` 已提交版本的独立 worktree 检查七项风险。行为契约统一维护在[索引状态、局部刷新与生成版本](index-refresh-and-versioning.md#同步一致性与恢复)。修复已合入 `personal`，发布状态见[个人版导航](README.md#验证与发布)。
 
 | 风险 | 本次结论与证据 |
 | --- | --- |

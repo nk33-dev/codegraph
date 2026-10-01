@@ -4,7 +4,7 @@
 
 ## 已实现
 
-- 查询可信度：不完整索引显示原因和已知影响范围，提交对应状态单独报告；Vue/React 的 composable、路由别名、props 和 emits 关系及静态边界见[查询契约](query-output-indexing.md)和[索引状态](index-refresh-and-versioning.md)。验证记录见查询契约，待个人版 .13 发布。
+- 查询可信度：不完整索引显示原因和已知影响范围，提交对应状态单独报告；Vue/React 的 composable、路由别名、props 和 emits 关系及静态边界见[查询契约](query-output-indexing.md)和[索引状态](index-refresh-and-versioning.md)。验证见[开发记录](test-repairs.md)，发布状态见下方。
 
 - [Explore 宽问句与能力判断](mcp-experience-review.md)：清单、比较、能力和存在性问句的首段摘要，以及索引证据与运行时支持的边界。
 - [统一证据、置信度与实现者展开](flow-evidence.md)：`codegraph_explore` 的版本化证据、自然语言流程意图区分、关系来源分级与调用点位置、失败优先输出、接口/抽象方法运行时候选、跨轮证据去重与会话字节预算。
@@ -37,15 +37,17 @@ CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_
 
 MCP 状态会同时报告索引 freshness 与当前服务构建身份；`tests` 结构化模式支持只传 `files`，并把文件名主题明确相关的测试排在同置信度候选之前。流程问句中的 `codegraph_*` 工具名只在能唯一映射到真实 handler 和 calls 边时提升为调度主路径。
 
-Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘要、LSP 索引状态和稳定索引内容标记由同一查询契约返回；安装器写入的 Agent 指令块与 MCP 初始化说明保持同一套用法。这些改动已实现，待个人版 .13 发布；本机验证范围见[开发验证记录](test-repairs.md)。
+Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘要、LSP 索引状态和稳定索引内容标记由同一查询契约返回；安装器写入的 Agent 指令块与 MCP 初始化说明保持同一套用法。这些改动已实现；本机验证范围见[开发验证记录](test-repairs.md)。
 
 本轮 Claude Code 体验报告的逐项处理、性能回归与验证范围见[MCP 体验问题处理记录](mcp-experience-review.md)。
 
-同名消歧、关系来源/动态覆盖与升级关系报告已实现，回归测试与当前验证范围见[开发验证记录](test-repairs.md)。待个人版 .13 发布。
+同名消歧、关系来源/动态覆盖与升级关系报告已实现，回归测试与当前验证范围见[开发验证记录](test-repairs.md)。发布状态见下方。
 
 ## 验证与发布
 
-当前已发布版本为 [v1.6.0-personal.12](releases/v1.6.0-personal.12.md)（2026-09-30 的 GitHub prerelease）。标签指向 `bb10a99`；同提交三平台 CI、隔离安装、打包与校验和均由 GitHub 工作流完成。上一个发行版本为 [v1.6.0-personal.11](releases/v1.6.0-personal.11.md)。
+本次发布准备版本为 [v1.6.0-personal.13](releases/v1.6.0-personal.13.md)。当前已发布版本与实时结果以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)和[Personal Release](https://github.com/nk33-dev/codegraph/actions/workflows/personal-package.yml)为准；准备版本在同提交三平台 CI 成功后才发起发布。
+
+先前已核验的发行记录是 [v1.6.0-personal.12](releases/v1.6.0-personal.12.md)（2026-09-30），标签指向 `bb10a99`。历史 CI、隔离安装和资产校验结果只保留在对应发行说明。
 
 个人版从 [GitHub Release 安装](personal-usage.md)，不通过上游 npm 包获得个人改动。`personal` 分支的同一提交通过三平台 CI 后，才由 `Personal Release` 在 GitHub runner 构建、隔离验证、打包并创建 prerelease；本机不承担发布构建和上传。
 
