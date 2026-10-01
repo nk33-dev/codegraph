@@ -10,6 +10,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
+import { mayHaveGitRepository } from './git-presence';
 import {
   Language,
   FileRecord,
@@ -1235,6 +1236,7 @@ function collectGitFiles(repoDir: string, prefix: string, files: Set<string>, em
  * (non-git project) so callers can fall back to a filesystem walk.
  */
 function getGitVisibleFiles(rootDir: string): Set<string> | null {
+  if (!mayHaveGitRepository(rootDir)) return null;
   try {
     // Check if the project directory is gitignored by a parent repo.
     // When rootDir lives inside a parent git repo that ignores it,
@@ -1326,6 +1328,7 @@ interface GitChanges {
  * with it); a full `codegraph index` reconciles that.
  */
 export function getGitChangedFiles(rootDir: string, sinceCommit?: string | null): GitChanges | null {
+  if (!mayHaveGitRepository(rootDir)) return null;
   try {
     // `git status` only ever describes the WORKING TREE, so a change that has
     // been committed leaves no entry and never enters the candidate set — the
@@ -1356,6 +1359,7 @@ export const INDEXED_AT_COMMIT_KEY = 'indexed_at_commit';
 
 /** HEAD's commit sha, or null in a non-git repo or one with no commits yet. */
 export function getGitHeadSha(rootDir: string): string | null {
+  if (!mayHaveGitRepository(rootDir)) return null;
   try {
     return execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,

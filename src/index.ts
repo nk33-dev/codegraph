@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { mayHaveGitRepository } from './extraction/git-presence';
 import { getFileTextChanges, refreshFileTextIndex, searchFileText, type TextHit, type TextIndexChanges } from './db/file-text';
 import {
   queryCode,
@@ -1815,10 +1816,10 @@ export class CodeGraph {
     if (!fresh && this.gitCommitCache && now - this.gitCommitCache.at < 1000) return this.gitCommitCache.value;
     let value: string | null = null;
     try {
-      value = execFileSync('git', ['rev-parse', 'HEAD'], {
+      value = mayHaveGitRepository(this.projectRoot) ? execFileSync('git', ['rev-parse', 'HEAD'], {
         cwd: this.projectRoot, encoding: 'utf8', timeout: 2000,
         stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
-      }).trim() || null;
+      }).trim() || null : null;
     } catch { /* Non-Git projects have no HEAD. */ }
     this.gitCommitCache = { at: now, value };
     return value;

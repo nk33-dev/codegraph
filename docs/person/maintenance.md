@@ -70,7 +70,7 @@ For persistent format changes, first verify upgrade, repeated startup, interrupt
 
 ## 4. Verification and merging back
 
-- 日常开发先运行 `npm run check:quick`；它执行 `tsc --noEmit`，并按变更文件选择直接依赖测试和对应领域测试。缺少 `dist/bin/codegraph.js` 时，依赖构建产物的测试会被列出并跳过，不算通过，留给 CI 或本地构建后单独运行。需要手动收窄时使用 `npm run test:focused -- <test files>`。
+- 日常开发先运行 `npm run check:quick`；它执行 `tsc --noEmit`，并按变更文件选择直接依赖测试和对应领域测试。缺少 `dist/bin/codegraph.js` 时，依赖构建产物的测试会被列出并跳过，不算通过，留给 CI 或本地构建后单独运行。需要手动收窄时使用 `npm run test:focused -- <test files>`。两者只运行 engine/ui；严格计时单独使用 `npm run test:perf`，不在日常检查重复运行。
 - 共享核心、构建/安装器、跨平台流程和发布前检查再运行 `npm run build` 与 `npm test`；同一份代码已经通过的全量检查不重复执行，纯文档修改不重跑代码测试。
 - CLI/MCP 的共享符号标签、索引状态横幅或编辑说明变化时，发布前同时检查 `cli-definition-grouping`、`mcp-staleness-banner` 与 `edit-apply-contract`；本地旧 `dist` 的结果不代替发行提交在 CI 重建后的契约结果。
 - Run the relevant evaluations per module, and follow the [validation methodology](../validation.md) for new languages/frameworks.
@@ -113,3 +113,7 @@ Long-lived entry points and contracts are written into the corresponding feature
 4. 按“文档生命周期”复核安装命令、版本链接、实现状态与验证数字；删除重复现状，只在验证记录保留失败经过。
 5. 提交并推送干净的 `personal`，等待**同一提交**三平台 CI 成功。CI 失败必须把可复用原因写入维护规则或验证记录，而不是只修眼前文件。
 6. 只有用户仍授权发布且上述条件全部满足时，才触发 `Personal Release`；任何新提交都会使旧 CI 结论失效。
+
+### Windows worktree 清理
+
+清理 worktree 前核对源码和忽略文件，并识别其中所有指向工作树外部的 junction/符号链接，尤其是 `node_modules/@scope/package` 的 workspace 链接。先移除链接本身，再交给 Git 删除 checkout；不能让递归删除进入链接目标。完成后核对主仓库的完整 Git 差异、workspace 源码与依赖入口，不能只检查顶层 `node_modules` 是否存在。CI 和发行产物不依赖本机 checkout 的清理结果。

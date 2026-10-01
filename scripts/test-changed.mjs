@@ -49,6 +49,7 @@ function walk(dir) {
 const tests = walk(path.join(root, '__tests__'));
 const selected = new Set();
 const changed = changedFiles();
+const testSources = new Map(tests.map((test) => [test, fs.readFileSync(path.join(root, test), 'utf8')]));
 
 for (const file of changed) {
   if (file.endsWith('.test.ts')) selected.add(file);
@@ -58,23 +59,22 @@ function withoutExtension(file) {
   return file.replace(/\.(?:[cm]?[jt]sx?|json)$/i, '').replace(/\/index$/i, '');
 }
 
-function importsFile(test, changedFile) {
-  const text = fs.readFileSync(path.join(root, test), 'utf8');
+function importedFiles(test) {
+  const text = testSources.get(test);
   const imports = text.matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*['"]([^'"]+)['"]/g);
-  const changedKey = withoutExtension(changedFile);
+  const imported = new Set();
   for (const match of imports) {
     const specifier = match[1];
     if (!specifier?.startsWith('.')) continue;
     const resolved = normalize(path.resolve(root, path.dirname(test), specifier));
-    if (withoutExtension(resolved) === changedKey) return true;
+    imported.add(withoutExtension(resolved));
   }
-  return false;
+  return imported;
 }
 
-for (const file of changed) {
-  for (const test of tests) {
-    if (importsFile(test, file)) selected.add(test);
-  }
+const changedKeys = new Set(changed.map(withoutExtension));
+for (const test of tests) {
+  if ([...importedFiles(test)].some((file) => changedKeys.has(file))) selected.add(test);
 }
 
 const impactRules = [
@@ -97,7 +97,7 @@ for (const file of changed) {
 // letting a missing build show up as dozens of unrelated failures.
 const builtCli = path.join(root, 'dist', 'bin', 'codegraph.js');
 const needsBuiltCli = (test) =>
-  /dist[\\/]bin|['"]dist['"]\s*,\s*['"]bin['"]/.test(fs.readFileSync(path.join(root, test), 'utf8'));
+  /dist[\\/]bin|['"]dist['"]\s*,\s*['"]bin['"]/.test(testSources.get(test));
 const cliMissing = !fs.existsSync(builtCli);
 const skippedForBuild = cliMissing ? [...selected].filter(needsBuiltCli).sort() : [];
 for (const test of skippedForBuild) selected.delete(test);
@@ -127,7 +127,8 @@ if (files.length === 0) {
 }
 
 const vitest = path.join(root, 'node_modules', 'vitest', 'vitest.mjs');
-const result = spawnSync(process.execPath, [vitest, 'run', ...files], {
+const projects = ['--project', 'engine', '--project', 'ui'];
+const result = spawnSync(process.execPath, [vitest, 'run', ...files, ...projects], {
   cwd: root,
   // vitest.config.mts runs __tests__/global-setup-dist.ts (which rebuilds the engine and
   // the viewer when stale) unless this is set. The quick path is deliberately not a build:
