@@ -208,6 +208,12 @@ export function clearImportResolverMemos(context: ResolutionContext): void {
   cobolCopybookIndexes.delete(context);
   pythonModuleFileMemos.delete(context);
   PY_MODULE_SYMBOLS.delete(context);
+  // The C/C++ include directories come from the project's compile database and
+  // directory layout, both of which can change while a watch-mode resolver is
+  // alive. This is the pass boundary — the one place the resolver already drops
+  // every filesystem-derived assumption — so the cache is dropped here rather
+  // than only by the test-only clearCppIncludeDirCache().
+  cppIncludeDirCache.clear();
 }
 
 export function resolveImportPath(
@@ -1258,17 +1264,6 @@ function extractCppImports(content: string): ImportMapping[] {
   }
 
   return mappings;
-}
-
-// Cache import mappings per file to avoid re-reading and re-parsing
-const importMappingCache = new Map<string, ImportMapping[]>();
-
-/**
- * Clear the import mapping cache (call between indexing runs)
- */
-export function clearImportMappingCache(): void {
-  importMappingCache.clear();
-  cppIncludeDirCache.clear();
 }
 
 /**

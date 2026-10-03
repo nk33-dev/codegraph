@@ -189,8 +189,15 @@ export interface ResolutionContext {
   getMethodMatches?(typeName: string, methodName: string, language: Language): Node[];
   /** Get project root */
   getProjectRoot(): string;
-  /** Get all files */
-  getAllFiles(): string[];
+  /** Get all files. Shared between calls — treat the result as read-only. */
+  getAllFiles(): readonly string[];
+  /**
+   * Languages the project actually contains, so a detector for a language with
+   * no files can be skipped instead of scanning the file list to find nothing.
+   * Optional: a context that cannot answer returns `undefined`, and every
+   * detector runs (the pre-index construction pass has no files to report).
+   */
+  getAllFileLanguages?(): ReadonlySet<string>;
   /** Get nodes by lowercase name (O(1) lookup for fuzzy matching) */
   getNodesByLowerName(lowerName: string): Node[];
   /**
@@ -266,7 +273,7 @@ export interface ResolutionContext {
    * so external context implementations and test fixtures compile
    * without modification.
    */
-  listDirectories?(relativePath: string): string[];
+  listDirectories?(relativePath: string): readonly string[];
   /**
    * C/C++ include search directories (relative to project root),
    * extracted from compile_commands.json or discovered by heuristic.

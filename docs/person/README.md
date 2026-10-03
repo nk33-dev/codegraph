@@ -27,6 +27,7 @@
 | 资源档位、查询池自动缩容与 LSP 预算 | [资源档位与自动回收](resource-governance.md) |
 | 索引状态、升级关系差异、内容标记、监听原因与局部刷新 | [索引状态、局部刷新与内容标记](index-refresh-and-versioning.md) |
 | 同步幂等、中断恢复、索引增长与查询测量 | [索引可靠性审查](index-reliability.md) |
+| 索引期读缓存的生命周期、失效点与框架语言过滤 | [索引读缓存](index-caching.md) |
 | MCP 固定表面、缓存稳定性与字符开销边界 | [MCP 表面与缓存稳定性](mcp-surface.md) |
 | Explore stale 输出、跨调用去重边界与点名文件的头部保留和续读脚注 | [Explore 响应稳定性](explore-response.md) |
 | 查询输出折叠、过滤、新文件状态与失败分类 | [查询输出、过滤与索引状态](query-output-indexing.md) |

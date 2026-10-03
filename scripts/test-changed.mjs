@@ -86,7 +86,11 @@ const impactRules = [
   [/^__tests__\/fixtures\/fake-lsp-server\.js$/, /^__tests__\/(?:lsp|edit-lsp)-.*\.test\.ts$/],
   // The architecture report reads project config and adds a query of its own; the direct-import
   // graph does not connect either file to the report's test.
-  [/^src\/(?:project-config|db\/queries)\.ts$/, /^__tests__\/(?:architecture|project-config).*\.test\.ts$/],
+  [/^src\/(?:project-config|db\/queries)\.ts$/, /^__tests__\/(?:architecture|project-config|query-cache).*\.test\.ts$/],
+  // The read memos and the detector language gate span the resolver, the extractor and the query
+  // layer; only `db/queries` is a direct relative import of query-cache.test.ts, so the files that
+  // own the caches it describes have to be named here.
+  [/^src\/(?:extraction\/index|resolution\/index|resolution\/import-resolver|resolution\/frameworks\/[^/]+)\.ts$/, /^__tests__\/query-cache\.test\.ts$/],
   // The end-to-end baseline pins what extraction, resolution and persistence actually wrote. None
   // of the three is a direct relative import of the test, so the import graph cannot reach it —
   // and this is precisely the test a parser, resolver or schema change should run.
