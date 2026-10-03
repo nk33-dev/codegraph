@@ -21,11 +21,11 @@
 
 ```powershell
 npm pack "github:nk33-dev/codegraph#personal"
-npm install -g ".\colbymchenry-codegraph-1.6.0-personal.11.tgz"
+npm install -g ".\colbymchenry-codegraph-<version>.tgz"
 codegraph doctor
 ```
 
-第二步使用 `npm pack` 实际输出的文件名。更新时重复这两步；固定版本可将 `#personal` 换成提交号或标签。源码准备阶段会构建 CLI 和 UI，因此首次安装需要下载构建依赖。
+第二步的文件名用 `npm pack` 实际输出的那个（形如 `colbymchenry-codegraph-1.6.2-personal.1.tgz`）。更新时重复这两步；固定版本可将 `#personal` 换成提交号或标签。源码准备阶段会构建 CLI 和 UI，因此首次安装需要下载构建依赖。
 
 当前包名沿用 `@colbymchenry/codegraph`；从 npm registry 安装该名称取得的是**官方版**。个人版与官方版共用 `codegraph` 命令，切换后可用 `codegraph doctor` 核对实际入口、发行标记和构建信息。旧安装处理及其他安装方式见[个人使用与安装](docs/person/personal-usage.md)。
 

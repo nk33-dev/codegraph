@@ -1,7 +1,7 @@
 {
   "name": "@colbymchenry/codegraph",
   "private": true,
-  "version": "1.6.0-personal.13",
+  "version": "1.6.2-personal.1",
   "codegraphDistribution": {
     "channel": "personal",
     "repository": "nk33-dev/codegraph",
