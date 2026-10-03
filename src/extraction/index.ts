@@ -1891,6 +1891,13 @@ export class ExtractionOrchestrator {
    */
   private detectedFrameworkNames: string[] | null = null;
   /**
+   * Paths the last detection pass read or probed (negative answers included).
+   * A sync compares its change set against this to decide whether detection could
+   * have moved (see {@link frameworkDetectionMayHaveMoved}) — a modified
+   * `package.json` can add a framework, while a body edit to a `.ts` file cannot.
+   */
+  private detectedFrameworkProbes: Set<string> = new Set();
+  /**
    * Scope matcher for SCOPED syncs, memoized on the mtimes of the two root
    * files it is derived from (`codegraph.json`, `.gitignore`). See
    * {@link scopedSyncMatcher}.
@@ -1946,8 +1953,12 @@ export class ExtractionOrchestrator {
    * detection. Graph-query methods (getNodesByName etc.) return empty because
    * the DB hasn't been populated yet, but detect() only uses readFile,
    * fileExists, and getAllFiles, so that's fine.
+   *
+   * `probes`, when given, collects every path this context looked at — negative
+   * answers included — so a later sync can tell whether its change set overlaps
+   * what detection depended on.
    */
-  private buildDetectionContext(files: string[]): ResolutionContext {
+  private buildDetectionContext(files: string[], probes?: Set<string>): ResolutionContext {
     const rootDir = this.rootDir;
     // Detectors re-read the same manifests over and over (each detect() probes
     // the root package.json, workspace members, framework config paths), so the
@@ -1974,6 +1985,7 @@ export class ExtractionOrchestrator {
       // answer was already computed with the content in hand.
       getProjectRoot: () => rootDir,
       fileExists: (relativePath: string) => {
+        probes?.add(relativePath);
         const memo = existsMemos.get(relativePath);
         if (memo !== undefined) return memo;
         const full = validatePathWithinRoot(rootDir, relativePath);
@@ -1989,6 +2001,7 @@ export class ExtractionOrchestrator {
         return exists;
       },
       readFile: (relativePath: string) => {
+        probes?.add(relativePath);
         const memo = readMemos.get(relativePath);
         if (memo !== undefined) return memo;
         let content: string | null = null;
@@ -2041,8 +2054,10 @@ export class ExtractionOrchestrator {
   private ensureDetectedFrameworks(files?: string[]): string[] {
     if (this.detectedFrameworkNames !== null) return this.detectedFrameworkNames;
     const fileList = files ?? scanDirectory(this.rootDir);
-    const context = this.buildDetectionContext(fileList);
+    const probes = new Set<string>();
+    const context = this.buildDetectionContext(fileList, probes);
     this.detectedFrameworkNames = detectFrameworks(context).map((r) => r.name);
+    this.detectedFrameworkProbes = probes;
     const declared = declaredDependencies(context);
     this.gatedFrameworks = new Map();
     for (const name of this.detectedFrameworkNames) {
@@ -2054,6 +2069,26 @@ export class ExtractionOrchestrator {
     this.appFrameworkMemo.clear();
     this.manifestDependencies.clear();
     return this.detectedFrameworkNames;
+  }
+
+  /**
+   * Whether a sync's change set can have moved framework detection.
+   *
+   * The cached names were computed from the files and manifests present at that
+   * time, so they go stale exactly when an input moves: a file appearing or
+   * disappearing (a new language's first file, a new `requirements.txt`), or an
+   * edit to a path the last pass actually read (`package.json` gaining a
+   * dependency). A body edit to a source file detection never opened cannot
+   * change the answer, and that is the common case a sync must not pay a
+   * re-detection for.
+   */
+  private frameworkDetectionMayHaveMoved(
+    changed: readonly string[],
+    filesAdded: number,
+    filesRemoved: number
+  ): boolean {
+    if (filesAdded > 0 || filesRemoved > 0) return true;
+    return changed.some((filePath) => this.detectedFrameworkProbes.has(filePath));
   }
 
   /** Detected frameworks whose extractors run only inside their own apps, with the packages that mark one. */
@@ -3565,6 +3600,19 @@ export class ExtractionOrchestrator {
     if (filesToIndex.length > 0) {
       const overrides = loadExtensionOverrides(this.rootDir);
       await loadGrammarsForLanguages(preloadLanguagesForFiles(filesToIndex, overrides));
+    }
+
+    // Re-detect when this change set can have moved detection, before
+    // `indexFile` below reuses the cached names (see
+    // frameworkDetectionMayHaveMoved). `indexAll` resets unconditionally each
+    // run; a sync must not, or every body edit would re-scan the tree. The
+    // non-scoped reconcile already has the full file list; the scoped fast path
+    // deliberately does not, so there a detection that saw only the changed
+    // files would be worse than a stale one — it re-scans instead.
+    if (filesToIndex.length > 0 && this.frameworkDetectionMayHaveMoved(filesToIndex, filesAdded, filesRemoved)) {
+      const scoped = scopedPaths !== undefined && scopedPaths.length > 0;
+      this.detectedFrameworkNames = null;
+      this.ensureDetectedFrameworks(scoped ? undefined : currentFiles);
     }
 
     // Index changed files

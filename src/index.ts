@@ -1484,6 +1484,17 @@ export class CodeGraph {
         // every sync that touched files so edits to `app.module.ts` propagate
         // to controllers in unchanged files. The pass is idempotent and cheap
         // (regex over *.module.ts only).
+        //
+        // A file appearing or disappearing can also change WHICH frameworks are
+        // detected, not just what they see: detection is gated on the indexed
+        // languages (a Laravel project's first PHP file), and detectors that scan
+        // the file list (UIKit/SwiftUI, swift-objc-bridge) only match once their
+        // files exist. Those files would otherwise be resolved with no framework
+        // resolver until the next full index, so re-detect here before the pass —
+        // the same re-initialize `indexAll` does once its first files land.
+        if (result.filesAdded > 0 || result.filesRemoved > 0) {
+          this.resolver.initialize();
+        }
         if (result.filesAdded > 0 || result.filesModified > 0) {
           this.resolver.runPostExtract();
         } else if (result.filesRemoved > 0) {
@@ -1492,8 +1503,8 @@ export class CodeGraph {
           // (#1240 removal case) and the orphan sweep consumes them. In a
           // long-lived process (daemon) the resolver's name caches were
           // warmed against the pre-removal graph; drop them so resolution
-          // sees the post-removal state. (runPostExtract above clears caches
-          // itself, so the changed-files branch is already covered.)
+          // sees the post-removal state. (initialize above and runPostExtract
+          // clear caches themselves, so the other branches are already covered.)
           this.resolver.clearCaches();
         }
 
