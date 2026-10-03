@@ -14,6 +14,7 @@
 - [幂等与事务式结构化编辑](edit-transactions.md)：稳定 operation ID、跨文件暂存/提交/回滚、启动恢复、逐文件恢复清单与 LSP 文件通知。
 - [LSP 语义查询与安全自动修复](lsp-semantic-actions.md)：类型提示、实现/类型定义、调用/类型层级、全项目诊断，以及补导入和整理导入等 Code Action 的预览与事务写入。
 - [依赖边界与循环依赖检查](architecture-boundaries.md)：从已解析的文件依赖推导目录/模块级的禁止方向与模块环，附具体 `file:line` 证据，CLI 与 MCP 共用。
+- 端到端图基线：索引一份刻意包含反例的 fixture，整图与提交进仓库的 golden 比对，用于发现上游同步或解析器升级后**丢失**的关系；更新流程与行号敏感性见[开发参考](../development.md#end-to-end-graph-baseline)。
 - [个人版生产硬化与发布准备](release-readiness.md)：三平台门禁、夜间真实依赖验证、个人安装产物和发布边界。
 
 | 功能 | 文档 |

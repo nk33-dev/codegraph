@@ -122,6 +122,19 @@ Tests live in `__tests__/` and mirror the module they cover. Notable ones beyond
 
 Local `check:quick` and `test:focused` run engine/ui only; `test:perf` remains the explicit serial performance check. Shared suites run once in normal checks. The affected-test selector reads each test file once and preserves the same direct-import/domain matching. Local measurements and Git probe behavior are maintained in [test performance](person/test-performance.md).
 
+### End-to-end graph baseline
+
+`graph-baseline.test.ts` indexes a checked-in fixture (`fixtures/graph-baseline/project/`, six small TypeScript files) and compares the whole resulting graph against `fixtures/graph-baseline/golden/graph.json`. It is the only test that can see a relationship *disappear*: the kernel↔wasm parity suite compares two live extractors, so it stays green when both drop the same edge.
+
+- The fixture is adversarial on purpose — two same-named methods in different modules, a callback reachable only through a parameter, and a file where every line looks like a call site and none is. Most of the assertions are negative.
+- `graph-baseline-utils.ts` normalizes to natural keys (rowids, timestamps and content hashes out; `nodes.id` replaced by `kind|file_path|name|start_line|start_column`; JSON columns re-serialized with sorted keys) and normalizes line endings, so the same program snapshots the same on a CRLF checkout and an LF one.
+- It reads `node:sqlite` directly rather than through the query layer, so a query-layer bug cannot hide a storage bug.
+- **Regenerate only when the change is intended**: `CODEGRAPH_UPDATE_GRAPH_GOLDEN=1 npx vitest run --project engine __tests__/graph-baseline.test.ts`, then read the diff before committing it. A regeneration that moves line numbers is the expected consequence of editing the fixture — line numbers are part of the snapshot, and that is the point.
+- Beyond the golden compare, named invariants say *what* broke: the `implements` edge, `registry.load` resolving to `Registry::load` rather than `Alpha::load`, zero edges for `not-a-call.ts`, the untyped receiver recorded as unresolved instead of guessed, the cross-module re-exports, and a deletion-sync that leaves no node, edge or dangling endpoint behind.
+- An empty-graph guard runs before the compare, so an extractor that produced nothing fails as "the index came out empty" instead of as a multi-thousand-line diff.
+
+`scripts/test-changed.mjs` selects this test for changes under `src/extraction/`, `src/resolution/`, `src/db/` and the fixture itself — none of which is a direct relative import of the test file.
+
 Tests create temp dirs with `fs.mkdtempSync` and clean up in `afterEach`. They write real files and exercise real SQLite — there is no DB mocking.
 
 Timing assertions go through `perfBudget` / `expectWithinBudget` (`__tests__/perf-utils.ts`): the strict millisecond budget only applies in the serial perf project (`npm run test:perf`, which sets `CODEGRAPH_PERF_ASSERT=1` and runs with a single fork); the normal `npm test` run relaxes those budgets so a loaded 4-worker run can't decide the result. Put a new timing-sensitive suite in the `PERF_SUITES` list in `vitest.workspace.mts`.

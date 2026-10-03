@@ -87,6 +87,11 @@ const impactRules = [
   // The architecture report reads project config and adds a query of its own; the direct-import
   // graph does not connect either file to the report's test.
   [/^src\/(?:project-config|db\/queries)\.ts$/, /^__tests__\/(?:architecture|project-config).*\.test\.ts$/],
+  // The end-to-end baseline pins what extraction, resolution and persistence actually wrote. None
+  // of the three is a direct relative import of the test, so the import graph cannot reach it —
+  // and this is precisely the test a parser, resolver or schema change should run.
+  [/^src\/(?:extraction|resolution|db)\//, /^__tests__\/graph-baseline\.test\.ts$/],
+  [/^__tests__\/fixtures\/graph-baseline\//, /^__tests__\/graph-baseline\.test\.ts$/],
 ];
 
 for (const file of changed) {
