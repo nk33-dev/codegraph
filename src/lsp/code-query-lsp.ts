@@ -148,15 +148,6 @@ function positionBefore(a: LspPosition, b: LspPosition): boolean {
   return a.line < b.line || (a.line === b.line && a.character <= b.character);
 }
 
-/** Read the file's lines; null on failure (missing or unreadable file). */
-function readLines(absPath: string): string[] | null {
-  try {
-    return fs.readFileSync(absPath, 'utf-8').split(/\r?\n/);
-  } catch {
-    return null;
-  }
-}
-
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -233,7 +224,10 @@ class LspQueryContext {
   private fileLines(absPath: string): string[] | null {
     const cached = this.lines.get(absPath);
     if (cached !== undefined) return cached;
-    const value = readLines(absPath);
+    // Share the manager's file-text cache: a query that both positions against a file and syncs it
+    // to the language server then reads the file from disk once instead of once per step.
+    const text = this.manager.readFileText(absPath)?.text ?? null;
+    const value = text === null ? null : text.split(/\r?\n/);
     this.lines.set(absPath, value);
     return value;
   }

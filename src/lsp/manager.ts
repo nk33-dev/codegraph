@@ -205,6 +205,8 @@ const WARMUP_POLL_MS = 250;
 const TRANSIENT_RETRY_ATTEMPTS = 2;
 const TRANSIENT_RETRY_DELAY_MS = 200;
 const MAX_OPEN_DOCUMENTS = 64;
+/** Distinct files whose text the manager keeps for reuse between positioning and document sync. */
+const MAX_CACHED_FILE_TEXTS = 64;
 const IDLE_SWEEP_INTERVAL_MS = 30_000;
 /**
  * 租约心跳间隔。必须**明显小于**注册表的 {@link LSP_LEASE_STALE_MS}（60 秒），
@@ -480,6 +482,15 @@ interface OpenDocument {
   mtimeMs: number;
   size: number;
   lastUsedAt: number;
+  /** Text last sent to the server; reused while the on-disk file is unchanged. */
+  text: string;
+}
+
+/** File text as last read from disk, revalidated by mtime+size before reuse (see `readFileText`). */
+export interface CachedFileText {
+  text: string;
+  mtimeMs: number;
+  size: number;
 }
 
 interface DiagnosticCacheEntry {
@@ -602,6 +613,12 @@ export class LspManager {
   private idleTimer: NodeJS.Timeout | null = null;
   private leaseTimer: NodeJS.Timeout | null = null;
   private closed = false;
+  /**
+   * Text last read per file, shared by positioning (query layer) and document sync (this class):
+   * one query then reads a file from disk once. Reuse is revalidated against mtime+size, so an
+   * edit invalidates it, and it is cleared when a server stops so a restart never inherits it.
+   */
+  private readonly textCache = new Map<string, CachedFileText>();
 
   constructor(
     readonly projectRoot: string,
@@ -868,7 +885,7 @@ export class LspManager {
     try {
       globalLeases = countLiveLspLeases(now, this.options.leaseDir);
     } catch {
-      globalLeases = 0; // 注册表不可用时按 0 上报（status 只降级展示）
+      globalLeases = 0; // Report 0 when the registry is unavailable (status then shows this as degraded)
     }
     resourceMetrics().setLspGauges(liveServers, globalLeases);
     if (liveServers === 0) this.clearLeaseTimer();
@@ -1786,6 +1803,45 @@ export class LspManager {
   }
 
   /**
+   * Read a file's text for LSP positioning and document sync, reusing the last read while mtime
+   * and size are unchanged. The query layer and {@link syncDocument} share this cache, so a query
+   * that both positions against a file and syncs it reads the file from disk once. Reuse is always
+   * revalidated against the file system; `null` means missing or unreadable.
+   */
+  readFileText(filePath: string): CachedFileText | null {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      this.textCache.delete(filePath);
+      return null;
+    }
+    const cached = this.textCache.get(filePath);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached;
+
+    let text: string;
+    try {
+      text = fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      this.textCache.delete(filePath);
+      return null;
+    }
+    const fresh: CachedFileText = { text, mtimeMs: stat.mtimeMs, size: stat.size };
+    this.textCache.set(filePath, fresh);
+    this.pruneTextCache(filePath);
+    return fresh;
+  }
+
+  /** Drop the oldest entries beyond `MAX_CACHED_FILE_TEXTS` (Map iteration is insertion order). */
+  private pruneTextCache(keepPath: string): void {
+    if (this.textCache.size <= MAX_CACHED_FILE_TEXTS) return;
+    for (const key of this.textCache.keys()) {
+      if (this.textCache.size <= MAX_CACHED_FILE_TEXTS) break;
+      if (key !== keepPath) this.textCache.delete(key);
+    }
+  }
+
+  /**
    * Document sync: open documents only for the files this query touches; a disk change sends a
    * whole-document didChange (LSP allows full sync), and a vanished file sends didClose.
    */
@@ -1793,12 +1849,8 @@ export class LspManager {
     const uri = pathToUri(filePath);
     const key = uriKey(uri);
     const languageId = languageIdFor(language) ?? 'plaintext';
-    let text: string;
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(filePath);
-      text = fs.readFileSync(filePath, 'utf-8');
-    } catch {
+    const read = this.readFileText(filePath);
+    if (!read) {
       if (entry.documents.has(key)) {
         entry.connection?.notify('textDocument/didClose', { textDocument: { uri } });
         entry.documents.delete(key);
@@ -1809,21 +1861,22 @@ export class LspManager {
     const existing = entry.documents.get(key);
     if (!existing) {
       entry.connection?.notify('textDocument/didOpen', {
-        textDocument: { uri, languageId, version: 1, text },
+        textDocument: { uri, languageId, version: 1, text: read.text },
       });
       entry.documents.set(key, {
         uri, filePath, languageId, version: 1,
-        mtimeMs: stat.mtimeMs, size: stat.size, lastUsedAt: this.nowMs(),
+        mtimeMs: read.mtimeMs, size: read.size, lastUsedAt: this.nowMs(), text: read.text,
       });
     } else {
       existing.lastUsedAt = this.nowMs();
-      if (existing.mtimeMs !== stat.mtimeMs || existing.size !== stat.size) {
+      if (existing.mtimeMs !== read.mtimeMs || existing.size !== read.size) {
         existing.version += 1;
-        existing.mtimeMs = stat.mtimeMs;
-        existing.size = stat.size;
+        existing.mtimeMs = read.mtimeMs;
+        existing.size = read.size;
+        existing.text = read.text;
         entry.connection?.notify('textDocument/didChange', {
           textDocument: { uri, version: existing.version },
-          contentChanges: [{ text }],
+          contentChanges: [{ text: read.text }],
         });
       }
     }
@@ -2035,6 +2088,9 @@ export class LspManager {
     const { connection, child } = entry;
     entry.state = 'stopped';
     entry.documents.clear();
+    // The process that received this text is gone; a later server must start from a fresh read
+    // instead of inheriting the previous process's cache.
+    this.textCache.clear();
     entry.capabilities = null;
     entry.progressTokens.clear();
     entry.quiescent = null;
