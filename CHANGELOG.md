@@ -21,13 +21,18 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - pull 诊断与 push 诊断分开存储后合并。`textDocument/diagnostic` 请求携带 `previousResultId`，响应里的 `resultId` 被保留，`kind: "unchanged"` 复用上次结果；两种来源按位置、严重度、代码、来源与消息去重后合并，`-32802`（ServerCancelled）重试一次，其它错误降级到等 publish。此前 pull 是 push 的降级路径，同一张缓存表被整批覆盖。
 - 依赖边界与模块环检查：`codegraph architecture` 按 `codegraph.json` 里 `architecture.boundaries.deny` 声明的方向报告违规，附 `file:line`、边类型与声明/推断标记；`--strict` 在有违规时退出 1，供 CI 门禁。模块划分与查看器地图共用 `src/graph/module-map.ts`，范围默认用地图开屏那套 `pickDefaultView` 选取并在报告里以 `autoScope` 标注。只读、不落库、不新增边类型、不改 schema。
 - 风险热点排序：`codegraph hotspots` 按 `复杂度 × (1 + 调用方数) × 改动加权 × 测试折减` 排序最该先读的函数，`--base <ref>` 传入改动符号、`--strict` 在有符号达到阈值时退出 1，阈值、条数、文件上限与两个权重可在 `codegraph.json` 的 `hotspots` 块里改。复杂度是决策点计数，**读时现算不落库**——AST 提取后即丢弃，落库意味着改提取、升内核 ABI 与 schema 迁移；`gated` 在所有被评分符号上统计，所以被 `maxItems` 截掉的符号照样能让 CI 失败。
-
+- Rust 符号带构建上下文：`codegraph node` 对 Rust 符号多输出一行，给出文件所属 crate、是不是 workspace 成员、该 crate 声明了哪些 feature 与依赖。manifest 解析与 workspace 解析器共用 `src/cargo-manifest.ts`，解析出的 crate 名与这里报的不会不一致；查询期现算，不落库、不加边、不改 schema。这是**声明清单不是构建图**：不调用 `cargo metadata`，`features` 不代表某次构建启用的集合，`#[cfg(...)]` 未被提取。
+- 索引与解析的重复读取改为按数据库变更戳缓存：文件清单、节点名清单、语言清单、框架探测的文件系统结果与逐 ref 的框架循环都不再每轮重跑 SQL 或重扫磁盘。缓存按 `total_changes()` + `PRAGMA data_version` 失效（覆盖其它连接与 daemon 的提交），事务内不缓存，`rebind()` 清空，返回值冻结；`clearCaches()` 一并重置 tsconfig/go.mod/package.json/C++ include 派生缓存，watch 模式下不再返回旧配置。
+- 存储写入窗口在条数之外叠加字节预算：批量索引把每个文件的提取结果发给写入线程，原来只按条数限制（64），而密集源码的节点/边数组可以远超源码体积。`CODEGRAPH_STORE_WINDOW_MB`（档位 48/96/192MB）按未确认 bundle 的字节数取「与」，两者独立结算；治理关闭时等价于原行为。
 - 同名符号支持 `file#qualifiedName` 与 `contextFile`；关系输出附带静态、推断、候选证据和动态覆盖边界。
 - 索引升级在同一写锁下报告关系增删、去重、类型、来源及可信度；提取版本 29 为新增关系登记全语言重抽取范围。
 
 - Vue/React 支持更多 composable、路由别名、props 与 emits 关系，查询会提示框架及动态关系的覆盖边界。
 
 ### Fixes
+
+- 合并两个功能分支时复核出的四处缺陷：热点报告把「调用点」当成「调用方」计数，一个函数在同一个调用方里出现两次就按两个调用方加权（现按调用方符号去重）；框架检测结果只在全量索引时重算，同步进来的第一门语言的文件或新 manifest 会以「没有框架」的状态解析到下一次全量索引（现按变更集判断是否需要重检测，纯函数体编辑不重扫）；Rust crate catalog 只用 manifest 的 mtime 与大小复核，往 `crates/*` 这类 glob member 下新增 crate 后旧目录表会一直被沿用（现把 glob 的当前展开结果一并纳入复核）；Cargo 的 `default-members` 与 `members` 同名后缀会被当成成员表读取（数组取值拒绝 `-` 前缀的同名键）。
+- `completion` 模式与 `format` 操作进了默认工具描述后，MCP 固定表面预算相应上调（`toolsList` 5,800、`explore` 3,700、`edit` 2,100、`instructions` 2,700、合计 8,300）；先压缩冗余描述（`line` 不再重复列出 enum 已有的模式名，`tabSize`/`insertSpaces` 压到最短）再调上限，而不是直接把额度放宽。
 
 - 增量同步保留跨文件调用的接收者和限定名，中断后恢复待重解析定义、跨文件入边与分块节点。长连接读取在其他连接提交后失效节点缓存，维护清理过时名称，文本扫描按候选数量让出事件循环。
 

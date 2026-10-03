@@ -56,7 +56,7 @@ Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘
 
 当前已发布版本为 [v1.6.0-personal.13](releases/v1.6.0-personal.13.md)（2026-10-01 的 GitHub prerelease），标签指向 `4477e92`。同提交三平台 CI `36870702413` 和 Personal Release `36874630766` 均成功；详细测试数字与资产校验只保留在发行说明。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
 
-待发布版本为 [v1.6.2-personal.1](releases/v1.6.2-personal.1.md)：上游 v1.6.2 同步之后的第一个个人版本，交付 LSP 工作区配置桥接与 pull/push 诊断合并、依赖边界与模块环检查、端到端图基线。功能提交、版本元数据与发行说明已推送到 `personal`，但**本轮不触发 `Personal Release`**——没有对应标签、资产与 GitHub prerelease，安装地址仍是 `.13`。要发布时在同一提交的三平台 CI 成功后手动触发工作流；此前记录的测试性能改动（减少测试中的 Git 调用、Windows CI 三台 runner 分片）一并进入本版，实测见[测试性能](test-performance.md)。
+待发布版本为 [v1.6.2-personal.1](releases/v1.6.2-personal.1.md)：上游 v1.6.2 同步之后的第一个个人版本，交付 LSP 工作区配置桥接、pull/push 诊断合并、补全模式与整文件格式化、文件文本缓存、按符号快照决定的局部刷新、依赖边界与模块环检查、风险热点排序、Rust 构建上下文、索引期读缓存与写入窗口字节预算，以及端到端图基线；合并后复核又补上调用方去重、同步按需重新检测框架、Rust catalog 的 glob member 复核与 `default-members` 的同名键保护。**功能提交、版本元数据与发行说明已提交，尚未推送**；只有同一提交的三平台 CI 与 `Personal Release` 成功后才算发布，在那之前安装地址仍是 `.13`。此前记录的测试性能改动（减少测试中的 Git 调用、Windows CI 三台 runner 分片）一并进入本版，实测见[测试性能](test-performance.md)。
 
 个人版从 [GitHub Release 安装](personal-usage.md)，不通过上游 npm 包获得个人改动。`personal` 分支的同一提交通过三平台 CI 后，才由 `Personal Release` 在 GitHub runner 构建、隔离验证、打包并创建 prerelease；本机不承担发布构建和上传。
 
