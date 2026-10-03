@@ -34,6 +34,13 @@ export interface RustManifestContext {
 export interface RustCrateCatalog {
   /** Manifest paths to revalidate against (absolute). */
   revalidate: string[];
+  /**
+   * `[workspace].members` entries containing glob characters. Their current expansion is part of
+   * the cache signature: a glob can gain a crate without any manifest changing (`members =
+   * ["crates/*"]`, then a new `crates/gamma/Cargo.toml` appears), and revalidating only the
+   * manifests already known would keep serving the old crate list.
+   */
+  globMembers: string[];
   /** Crate directory (posix, `''` for the root crate) to its context. */
   byCrateDir: Map<string, RustManifestContext>;
 }
@@ -44,6 +51,7 @@ const GLOB_CHARS = /[*?[\]{}!]/;
 
 interface CacheEntry {
   signature: string;
+  globSignature: string;
   catalog: RustCrateCatalog;
 }
 
@@ -61,6 +69,16 @@ function statSignature(files: readonly string[]): string {
     }
   }
   return parts.join('|');
+}
+
+/** What the glob members expand to right now, so a crate that appeared or vanished invalidates the catalog. */
+function globSignature(projectRoot: string, members: readonly string[]): string {
+  if (members.length === 0) return '';
+  const parts: string[] = [];
+  for (const member of members) {
+    for (const dir of expandGlobMember(projectRoot, member)) parts.push(`${member}=>${toPosix(dir)}`);
+  }
+  return parts.sort().join('|');
 }
 
 function toPosix(value: string): string {
@@ -121,14 +139,22 @@ function readManifest(projectRoot: string, relativeDir: string): RustManifestCon
 /**
  * The crate catalog for a project, or `null` when it has no Cargo.toml.
  *
- * Cached per project root and revalidated by manifest mtime + size, so editing a
- * Cargo.toml is picked up without restarting the process. Revalidation is a
- * `stat` per crate — on a large workspace that is a few dozen calls per lookup,
- * which is why the result is cached rather than recomputed.
+ * Cached per project root and revalidated by manifest mtime + size plus the
+ * current expansion of any glob member, so editing a Cargo.toml or adding a crate
+ * under `crates/*` is picked up without restarting the process. Revalidation is a
+ * `stat` per crate and a directory walk per glob member — on a large workspace that
+ * is a few dozen calls per lookup, which is why the result is cached rather than
+ * recomputed.
  */
 export function loadRustCrateCatalog(projectRoot: string): RustCrateCatalog | null {
   const entry = cache.get(projectRoot);
-  if (entry && statSignature(entry.catalog.revalidate) === entry.signature) return entry.catalog;
+  if (
+    entry
+    && statSignature(entry.catalog.revalidate) === entry.signature
+    && globSignature(projectRoot, entry.catalog.globMembers) === entry.globSignature
+  ) {
+    return entry.catalog;
+  }
 
   let rootContent: string;
   try {
@@ -148,6 +174,7 @@ export function loadRustCrateCatalog(projectRoot: string): RustCrateCatalog | nu
   }
 
   const members = parseCargoManifestDetails(rootContent).workspaceMembers;
+  const globMembers = members.filter((member) => GLOB_CHARS.test(member));
   for (const rawMember of members) {
     for (const member of expandGlobMember(projectRoot, rawMember)) {
       const cleaned = toPosix(member).replace(/\/$/, '');
@@ -159,8 +186,12 @@ export function loadRustCrateCatalog(projectRoot: string): RustCrateCatalog | nu
     }
   }
 
-  const catalog: RustCrateCatalog = { revalidate, byCrateDir };
-  cache.set(projectRoot, { signature: statSignature(revalidate), catalog });
+  const catalog: RustCrateCatalog = { revalidate, globMembers, byCrateDir };
+  cache.set(projectRoot, {
+    signature: statSignature(revalidate),
+    globSignature: globSignature(projectRoot, globMembers),
+    catalog,
+  });
   return catalog;
 }
 

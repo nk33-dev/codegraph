@@ -94,6 +94,14 @@ describe('parseCargoManifestDetails', () => {
       .toEqual(['a', 'crates/*']);
   });
 
+  it('does not read `default-members` as the member list', () => {
+    // `default-members` is a subset of the members and precedes them oddly: reading it as the
+    // member list would hide every crate it does not name.
+    expect(parseCargoManifestDetails('[workspace]\ndefault-members = ["a"]\n').workspaceMembers).toEqual([]);
+    expect(parseCargoManifestDetails('[workspace]\nmembers = ["a"]\ndefault-members = ["a", "b"]\n').workspaceMembers)
+      .toEqual(['a']);
+  });
+
   it('reports no package for a virtual workspace manifest', () => {
     expect(parseCargoManifestDetails('[workspace]\nmembers = ["a"]\n').packageName).toBeNull();
   });
@@ -153,6 +161,14 @@ describe('rust crate catalog', () => {
     expect(rustContextForFile(loadRustCrateCatalog(dir)!, 'crates/alpha/src/lib.rs')!.features).toEqual(['extra']);
     write('crates/alpha/Cargo.toml', '[package]\nname = "alpha"\n[features]\nextra = []\nrenamed = []\n');
     expect(rustContextForFile(loadRustCrateCatalog(dir)!, 'crates/alpha/src/lib.rs')!.features).toEqual(['extra', 'renamed']);
+  });
+
+  it('picks up a crate added under a glob member without a restart', () => {
+    workspace();
+    // No manifest changed, so only the glob expansion can reveal the new crate.
+    expect(rustContextForFile(loadRustCrateCatalog(dir)!, 'crates/gamma/src/lib.rs')).toBeNull();
+    write('crates/gamma/Cargo.toml', '[package]\nname = "gamma"\n');
+    expect(rustContextForFile(loadRustCrateCatalog(dir)!, 'crates/gamma/src/lib.rs')?.crate).toBe('gamma');
   });
 
   it('surfaces the crate for an indexed rust symbol, and only for rust', async () => {

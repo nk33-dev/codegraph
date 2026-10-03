@@ -129,7 +129,9 @@ export function extractQuotedValues(valueList: string): string[] {
 
 /** The `[...]` array written for `key` in `section`, brackets excluded. */
 export function getArrayValue(section: string, key: string): string | null {
-  const keyRegex = new RegExp(`\\b${escapeRegExp(key)}\\b\\s*=`, 'm');
+  // The leading guard rejects a hyphenated sibling: `members` must not match inside
+  // `default-members`, which is a subset of the members and not the member list itself.
+  const keyRegex = new RegExp(`(?:^|[^\\w-])${escapeRegExp(key)}\\s*=`, 'm');
   const keyMatch = keyRegex.exec(section);
   if (!keyMatch) return null;
 
