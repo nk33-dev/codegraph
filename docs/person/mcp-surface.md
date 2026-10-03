@@ -19,6 +19,16 @@
 - 无默认项目时，schema 仍把 `projectPath` 标为必填；白名单仍按用户配置改变表面——这是用户配置，不要求跨配置保持一致。
 - `codegraph_edit` 的写入契约（预览、`canApply`/`blockers`、`expectPreviewHash`/`operationId`、重命名只用语言服务器加已核实引用）只在初始化说明声明一次，工具描述回到"一句话定位 + 何时使用"。
 
+## 默认表面之外的只读工具
+
+`codegraph_architecture` 是第一个**默认不暴露**的工具：定义、schema 和处理器都在，但不在 `DEFAULT_MCP_TOOLS` 里，只有 `CODEGRAPH_MCP_TOOLS` 显式点名才出现在 `tools/list`。它报告声明的依赖边界违规与模块环，与 `codegraph architecture` 走同一个 `getArchitectureReport`，`structuredContent` 是同一个报告对象。
+
+之所以不让它默认可用：它回答的是「改这块代码会不会破坏声明的分层」这类结构性判断，默认的 `explore` + `edit` 已经覆盖绝大多数会话；把它加进默认表面会同时抬高初始化说明与 `tools/list` 两个字符预算，而这轮不想动那两个上限。取舍是**明知**的代价——Agent 默认用不到它，要用得由用户先配 `CODEGRAPH_MCP_TOOLS`。
+
+这不改变"结构化能力靠 `explore.mode` 暴露"的原则：architecture 是一个需要项目级配置（`codegraph.json` 的 `architecture` 段）和整仓聚合的问题，不是某一处分片查询，塞进 `explore.mode` 反而会把它伪装成局部查询。
+
+`__tests__/mcp-tools-architecture.test.ts` 钉住三件事：工具定义唯一、带只读注解、默认表面仍是 2 个工具。
+
 ## 固定表面测量
 
 当前工作树实测（2026-10-01），按默认工具定义直接序列化；字符数不换算为模型 token 数。

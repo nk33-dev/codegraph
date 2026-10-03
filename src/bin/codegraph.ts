@@ -75,7 +75,7 @@ import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime
 import { installCommandSupervision, watchParent } from './command-supervision';
 import { EXTRACTION_VERSION } from '../extraction/extraction-version';
 import { getTelemetry, TELEMETRY_DOCS, recordIndexEvent } from '../telemetry';
-import { writeApiCorrelationConfig } from '../project-config';
+import { loadArchitectureConfig, writeApiCorrelationConfig } from '../project-config';
 // Value import, but dependency-free by design so `--help` text can name the
 // default port without dragging node:http into every other subcommand; the
 // server itself is loaded lazily inside the `ui` action. See ui-server/constants.
@@ -398,6 +398,63 @@ function info(message: string): void {
  */
 function warn(message: string): void {
   console.log(chalk.yellow(getGlyphs().warn) + ' ' + message);
+}
+
+/** Human-readable `codegraph architecture` output; `--json` prints the report object instead. */
+function printArchitectureReport(report: import('../index').ArchitectureReport): void {
+  console.log(chalk.bold(`\nArchitecture: ${report.modules} modules, ${report.dependencies} cross-module links`));
+  const scope = report.autoScope ? ' (auto)' : '';
+  console.log(chalk.dim(`  root="${report.root}" depth=${report.depth}${scope} minConfidence=${report.minConfidence} requireDeclared=${report.requireDeclared}`));
+
+  if (report.rules.configured === 0) {
+    console.log(chalk.dim('  no rules configured; add architecture.boundaries.deny to codegraph.json'));
+  } else if (report.violations.length === 0) {
+    console.log(chalk.green(`  no violations of ${report.rules.configured} configured rule(s)`));
+  } else {
+    console.log(chalk.red(`\n  ${report.rules.violated} violation(s) of ${report.rules.configured} configured rule(s)`));
+    for (const violation of report.violations) {
+      const reason = violation.rule.reason ? ` — ${violation.rule.reason}` : '';
+      console.log(
+        `\n  ${chalk.red('x')} ${chalk.bold(violation.source)} -> ${chalk.bold(violation.target)} ` +
+        chalk.dim(`(${violation.count} edges, ${violation.declared} declared)`) + reason
+      );
+      console.log(chalk.dim(`      rule: deny ${violation.rule.from} -> ${violation.rule.to}`));
+      for (const edge of violation.evidence) {
+        const site = edge.line === null ? edge.fromFile : `${edge.fromFile}:${edge.line}`;
+        const resolved = edge.declared ? '' : ' (name match)';
+        console.log(`      ${site} ${chalk.dim(`${edge.kind} ${edge.fromName} -> ${edge.toName}${resolved}`)}`);
+      }
+      const omitted = violation.evidenceTotal - violation.evidence.length;
+      if (omitted > 0) console.log(chalk.dim(`      ... ${omitted} more edge(s) for this pair`));
+    }
+    if (report.violationsTruncated) {
+      console.log(chalk.dim(`\n  (only the first ${report.violations.length} violation(s) are shown)`));
+    }
+  }
+
+  if (report.uncertainPairs > 0) {
+    console.log(chalk.dim(
+      `\n  ${report.uncertainPairs} rule match(es) not counted: every edge behind them was a bare name match ` +
+      '(use --allow-undeclared to include them)'
+    ));
+  }
+
+  if (report.cycles.total === 0) {
+    console.log(chalk.dim('\n  no module cycles'));
+  } else {
+    console.log(chalk.yellow(`\n  ${report.cycles.total} module cycle(s)`));
+    for (const cycle of report.cycles.items) {
+      console.log(`  ${chalk.yellow('o')} ${cycle.modules.join(' <-> ')}`);
+      if (cycle.files.length > 0) {
+        const rest = cycle.filesTotal > cycle.files.length ? ` ... +${cycle.filesTotal - cycle.files.length}` : '';
+        console.log(chalk.dim(`      ${cycle.files.join(', ')}${rest}`));
+      }
+    }
+    if (report.cycles.truncated) {
+      console.log(chalk.dim(`  (${report.cycles.total - report.cycles.shown} more cycle(s) not shown)`));
+    }
+  }
+  console.log();
 }
 
 /** "not found" (+ optional did-you-mean) when no exact symbol matches. */
@@ -2347,9 +2404,70 @@ program
     }
   });
 
+program
+  .command('architecture [path]')
+  .description('Report declared dependency boundary violations and module cycles from the index')
+  .option('--root <dir>', 'Directory the module grouping starts at (defaults to codegraph.json, then the repository root)')
+  .option('--depth <number>', 'Path segments under the root that name a module, 1-4')
+  .option('--min-confidence <number>', 'Ignore edges below this confidence, 0-1')
+  .option('--allow-undeclared', 'Also count dependencies whose edges are only bare name matches')
+  .option('--cycles-only', 'Report module cycles only, ignoring the configured rules')
+  .option('--max-violations <number>', 'Maximum number of violations to print')
+  .option('--strict', 'Exit with code 1 when a configured rule is violated')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (pathArg: string | undefined, options: {
+    root?: string;
+    depth?: string;
+    minConfidence?: string;
+    undeclared?: boolean;
+    cyclesOnly?: boolean;
+    maxViolations?: string;
+    strict?: boolean;
+    json?: boolean;
+  }) => {
+    const projectPath = resolveProjectPath(pathArg);
+
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+
+      const config = loadArchitectureConfig(projectPath);
+      // `undefined` means "let the report pick", `null` from the config means the same thing, and a
+      // number the user typed wins over both. A bad --depth falls back rather than failing the run.
+      const askedDepth = options.depth === undefined ? undefined : Number(options.depth);
+      const depth = Number.isInteger(askedDepth) ? askedDepth : config.depth ?? undefined;
+      const askedConfidence = options.minConfidence === undefined ? undefined : Number(options.minConfidence);
+      const minConfidence = Number.isFinite(askedConfidence) ? askedConfidence : config.minConfidence;
+      const maxViolations = options.maxViolations === undefined ? undefined : Number(options.maxViolations);
+
+      const report = cg.getArchitectureReport({
+        root: options.root ?? config.root,
+        depth,
+        minConfidence,
+        requireDeclared: options.undeclared ? false : config.requireDeclared,
+        rules: options.cyclesOnly ? [] : config.deny,
+        maxViolations: Number.isInteger(maxViolations) ? maxViolations : undefined,
+      });
+
+      if (options.json) console.log(JSON.stringify(report, null, 2));
+      else printArchitectureReport(report);
+      cg.destroy();
+
+      // CI gate: a violated rule is the only failure this command can report.
+      if (options.strict && report.rules.violated > 0) process.exit(1);
+    } catch (err) {
+      error(`Failed to check architecture: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
 /**
  * Normalize a user-supplied file path to the project-relative, forward-slash
- * form CodeGraph stores in the index. Accepts an absolute path, a `./`-prefixed
  * path, or Windows back-slashes; an empty string when the input is blank. Used
  * by `codegraph affected` so `./src/x.ts`, `/abs/repo/src/x.ts`, and
  * `src/x.ts` all match the same indexed file. (#825)

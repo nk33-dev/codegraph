@@ -12,6 +12,7 @@ import { createHash } from 'crypto';
 import { resourceMetrics } from '../resource-metrics';
 import { describeResourceProfile, resolveResourceProfile } from '../resource-profile';
 import { findNearestCodeGraphRoot, isSameIndexRoot } from '../directory';
+import { loadArchitectureConfig } from '../project-config';
 import { WslSharedIndexError } from '../db/wsl-shared-index';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
@@ -1997,6 +1998,7 @@ export interface ToolResult {
     | CodeEditResult
     | ExploreStructuredContent
     | RefreshResult
+    | import('../index').ArchitectureReport
     | { index: import('../graph/code-query').IndexBlock }
     | { freshness: Record<string, unknown> };
   content: Array<{
@@ -2378,6 +2380,38 @@ export const tools: ToolDefinition[] = [
         maxDepth: {
           type: 'number',
           description: 'Maximum directory depth to show (default: unlimited)',
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: 'codegraph_architecture',
+    description: 'Dependency boundary violations and module cycles. Rules come from codegraph.json (architecture.boundaries.deny); each violation lists the files and lines behind it. Not enabled by default — set CODEGRAPH_MCP_TOOLS to include it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root: {
+          type: 'string',
+          description: 'Directory the module grouping starts at. Defaults to codegraph.json, then the repository root.',
+        },
+        depth: {
+          type: 'number',
+          description: 'Path segments under root that name a module (1-4). Defaults to codegraph.json, then 2.',
+        },
+        minConfidence: {
+          type: 'number',
+          description: 'Ignore edges below this confidence (0-1). Defaults to codegraph.json, then 0.6.',
+        },
+        includeCycles: {
+          type: 'boolean',
+          description: 'Also report module cycles (default: true)',
+          default: true,
+        },
+        maxViolations: {
+          type: 'number',
+          description: 'Maximum violations to return (default: 20)',
         },
         projectPath: projectPathProperty,
       },
@@ -3797,6 +3831,7 @@ export class ToolHandler {
       case 'codegraph_explore': return await this.handleExplore(args);
       case 'codegraph_node': return await this.handleNode(args);
       case 'codegraph_files': return await this.handleFiles(args);
+      case 'codegraph_architecture': return await this.handleArchitecture(args);
       case 'codegraph_refresh': return await this.handleRefresh(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
     }
@@ -10398,6 +10433,82 @@ export class ToolHandler {
       .replace(/\?/g, '[^/]')                 // ? matches single char except /
       .replace(/\{\{GLOBSTAR\}\}/g, '.*');    // ** matches anything including /
     return new RegExp(escaped);
+  }
+
+  /**
+   * Handle codegraph_architecture — declared dependency boundaries and module cycles.
+   *
+   * Read-only and computed on demand; the rules and the module grouping come from the project's
+   * `codegraph.json`, so an agent sees the same answer the CLI prints.
+   */
+  private async handleArchitecture(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const config = loadArchitectureConfig(cg.getProjectRoot());
+    const includeCycles = args.includeCycles !== false;
+
+    const report = cg.getArchitectureReport({
+      root: typeof args.root === 'string' ? args.root : config.root ?? undefined,
+      depth: typeof args.depth === 'number' ? clamp(args.depth, 1, 4) : config.depth ?? undefined,
+      minConfidence: typeof args.minConfidence === 'number' ? clamp(args.minConfidence, 0, 1) : config.minConfidence,
+      requireDeclared: config.requireDeclared,
+      rules: config.deny,
+      maxViolations: typeof args.maxViolations === 'number' ? clamp(args.maxViolations, 1, 200) : 20,
+      maxCycles: includeCycles ? undefined : 0,
+    });
+
+    const lines: string[] = [
+      `**Architecture** — ${report.modules} modules, ${report.dependencies} cross-module links`,
+      `scope: root="${report.root}" depth=${report.depth}${report.autoScope ? ' (auto)' : ''} minConfidence=${report.minConfidence} requireDeclared=${report.requireDeclared}`,
+      '',
+    ];
+
+    if (report.rules.configured === 0) {
+      lines.push('No boundary rules configured (`codegraph.json` → `architecture.boundaries.deny`).');
+    } else if (report.violations.length === 0) {
+      lines.push(`No violations of ${report.rules.configured} configured rule(s).`);
+    } else {
+      lines.push(`**${report.rules.violated} violation(s)** of ${report.rules.configured} configured rule(s):`, '');
+      for (const violation of report.violations) {
+        const reason = violation.rule.reason ? ` — ${violation.rule.reason}` : '';
+        lines.push(
+          `- \`${violation.source}\` → \`${violation.target}\` ` +
+          `(${violation.count} edges, ${violation.declared} declared)${reason}`
+        );
+        lines.push(`  rule: deny \`${violation.rule.from}\` → \`${violation.rule.to}\``);
+        for (const edge of violation.evidence) {
+          const site = edge.line === null ? edge.fromFile : `${edge.fromFile}:${edge.line}`;
+          lines.push(
+            `  - \`${site}\` ${edge.kind} ${edge.fromName} → ${edge.toName}${edge.declared ? '' : ' (name match)'}`
+          );
+        }
+        const omitted = violation.evidenceTotal - violation.evidence.length;
+        if (omitted > 0) lines.push(`  - … ${omitted} more edge(s) for this pair`);
+      }
+      if (report.violationsTruncated) {
+        lines.push('', `(only the first ${report.violations.length} violation(s) are shown)`);
+      }
+    }
+
+    if (report.uncertainPairs > 0) {
+      lines.push(
+        '',
+        `${report.uncertainPairs} rule match(es) were not counted: every edge behind them is a bare name match.`
+      );
+    }
+
+    if (includeCycles) {
+      lines.push('');
+      if (report.cycles.total === 0) {
+        lines.push('No module cycles.');
+      } else {
+        lines.push(`**${report.cycles.total} module cycle(s):**`);
+        for (const cycle of report.cycles.items) {
+          lines.push(`- ${cycle.modules.map((module) => `\`${module}\``).join(' ↔ ')}`);
+        }
+      }
+    }
+
+    return { ...this.textResult(lines.join('\n')), structuredContent: report };
   }
 
   /**

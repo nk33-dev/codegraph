@@ -101,6 +101,8 @@ codegraph architecture [path] [--json] [--root <dir>] [--depth <n>] [--min-confi
 
 命令行选项覆盖配置文件里的对应字段。`--strict` 在有违规时以退出码 1 结束，用于 CI 门禁；`--json` 输出上面的报告。
 
+MCP 侧是 `codegraph_architecture`（参数 `root` / `depth` / `minConfidence` / `includeCycles` / `maxViolations` / `projectPath`），读同一份配置、走同一个 `getArchitectureReport`，`structuredContent` 就是上面的报告对象。它**默认不在 `tools/list` 里**——默认表面保持 `explore` + `edit` 两个工具，避免动到 `server-instructions` 的字符预算契约；要用先通过 `CODEGRAPH_MCP_TOOLS` 显式启用。取舍记在 [MCP 表面](mcp-surface.md)。
+
 ## 已知限制
 
 - **名称匹配仍然会漏。** `requireDeclared` 默认打开，会把「只有裸名称匹配」的依赖排除在外。这类边里有真依赖（接收者类型无法解析时），它们只计入 `uncertainPairs`，不计入违反。想看全量用 `--allow-undeclared`。
@@ -112,4 +114,4 @@ codegraph architecture [path] [--json] [--root <dir>] [--depth <n>] [--min-confi
 
 ## 验证
 
-`__tests__/architecture.test.ts` 覆盖两部分：`src/graph/architecture.ts` 的纯函数（按 pair 折叠、规则前缀匹配、`requireDeclared` 的排除语义、模块环与单向依赖的区别），以及真实索引上的端到端报告（违规命中带 `file:line` 证据、模块环、无规则时只报环、自动范围选中 `src` 而显式 `root: ""` 不选）；配置加载另有一组用例覆盖共享层与本机层的逐字段合并、非法规则与越界取值的降级。
+`__tests__/architecture.test.ts` 覆盖两部分：`src/graph/architecture.ts` 的纯函数（按 pair 折叠、规则前缀匹配、`requireDeclared` 的排除语义、模块环与单向依赖的区别），以及真实索引上的端到端报告（违规命中带 `file:line` 证据、模块环、无规则时只报环、自动范围选中 `src` 而显式 `root: ""` 不选）；配置加载另有一组用例覆盖共享层与本机层的逐字段合并、非法规则与越界取值的降级。MCP 表面契约（工具唯一、只读注解、默认表面不变）由 `__tests__/mcp-tools-architecture.test.ts` 钉住。
