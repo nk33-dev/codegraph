@@ -19,7 +19,7 @@ import { indexRevision, REVISION_MESSAGES } from './index-health';
 import { frameworkRelationWarnings } from './framework-gaps';
 
 export const CODE_QUERY_MODES = [
-  'definitions', 'type-definition', 'implementations', 'references', 'symbols', 'hover',
+  'definitions', 'type-definition', 'implementations', 'references', 'symbols', 'hover', 'completion',
   'callers', 'callees', 'type-hierarchy', 'diagnostics', 'code-actions', 'status', 'impact', 'tests', 'text',
 ] as const;
 export type CodeQueryMode = typeof CODE_QUERY_MODES[number];
@@ -193,6 +193,29 @@ export interface LspCodeActionItem {
   commandOnly: boolean;
 }
 
+/**
+ * One completion proposal at the queried position (LSP only). `completionKind` is the protocol's
+ * CompletionItemKind, not a graph NodeKind; `insertText` is what the server would insert (its
+ * `textEdit.newText`, else `insertText`, else null — then the label is the only text available).
+ */
+export interface LspCompletionItem {
+  source: 'lsp';
+  filePath: string;
+  external: boolean;
+  /** 1-based line and 0-based UTF-16 column of the queried position. */
+  startLine: number;
+  startColumn: number;
+  label: string;
+  completionKind: number | null;
+  detail: string | null;
+  documentation: string | null;
+  insertText: string | null;
+  deprecated: boolean;
+  preselect: boolean;
+  /** `completionItem/resolve` was tried and failed; detail/documentation may be incomplete. */
+  resolveFailed: boolean;
+}
+
 export interface HierarchyCodeSymbol extends CodeSymbol {
   hierarchy: 'focus' | 'supertype' | 'subtype' | 'implementation';
   depth: number;
@@ -246,6 +269,7 @@ export type CodeQueryItem =
   | LspDiagnosticItem
   | LspHoverItem
   | LspCodeActionItem
+  | LspCompletionItem
   | HierarchyCodeSymbol
   | ImpactItem
   | AffectedTestItem
@@ -425,7 +449,7 @@ export function normalizeCodeQueryRequest(request: CodeQueryRequest): CodeQueryR
 export function defaultCodeQueryBackend(request: CodeQueryRequest): CodeQueryBackend {
   return request.line !== undefined || request.column !== undefined
     || request.severity !== undefined || request.includeDeclaration !== undefined
-    || ['diagnostics', 'hover', 'type-definition', 'code-actions'].includes(request.mode)
+    || ['diagnostics', 'hover', 'completion', 'type-definition', 'code-actions'].includes(request.mode)
     ? 'auto' : 'graph';
 }
 
@@ -483,6 +507,7 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
   const queryOptional = request.mode === 'status'
     || (request.mode === 'symbols' && request.file !== undefined)
     || request.mode === 'diagnostics'
+    || (request.mode === 'completion' && request.file !== undefined)
     || (request.file !== undefined && request.line !== undefined);
   if (!query.trim() && !filesInsteadOfQuery && !queryOptional) {
     throw new Error('Provide query with an exact symbol name, or file + line for a position query (column defaults to 0).');
@@ -491,7 +516,7 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
     throw new Error('column requires line. Add a 1-based line, or remove column to query by symbol name.');
   }
   const positionModes: readonly CodeQueryMode[] = [
-    'definitions', 'type-definition', 'implementations', 'references', 'hover',
+    'definitions', 'type-definition', 'implementations', 'references', 'hover', 'completion',
     'callers', 'callees', 'type-hierarchy', 'code-actions',
   ];
   if ((request.line !== undefined || request.column !== undefined) && !positionModes.includes(request.mode)) {
@@ -562,7 +587,7 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
 export function assertBackendFields(request: CodeQueryRequest, backend: CodeQuerySource): void {
   const positional = request.line !== undefined || request.column !== undefined;
   const positionModes: readonly CodeQueryMode[] = [
-    'definitions', 'type-definition', 'implementations', 'references', 'hover',
+    'definitions', 'type-definition', 'implementations', 'references', 'hover', 'completion',
     'callers', 'callees', 'type-hierarchy', 'code-actions',
   ];
   if (positional && !positionModes.includes(request.mode)) {
@@ -580,7 +605,8 @@ export function assertBackendFields(request: CodeQueryRequest, backend: CodeQuer
     throw new Error('includeDeclaration requires backend "lsp"');
   }
   if (request.checkFiles && backend !== 'graph') throw new Error('checkFiles is only supported with backend "graph"');
-  if ((request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'type-definition' || request.mode === 'code-actions') && backend !== 'lsp') {
+  if ((request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'completion'
+    || request.mode === 'type-definition' || request.mode === 'code-actions') && backend !== 'lsp') {
     throw new Error(`${request.mode} requires backend "lsp": the graph index cannot answer it. Omit backend or use backend:"auto".`);
   }
   if ((request.endLine !== undefined || request.endColumn !== undefined || request.actionKinds !== undefined) && backend !== 'lsp') {

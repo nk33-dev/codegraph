@@ -2264,11 +2264,11 @@ export const tools: ToolDefinition[] = [
         },
         line: {
           type: 'number',
-          description: 'LSP definition/reference: 1-based line.',
+          description: 'LSP position modes (definitions/references/completion): 1-based line.',
         },
         column: {
           type: 'number',
-          description: 'LSP definition/reference: UTF-16 column.',
+          description: 'LSP position modes: 0-based UTF-16 column.',
         },
         severity: {
           type: 'number',

@@ -122,7 +122,8 @@ export function decideRoute(
   const requested = request.backend ?? 'graph';
   const family = availability.family;
 
-  if (request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'type-definition' || request.mode === 'code-actions') {
+  if (request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'completion'
+    || request.mode === 'type-definition' || request.mode === 'code-actions') {
     return {
       resolved: 'lsp',
       reason: `${request.mode} is answered only by language servers; the graph index has no equivalent result`,
@@ -204,7 +205,7 @@ export function decideRoute(
 /** The language the query points at: a file qualifier takes precedence, otherwise the first node found in the index by name. */
 export function languageForQuery(cg: CodeGraph, request: CodeQueryRequest): Language | null {
   const root = cg.getProjectRoot();
-  const hint = (request.mode === 'symbols' || request.mode === 'diagnostics' || request.mode === 'code-actions')
+  const hint = (request.mode === 'symbols' || request.mode === 'diagnostics' || request.mode === 'completion' || request.mode === 'code-actions')
     ? request.file ?? request.query
     : request.file;
   if (hint) {
@@ -474,7 +475,8 @@ export async function queryCodeRouted(
       lsp.warnings.push(error instanceof Error ? error.message : String(error));
     }
     // Only the language server can answer diagnostics: there is no graph version to fall back to, so return unavailable honestly.
-    if (request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'type-definition' || request.mode === 'code-actions') {
+    if (request.mode === 'diagnostics' || request.mode === 'hover' || request.mode === 'completion'
+    || request.mode === 'type-definition' || request.mode === 'code-actions') {
       lsp.routing = { ...lsp.routing, requested, resolved: 'lsp', reason: decision.reason, fallback: null, families, sources: { graph: 0, lsp: lsp.page.total } };
       return lsp;
     }

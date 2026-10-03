@@ -19,6 +19,9 @@
 | `type-hierarchy` | 看父类型和子类型，并标明方向 | Graph、LSP 或两者 |
 | `diagnostics`（不传 `file`） | 请求语言服务器返回整个工作区的错误和警告 | LSP `workspace/diagnostic` |
 | `code-actions` | 查看当前位置可用的补导入、整理导入、快速修复等建议 | LSP |
+| `completion` | 在 `file` + `line` 位置取语言服务器的候选补全，按 `sortText`（缺失时用 label）排序并分页 | LSP |
+
+`completion` 默认返回服务器声明的 `isIncomplete` 情况，并且在服务器支持 `completionItem/resolve` 时对前若干条补齐 `detail`/`documentation`；单条解析失败只标记该条，不把整次查询变成失败。
 
 Graph 继续负责跨文件静态关系和可回退结果；LSP 负责需要编译器类型信息的答案。`implementations` 的 Graph 结果包含 `extends` 和 `implements` 两种后代关系，不把“继承抽象基类”漏掉。
 

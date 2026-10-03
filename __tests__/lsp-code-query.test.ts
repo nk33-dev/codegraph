@@ -345,3 +345,39 @@ describe('LSP CLI / MCP parity', () => {
     }
   }, 60_000);
 });
+
+describe('LSP completion mode', () => {
+  it('sorts by sortText, fills detail/documentation through resolve, and reports isIncomplete', async () => {
+    const result = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'completion', file: 'a.ts', line: 2, column: 4 });
+
+    expect(result).toMatchObject({ backend: 'lsp', mode: 'completion', status: 'ok', coordinates: { columnEncoding: 'utf-16' } });
+    const items = result.items as Array<Record<string, any>>;
+    // The fake server sends reset/render/theWidget with sortText 0002/0001/0003.
+    expect(items.map((item) => item.label)).toEqual(['render', 'reset', 'theWidget']);
+    expect(items[0]).toMatchObject({
+      source: 'lsp', filePath: 'a.ts', external: false,
+      completionKind: 2, deprecated: false, preselect: false, resolveFailed: false,
+    });
+    // Each item keeps the data of the item it is: the fake server echoes the resolved label, so a
+    // resolve that used another item's raw object would show up here.
+    const byLabel = new Map(items.map((item) => [item.label, item]));
+    expect(byLabel.get('render')).toMatchObject({ detail: '(): number', documentation: 'Docs for render.' });
+    expect(byLabel.get('reset')).toMatchObject({ detail: 'resolved reset', documentation: 'Docs for reset.' });
+    expect(byLabel.get('theWidget')).toMatchObject({ documentation: 'Docs for theWidget.' });
+    expect(project.events('completionItem/resolve')).toHaveLength(3);
+    expect(result.warnings.join('\n')).toContain('More completions exist');
+  });
+
+  it('pages like every other mode', async () => {
+    const result = await cg.queryCodeWithBackend({ backend: 'lsp', mode: 'completion', file: 'a.ts', line: 2, column: 4, limit: 2 });
+    const items = result.items as Array<Record<string, any>>;
+    expect(items.map((item) => item.label)).toEqual(['render', 'reset']);
+    expect(result.page).toMatchObject({ offset: 0, limit: 2, total: 3, nextOffset: 2 });
+  });
+
+  it('requires a file and a line', async () => {
+    await expect(cg.queryCodeWithBackend({ backend: 'lsp', mode: 'completion', file: 'a.ts' }))
+      .rejects.toThrow('requires line');
+    await expect(cg.queryCodeWithBackend({ backend: 'lsp', mode: 'completion', line: 2 })).rejects.toThrow();
+  });
+});

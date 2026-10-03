@@ -83,6 +83,32 @@ export interface LspCodeAction {
   command: string | null;
 }
 
+/**
+ * One completion proposal. `textEdit`/`insertText` carry what the editor would insert; the rest is
+ * whatever the server sent or, when `resolveProvider` is on, what `completionItem/resolve` filled in.
+ */
+export interface LspCompletionItem {
+  label: string;
+  /** LSP CompletionItemKind (1..25); null when the server omits it. */
+  kind: number | null;
+  detail: string | null;
+  documentation: string | null;
+  /** The text to insert: `textEdit.newText`, else `insertText`, else null (the caller falls back to `label`). */
+  insertText: string | null;
+  sortText: string | null;
+  filterText: string | null;
+  deprecated: boolean;
+  preselect: boolean;
+  /** Set when `completionItem/resolve` was attempted but failed; the item keeps its unresolved fields. */
+  resolveFailed?: boolean;
+}
+
+export interface LspCompletionList {
+  items: LspCompletionItem[];
+  /** The server's own "there is more" flag; the caller also reports its own truncation separately. */
+  isIncomplete: boolean;
+}
+
 export interface LspWorkspaceDiagnostic {
   uri: string;
   items: LspDiagnostic[];
@@ -143,6 +169,10 @@ export interface LspCapabilities {  definition: boolean;
   callHierarchy: boolean;
   typeHierarchy: boolean;
   codeAction: boolean;
+  /** textDocument/completion: true when the server advertises completionProvider. */
+  completion: boolean;
+  /** completionProvider.resolveProvider: detail/documentation can be filled in with completionItem/resolve. */
+  completionResolve: boolean;
   workspaceDiagnostics: boolean;
   /** textDocument/rename: true when the server advertises renameProvider (an object form counts too). */
   rename: boolean;
@@ -207,6 +237,8 @@ const TRANSIENT_RETRY_DELAY_MS = 200;
 const MAX_OPEN_DOCUMENTS = 64;
 /** Distinct files whose text the manager keeps for reuse between positioning and document sync. */
 const MAX_CACHED_FILE_TEXTS = 64;
+/** Cap on `completionItem/resolve` round-trips per completion query; each one is a full request. */
+const MAX_COMPLETION_RESOLVES = 8;
 const IDLE_SWEEP_INTERVAL_MS = 30_000;
 /**
  * 租约心跳间隔。必须**明显小于**注册表的 {@link LSP_LEASE_STALE_MS}（60 秒），
@@ -360,6 +392,65 @@ function normalizeCodeActions(result: unknown): LspCodeAction[] {
     });
   }
   return out;
+}
+
+/**
+ * `textDocument/completion` returns either a bare array or a CompletionList. Items are normalized
+ * one by one and then sorted the way the protocol asks clients to sort — `sortText`, falling back to
+ * `label` — so a truncated page still holds the server's best proposals. The raw items are returned
+ * alongside so `completionItem/resolve` can send the server back exactly what it sent us.
+ */
+interface CompletionResponse {
+  list: LspCompletionList;
+  raws: Record<string, unknown>[];
+}
+
+function completionItemFrom(entry: Record<string, unknown>): LspCompletionItem {
+  const textEdit = isRecord(entry.textEdit) ? entry.textEdit : null;
+  const tags = Array.isArray(entry.tags) ? entry.tags : [];
+  return {
+    label: entry.label as string,
+    kind: typeof entry.kind === 'number' ? entry.kind : null,
+    detail: typeof entry.detail === 'string' ? entry.detail : null,
+    documentation: markupText(entry.documentation).trim() || null,
+    insertText: textEdit && typeof textEdit.newText === 'string'
+      ? textEdit.newText
+      : typeof entry.insertText === 'string' ? entry.insertText : null,
+    sortText: typeof entry.sortText === 'string' ? entry.sortText : null,
+    filterText: typeof entry.filterText === 'string' ? entry.filterText : null,
+    // CompletionItemTag.Deprecated = 1 (LSP 3.15+).
+    deprecated: tags.includes(1),
+    preselect: entry.preselect === true,
+  };
+}
+
+function normalizeCompletionItem(value: unknown): LspCompletionItem | null {
+  if (!isRecord(value) || typeof value.label !== 'string') return null;
+  return completionItemFrom(value);
+}
+
+function normalizeCompletion(result: unknown): CompletionResponse {
+  const source = Array.isArray(result)
+    ? result
+    : isRecord(result) && Array.isArray(result.items) ? result.items : [];
+  // Sort each item together with the raw object it came from: `resolveCompletions` sends that raw
+  // object back to the server, so the two arrays must stay in the same order.
+  const pairs: Array<{ item: LspCompletionItem; raw: Record<string, unknown> }> = [];
+  for (const entry of source) {
+    if (!isRecord(entry) || typeof entry.label !== 'string') continue;
+    pairs.push({ item: completionItemFrom(entry), raw: entry });
+  }
+  const sorted = pairs
+    .map((pair, index) => ({ ...pair, index }))
+    .sort((a, b) => {
+      const left = a.item.sortText ?? a.item.label;
+      const right = b.item.sortText ?? b.item.label;
+      return left.localeCompare(right) || a.index - b.index;
+    });
+  return {
+    list: { items: sorted.map((pair) => pair.item), isIncomplete: isRecord(result) && result.isIncomplete === true },
+    raws: sorted.map((pair) => pair.raw),
+  };
 }
 
 function normalizeWorkspaceDiagnostics(result: unknown): LspWorkspaceDiagnostic[] {
@@ -571,6 +662,8 @@ function capabilitiesFromInitialize(result: unknown): LspCapabilities {
     callHierarchy: provided(capabilities.callHierarchyProvider),
     typeHierarchy: provided(capabilities.typeHierarchyProvider),
     codeAction: provided(capabilities.codeActionProvider),
+    completion: provided(capabilities.completionProvider),
+    completionResolve: isRecord(capabilities.completionProvider) && capabilities.completionProvider.resolveProvider === true,
     workspaceDiagnostics: isRecord(capabilities.diagnosticProvider) && capabilities.diagnosticProvider.workspaceDiagnostics === true,
     rename: provided(capabilities.renameProvider),
     diagnostics: capabilities.diagnosticProvider !== undefined ? 'pull' : 'push',
@@ -955,6 +1048,30 @@ export class LspManager {
     return this.requestWithWarmupRetry(entry, 'textDocument/hover', {
       textDocument: { uri: pathToUri(filePath) }, position,
     }, normalizeHover);
+  }
+
+  /**
+   * Completion proposals at a position. Items are already sorted (sortText, then label) and, when
+   * the server advertises `resolveProvider`, the first few that lack detail/documentation ask for
+   * it once each. The caller limits how many it returns; this method returns the server's list.
+   */
+  async completion(
+    filePath: string,
+    position: LspPosition,
+    language: Language | null,
+  ): Promise<LspQueryOutcome<LspCompletionList>> {
+    const entry = await this.requireServer(language);
+    this.requireCapability(entry, entry.capabilities?.completion, 'textDocument/completion');
+    await this.syncDocument(entry, filePath, language);
+    const outcome = await this.requestWithWarmupRetry<CompletionResponse>(entry, 'textDocument/completion', {
+      textDocument: { uri: pathToUri(filePath) }, position,
+    }, (value) => [normalizeCompletion(value)]);
+    const response = outcome.items[0];
+    if (!response) return { items: [{ items: [], isIncomplete: false }], retried: outcome.retried };
+    const list = entry.capabilities?.completionResolve
+      ? await this.resolveCompletions(entry, response.list, response.raws)
+      : response.list;
+    return { items: [list], retried: outcome.retried };
   }
 
   async references(
@@ -1881,6 +1998,38 @@ export class LspManager {
       }
     }
     this.pruneDocuments(entry, key);
+  }
+
+  /**
+   * Fill in detail/documentation for the first `MAX_COMPLETION_RESOLVES` items missing them.
+   * Failures are per item: a resolve that errors or times out keeps the item as the server sent it
+   * and marks it, so a slow server never turns a completion query into a failed one.
+   */
+  private async resolveCompletions(
+    entry: ServerEntry,
+    list: LspCompletionList,
+    raws: Record<string, unknown>[],
+  ): Promise<LspCompletionList> {
+    const items = [...list.items];
+    const limit = Math.min(items.length, MAX_COMPLETION_RESOLVES);
+    await Promise.all(items.slice(0, limit).map(async (item, index) => {
+      if (item.detail !== null && item.documentation !== null) return;
+      const raw = raws[index];
+      if (!raw) return;
+      try {
+        const resolved = normalizeCompletionItem(await this.request(entry, 'completionItem/resolve', raw));
+        if (!resolved) return;
+        items[index] = {
+          ...item,
+          detail: resolved.detail ?? item.detail,
+          documentation: resolved.documentation ?? item.documentation,
+          insertText: item.insertText ?? resolved.insertText,
+        };
+      } catch {
+        items[index] = { ...item, resolveFailed: true };
+      }
+    }));
+    return { ...list, items };
   }
 
   private pruneDocuments(entry: ServerEntry, keepKey: string): void {

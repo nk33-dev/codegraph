@@ -290,6 +290,8 @@ function handle(message) {
         capabilities.typeDefinitionProvider = true;
         capabilities.callHierarchyProvider = true;
         capabilities.typeHierarchyProvider = true;
+        // resolveProvider exercises the completion refill path (detail/documentation arrive lazily).
+        capabilities.completionProvider = { resolveProvider: true, triggerCharacters: ['.'] };
         capabilities.codeActionProvider = {
           resolveProvider: true,
           codeActionKinds: ['quickfix', 'source.organizeImports'],
@@ -370,6 +372,25 @@ function handle(message) {
       result(id, {
         contents: { kind: 'markdown', value: '```ts\nclass Widget\n```\nFake hover documentation.' },
         range: range(),
+      });
+      return;
+    case 'textDocument/completion':
+      // Sorted by sortText on the client, so the labels deliberately start unsorted here.
+      result(id, {
+        isIncomplete: true,
+        items: [
+          { label: 'reset', kind: 2, sortText: '0002' },
+          { label: 'render', kind: 2, sortText: '0001', detail: '(): number' },
+          { label: 'theWidget', kind: 6, sortText: '0003', documentation: { kind: 'markdown', value: 'The widget.' } },
+        ],
+      });
+      return;
+    case 'completionItem/resolve':
+      // Echo the label back so a test can prove the client resolved the item it meant to.
+      result(id, {
+        ...params,
+        detail: params.detail ?? `resolved ${params.label}`,
+        documentation: { kind: 'markdown', value: `Docs for ${params.label}.` },
       });
       return;
     case 'textDocument/references':

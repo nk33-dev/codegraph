@@ -29,6 +29,7 @@ import {
   type ImpactItem,
   type LspDiagnosticItem,
   type LspCodeActionItem,
+  type LspCompletionItem,
   type LspDocumentSymbolItem,
   type LspHoverItem,
   type LspReferenceItem,
@@ -594,11 +595,14 @@ export async function queryCodeLsp(
   }
 
   const file = resolveFileInput(root, request);
-  if ((request.mode === 'symbols' || request.mode === 'code-actions') && !file) {
+  if ((request.mode === 'symbols' || request.mode === 'code-actions' || request.mode === 'completion') && !file) {
     throw new Error(`mode "${request.mode}" requires a project-relative file`);
   }
   if (request.mode === 'code-actions' && request.line === undefined) {
     throw new Error('mode "code-actions" requires line (and optionally column/endLine/endColumn)');
+  }
+  if (request.mode === 'completion' && request.line === undefined) {
+    throw new Error('mode "completion" requires line (and optionally column)');
   }
 
   const context = new LspQueryContext(cg, manager, root);
@@ -761,6 +765,40 @@ export async function queryCodeLsp(
         } satisfies LspCodeActionItem));
         result.page.total = items.length;
         result.items = items.slice(offset, offset + limit);
+        if (items.length === 0) result.status = 'not_found';
+        break;
+      }
+
+      case 'completion': {
+        const absPath = path.resolve(root, file!);
+        const position = { line: request.line! - 1, character: request.column ?? 0 };
+        const outcome = await manager.completion(absPath, position, language);
+        if (outcome.retried) result.warnings.push('The first request came back empty right after startup; it was retried after the server finished indexing.');
+        const list = outcome.items[0] ?? { items: [], isIncomplete: false };
+        const { filePath, external } = context.toResultPath(absPath);
+        if (list.items.some((item) => item.resolveFailed)) {
+          result.warnings.push('Some items could not be resolved (`completionItem/resolve` failed); their detail/documentation may be missing.');
+        }
+        const items = list.items.map((item) => ({
+          source: 'lsp',
+          filePath,
+          external,
+          startLine: request.line!,
+          startColumn: request.column ?? 0,
+          label: item.label,
+          completionKind: item.kind,
+          detail: item.detail,
+          documentation: item.documentation,
+          insertText: item.insertText,
+          deprecated: item.deprecated,
+          preselect: item.preselect,
+          resolveFailed: item.resolveFailed === true,
+        } satisfies LspCompletionItem));
+        result.page.total = items.length;
+        result.items = items.slice(offset, offset + limit);
+        if (list.isIncomplete || items.length > limit) {
+          result.warnings.push(`More completions exist than are shown (server isIncomplete=${list.isIncomplete}); raise limit or type a longer prefix.`);
+        }
         if (items.length === 0) result.status = 'not_found';
         break;
       }
