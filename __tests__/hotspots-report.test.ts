@@ -42,7 +42,7 @@ async function index(root: string): Promise<CodeGraph> {
   return graph;
 }
 
-/** Four callers for `classify`, and a body with five decisions. */
+/** Four callers for `classify` — `d` calls it twice, so the count must be callers, not call sites. */
 const FIXTURE = {
   'src/classify.ts': `export function classify(n: number, flag: boolean): string {
   if (n > 0 && flag) return 'a';
@@ -60,6 +60,7 @@ const FIXTURE = {
   'src/a.ts': `import { classify } from './classify';\nexport function a(): string { return classify(1, true); }\n`,
   'src/b.ts': `import { classify } from './classify';\nexport function b(): string { return classify(2, false); }\n`,
   'src/c.ts': `import { classify } from './classify';\nexport function c(): string { return classify(3, true); }\n`,
+  'src/d.ts': `import { classify } from './classify';\nexport function d(): string { return classify(4, true) + classify(5, false); }\n`,
   // Indexed, but no language in `hotspots.ts` has decision rules for it.
   'config/app.yaml': 'key: value\nlist:\n  - 1\n',
 };
@@ -88,7 +89,8 @@ describe('risk hotspot report over a real index', () => {
 
     // if+&& (2), if+|| (2), for (1), if (1), ternary (1) => complexity 1 + 7.
     expect(classify!.complexity).toBe(8);
-    expect(classify!.callerCount).toBe(3);
+    // Four distinct callers; `d` calls it twice, and call sites must not count twice.
+    expect(classify!.callerCount).toBe(4);
     expect(plain!.complexity).toBe(1);
     expect(plain!.callerCount).toBe(0);
     expect(report.hotspots[0]!.name).toBe('classify');

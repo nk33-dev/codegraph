@@ -18,6 +18,8 @@ score = complexity × (1 + callerCount) × (changed ? 1.5 : 1) × (hasTests ? 0.
 
 改动**提高**风险，被测试覆盖**降低**风险；两个权重由 `HOTSPOT_WEIGHTS` 给定，可在 `codegraph.json` 的 `hotspots.changedBoost` / `testPenalty` 覆盖。真正改动过的符号由 `--base <ref>` 传入（内部走 `analyzeChangeContext`），调用方计数走一次批量 `getIncomingEdgesTo(ids, ['calls'])`，关联测试按文件 memo 后走 `findAffectedTests`。
 
+`callerCount` 数的是**调用方符号**，不是调用点：同一函数在一个文件里调用两次的目标只记一个调用方，否则"被广泛调用"会被少数啰嗦的调用方冒充（`__tests__/hotspots-report.test.ts` 里的 `d` 就是这个反向夹具）。
+
 候选取 `function` / `method` / `component`，按路径稳定排序后取前 `maxFiles` 个文件。`scannedFiles`、`truncatedFiles`、`skipped`、`scoredSymbols` 都如实上报。
 
 ## 复杂度是读时算的
@@ -64,7 +66,7 @@ codegraph hotspots --base origin/main --strict   # 有符号达到阈值就 exit
 ## 验证
 
 - `__tests__/hotspots.test.ts`：逐语言夹具的决策计数（含"比较与算术运算符不是决策点"的反向断言）、打分权重、排序确定性。
-- `__tests__/hotspots-report.test.ts`：真实索引上的组装——分支多且被广泛调用的函数排在前、`maxItems` 只截输出而 `gated` 覆盖全部已评分符号、`threshold: null` 不门禁、`--files` 指定的不支持语言计为 `skipped`、`maxFiles` 截断上报、改动符号加权。
+- `__tests__/hotspots-report.test.ts`：真实索引上的组装——分支多且被广泛调用的函数排在前、同一调用方调两次只算一个调用方、`maxItems` 只截输出而 `gated` 覆盖全部已评分符号、`threshold: null` 不门禁、`--files` 指定的不支持语言计为 `skipped`、`maxFiles` 截断上报、改动符号加权。
 - `__tests__/mcp-tools-hotspots.test.ts`：工具存在一次、只读注解、参数面、默认表面仍只有 explore + edit。
 
 未验证的部分：本机不跑构建、无基准，所以整体耗时与 `maxFiles` 截断的实际影响没有实测数据；`codegraph hotspots` 的 CLI 参数解析本身也没有测试覆盖（与 `architecture` 同现状，两者都只测到它调用的那层接口）；全量套件交 CI。

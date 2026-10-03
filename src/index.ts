@@ -3303,11 +3303,18 @@ export class CodeGraph {
       if (callables.length > 0) byFile.set(candidate.filePath, callables);
     }
     const ids = [...byFile.values()].flat().map((node) => node.id);
+    // Fan-in by distinct caller: a function called twice from one place has one caller, not two.
+    // Every call site is its own edge row, so counting rows would inflate the score by call count
+    // and disagree with the "N caller(s)" label and with getTopDependedOn's COUNT(DISTINCT source).
+    const callerSources = new Map<string, Set<string>>();
     const callerCounts = new Map<string, number>();
     if (ids.length > 0) {
       for (const edge of this.getIncomingEdgesTo(ids, ['calls'])) {
-        callerCounts.set(edge.target, (callerCounts.get(edge.target) ?? 0) + 1);
+        const sources = callerSources.get(edge.target) ?? new Set<string>();
+        sources.add(edge.source);
+        callerSources.set(edge.target, sources);
       }
+      for (const [target, sources] of callerSources) callerCounts.set(target, sources.size);
     }
 
     const changedIds = new Set<string>();
