@@ -110,6 +110,22 @@ export interface ProjectConfig {
       deny?: Array<{ from?: string; to?: string; reason?: string }>;
     };
   };
+  /**
+   * Thresholds for `codegraph hotspots`. Committed rather than local for the same reason as
+   * `architecture`: the gate a CI job enforces is a property of the codebase.
+   */
+  hotspots?: {
+    /** Score at or above which a symbol counts as gated; `null` uses the built-in default. */
+    threshold?: number;
+    /** Multiplier applied to a symbol in the current diff; `null` uses the built-in default. */
+    changedBoost?: number;
+    /** Multiplier applied to a symbol a test already covers; `null` uses the built-in default. */
+    testPenalty?: number;
+    /** Cap on listed hotspots; `null` uses the built-in default. */
+    maxItems?: number;
+    /** Cap on files parsed for complexity; `null` uses the built-in default. */
+    maxFiles?: number;
+  };
 }
 
 /** One forbidden dependency direction; `from`/`to` are module ids or directory prefixes. */
@@ -130,6 +146,21 @@ export interface ArchitectureConfig {
   deny: ArchitectureBoundaryRule[];
 }
 
+/**
+ * Validated view of the project's `hotspots` settings.
+ *
+ * Every field is nullable, and `null` means "whatever the report's own default is" — the algorithm
+ * constants live in `graph/hotspots.ts` and are not restated here, so a project that configures
+ * nothing cannot pin a stale copy of them.
+ */
+export interface HotspotsConfig {
+  threshold: number | null;
+  changedBoost: number | null;
+  testPenalty: number | null;
+  maxItems: number | null;
+  maxFiles: number | null;
+}
+
 /** Parsed, validated view of a project's `codegraph.json`. */
 interface ParsedConfig {
   extensions: Record<string, Language>;
@@ -145,6 +176,9 @@ interface ParsedConfig {
   architecture: ArchitectureConfig;
   /** Which `architecture` sub-keys this layer actually set, so an overlay only overrides those. */
   architecturePresent: ReadonlySet<string>;
+  hotspots: HotspotsConfig;
+  /** Which `hotspots` sub-keys this layer actually set. */
+  hotspotsPresent: ReadonlySet<string>;
   /** Top-level keys explicitly present in this file, for overlay merging. */
   present: ReadonlySet<string>;
 }
@@ -185,6 +219,14 @@ const EMPTY_CONFIG: ParsedConfig = Object.freeze({
     deny: Object.freeze([]) as unknown as ArchitectureBoundaryRule[],
   }),
   architecturePresent: new Set<string>(),
+  hotspots: Object.freeze({
+    threshold: null,
+    changedBoost: null,
+    testPenalty: null,
+    maxItems: null,
+    maxFiles: null,
+  }),
+  hotspotsPresent: new Set<string>(),
   present: new Set<string>(),
 });
 
@@ -242,6 +284,7 @@ function parseConfig(file: string): ParsedConfig {
   const deprioritize = extractPatternList(parsed, file, 'deprioritize');
   const apiCorrelation = extractApiCorrelation(parsed, file);
   const { config: architecture, present: architecturePresent } = extractArchitecture(parsed, file);
+  const { config: hotspots, present: hotspotsPresent } = extractHotspots(parsed, file);
   if (
     extensions === EMPTY_EXTENSIONS &&
     includeIgnored.length === 0 &&
@@ -252,6 +295,7 @@ function parseConfig(file: string): ParsedConfig {
     && apiCorrelation.clientPaths.length === 0
     && apiCorrelation.serverPaths.length === 0
     && architecture === EMPTY_CONFIG.architecture
+    && hotspots === EMPTY_CONFIG.hotspots
     && present.size === 0
   ) {
     return EMPTY_CONFIG;
@@ -265,6 +309,8 @@ function parseConfig(file: string): ParsedConfig {
     apiCorrelation,
     architecture,
     architecturePresent,
+    hotspots,
+    hotspotsPresent,
     present,
   };
 }
@@ -276,6 +322,14 @@ function mergeConfig(base: ParsedConfig, overlay: ParsedConfig): ParsedConfig {
   // must not wipe the shared `boundaries.deny` list, which is the part that carries the rules.
   const arch = overlay.architecturePresent;
   const pickArch = <T>(key: keyof ArchitectureConfig, shared: T, local: T): T => arch.has(key) ? local : shared;
+  // `hotspots` merges per field like `architecture`, so a local file that only sets `threshold`
+  // keeps the shared `maxFiles`.
+  const hots = overlay.hotspotsPresent;
+  const pickHot = <T extends keyof HotspotsConfig>(
+    key: T,
+    shared: HotspotsConfig[T],
+    local: HotspotsConfig[T]
+  ): HotspotsConfig[T] => hots.has(key) ? local : shared;
   return {
     extensions: pick('extensions', base.extensions, overlay.extensions),
     includeIgnored: pick('includeIgnored', base.includeIgnored, overlay.includeIgnored),
@@ -292,6 +346,14 @@ function mergeConfig(base: ParsedConfig, overlay: ParsedConfig): ParsedConfig {
       deny: arch.has('boundaries') ? overlay.architecture.deny : base.architecture.deny,
     },
     architecturePresent: new Set([...base.architecturePresent, ...overlay.architecturePresent]),
+    hotspots: {
+      threshold: pickHot('threshold', base.hotspots.threshold, overlay.hotspots.threshold),
+      changedBoost: pickHot('changedBoost', base.hotspots.changedBoost, overlay.hotspots.changedBoost),
+      testPenalty: pickHot('testPenalty', base.hotspots.testPenalty, overlay.hotspots.testPenalty),
+      maxItems: pickHot('maxItems', base.hotspots.maxItems, overlay.hotspots.maxItems),
+      maxFiles: pickHot('maxFiles', base.hotspots.maxFiles, overlay.hotspots.maxFiles),
+    },
+    hotspotsPresent: new Set([...base.hotspotsPresent, ...overlay.hotspotsPresent]),
     present: new Set([...base.present, ...overlay.present]),
   };
 }
@@ -371,6 +433,59 @@ function extractArchitecture(
 /** A module path as the report compares it: posix, no leading `./`, no trailing slash. */
 function normalizeModulePrefix(raw: string): string {
   return raw.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+}
+
+/**
+ * Validate the `hotspots` block. Every failure mode degrades to the default for that field, and a
+ * field nobody set stays `null` so the report's own constant wins.
+ *
+ * Ranges are deliberately loose: a `threshold` is on the report's own score scale (complexity ×
+ * fan-in × weights) and no bound here could stay true of a codebase that is not this one. Only the
+ * shapes that would misbehave are rejected — a negative multiplier inverts the ranking, a
+ * non-integer cap truncates unpredictably.
+ */
+function extractHotspots(
+  parsed: object,
+  file: string
+): { config: HotspotsConfig; present: ReadonlySet<string> } {
+  const raw = (parsed as ProjectConfig).hotspots;
+  if (raw === undefined) return { config: EMPTY_CONFIG.hotspots, present: new Set<string>() };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    logWarn(`Ignoring "hotspots" in ${PROJECT_CONFIG_FILENAME}: must be an object`, { file });
+    return { config: EMPTY_CONFIG.hotspots, present: new Set<string>() };
+  }
+  const present = new Set(Object.keys(raw));
+  const config: HotspotsConfig = { ...EMPTY_CONFIG.hotspots };
+
+  const readNumber = (key: keyof HotspotsConfig, minimum: number, minimumNote: string): void => {
+    const value = raw[key];
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum) {
+      logWarn(`Ignoring "hotspots.${key}" in ${PROJECT_CONFIG_FILENAME}: must be a number ${minimumNote}`, { file });
+      present.delete(key);
+      return;
+    }
+    config[key] = value;
+  };
+
+  readNumber('threshold', 0, '>= 0');
+  readNumber('changedBoost', 0, '>= 0');
+  readNumber('testPenalty', 0, '>= 0');
+  const readCap = (key: 'maxItems' | 'maxFiles'): void => {
+    const value = raw[key];
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+      logWarn(`Ignoring "hotspots.${key}" in ${PROJECT_CONFIG_FILENAME}: must be an integer >= 1`, { file });
+      present.delete(key);
+      return;
+    }
+    config[key] = value;
+  };
+  readCap('maxItems');
+  readCap('maxFiles');
+
+  if (present.size === 0) return { config: EMPTY_CONFIG.hotspots, present: new Set<string>() };
+  return { config, present };
 }
 
 function extractApiCorrelation(parsed: object, file: string): ParsedConfig['apiCorrelation'] {
@@ -597,6 +712,16 @@ export function loadDeprioritizePatterns(rootDir: string): string[] {
  */
 export function loadArchitectureConfig(rootDir: string): ArchitectureConfig {
   return loadParsedConfig(rootDir).architecture;
+}
+
+/**
+ * Load the validated `hotspots` block for a project, mtime-cached.
+ *
+ * The zero-config default leaves every field `null`, which means the built-in weights and caps
+ * apply and `codegraph hotspots` takes the same path as before the block existed.
+ */
+export function loadHotspotsConfig(rootDir: string): HotspotsConfig {
+  return loadParsedConfig(rootDir).hotspots;
 }
 
 /**

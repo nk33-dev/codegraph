@@ -75,7 +75,7 @@ import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime
 import { installCommandSupervision, watchParent } from './command-supervision';
 import { EXTRACTION_VERSION } from '../extraction/extraction-version';
 import { getTelemetry, TELEMETRY_DOCS, recordIndexEvent } from '../telemetry';
-import { loadArchitectureConfig, writeApiCorrelationConfig } from '../project-config';
+import { loadArchitectureConfig, loadHotspotsConfig, writeApiCorrelationConfig } from '../project-config';
 // Value import, but dependency-free by design so `--help` text can name the
 // default port without dragging node:http into every other subcommand; the
 // server itself is loaded lazily inside the `ui` action. See ui-server/constants.
@@ -453,6 +453,45 @@ function printArchitectureReport(report: import('../index').ArchitectureReport):
     if (report.cycles.truncated) {
       console.log(chalk.dim(`  (${report.cycles.total - report.cycles.shown} more cycle(s) not shown)`));
     }
+  }
+  console.log();
+}
+
+/** Human-readable `codegraph hotspots` output; `--json` prints the report object instead. */
+function printHotspotsReport(report: import('../index').RiskHotspotReport): void {
+  const notes = [`${report.scannedFiles} file(s) parsed`, `${report.scoredSymbols} symbol(s) scored`];
+  if (report.truncatedFiles) notes.push('file cap reached');
+  if (report.skipped > 0) notes.push(`${report.skipped} skipped`);
+  console.log(chalk.bold(`\nRisk hotspots: ${report.hotspots.length} shown`) + chalk.dim(` (${notes.join(', ')})`));
+
+  if (report.hotspots.length === 0) {
+    console.log(chalk.dim('  nothing to rank: no scored symbol came out of the scanned files'));
+  }
+  for (const [index, hotspot] of report.hotspots.entries()) {
+    const flags = [
+      hotspot.changed ? chalk.yellow('changed') : null,
+      hotspot.hasTests ? `${hotspot.testFiles.length} test file(s)` : chalk.red('untested'),
+    ].filter((flag): flag is string => flag !== null);
+    console.log(
+      `\n  ${chalk.bold(`${index + 1}.`)} ${chalk.bold(String(hotspot.score))} ` +
+      `${chalk.bold(hotspot.name)} ${chalk.dim(hotspot.qualifiedName)}`
+    );
+    console.log(chalk.dim(`     ${hotspot.filePath}:${hotspot.line} (${hotspot.kind})`));
+    console.log(chalk.dim(
+      `     complexity ${hotspot.complexity} x ${1 + hotspot.callerCount} caller(s)` +
+      (flags.length > 0 ? ` — ${flags.join(', ')}` : '')
+    ));
+  }
+
+  const scope = report.truncatedFiles
+    ? 'only the first files by path were scanned; the gate below covers those'
+    : 'every indexed file in a language with decision rules was scanned';
+  if (report.threshold === null) {
+    console.log(chalk.dim(`\n  no threshold configured (${scope})`));
+  } else if (report.gated === 0) {
+    console.log(chalk.green(`\n  no hotspot reaches ${report.threshold} (${scope})`));
+  } else {
+    console.log(chalk.red(`\n  ${report.gated} hotspot(s) at or above ${report.threshold} (${scope})`));
   }
   console.log();
 }
@@ -2462,6 +2501,68 @@ program
       if (options.strict && report.rules.violated > 0) process.exit(1);
     } catch (err) {
       error(`Failed to check architecture: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('hotspots [path]')
+  .description('Rank the functions most worth reading from complexity, fan-in, current changes and test coverage')
+  .option('--base <ref>', 'Boost the symbols changed since this git ref')
+  .option('--threshold <number>', 'Score at or above which a symbol is reported as gated')
+  .option('--max-items <number>', 'Maximum number of hotspots to print')
+  .option('--strict', 'Exit with code 1 when any scored symbol reaches the threshold')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (pathArg: string | undefined, options: {
+    base?: string;
+    threshold?: string;
+    maxItems?: string;
+    strict?: boolean;
+    json?: boolean;
+  }) => {
+    const projectPath = resolveProjectPath(pathArg);
+
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+
+      const mod = await loadCodeGraph();
+      const cg = await mod.default.open(projectPath);
+
+      const config = loadHotspotsConfig(projectPath);
+      // A number the user typed wins, then the project config, then the built-in default. Bad input
+      // falls through rather than failing the run — the same policy as `architecture`.
+      const askedThreshold = options.threshold === undefined ? undefined : Number(options.threshold);
+      const threshold = Number.isFinite(askedThreshold)
+        ? askedThreshold
+        : config.threshold ?? mod.DEFAULT_HOTSPOT_THRESHOLD;
+      const askedItems = options.maxItems === undefined ? undefined : Number(options.maxItems);
+      const maxItems = Number.isInteger(askedItems) ? askedItems : config.maxItems ?? mod.DEFAULT_HOTSPOT_ITEMS;
+
+      // `null` means the ref could not be read (no repository, unknown ref); the ranking then has no
+      // changed symbols to boost, which the report already reports as "changed: false" everywhere.
+      const changed = options.base === undefined
+        ? undefined
+        : (await mod.analyzeChangeContext(cg, { baseRef: options.base }))?.symbols ?? [];
+
+      const report = await cg.getRiskHotspots({
+        changed,
+        maxItems,
+        maxFiles: config.maxFiles ?? mod.DEFAULT_HOTSPOT_FILES,
+        threshold,
+        weights: { changed: config.changedBoost ?? undefined, tested: config.testPenalty ?? undefined },
+      });
+
+      if (options.json) console.log(JSON.stringify(report, null, 2));
+      else printHotspotsReport(report);
+      cg.destroy();
+
+      // CI gate: the count is over every scored symbol, so a symbol cut from the listing still fails.
+      if (options.strict && report.gated > 0) process.exit(1);
+    } catch (err) {
+      error(`Failed to rank hotspots: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
   });

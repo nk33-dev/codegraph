@@ -12,7 +12,12 @@ import { createHash } from 'crypto';
 import { resourceMetrics } from '../resource-metrics';
 import { describeResourceProfile, resolveResourceProfile } from '../resource-profile';
 import { findNearestCodeGraphRoot, isSameIndexRoot } from '../directory';
-import { loadArchitectureConfig } from '../project-config';
+import { loadArchitectureConfig, loadHotspotsConfig } from '../project-config';
+import {
+  DEFAULT_HOTSPOT_FILES,
+  DEFAULT_HOTSPOT_ITEMS,
+  DEFAULT_HOTSPOT_THRESHOLD,
+} from '../graph/hotspots';
 import { WslSharedIndexError } from '../db/wsl-shared-index';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
@@ -2003,6 +2008,7 @@ export interface ToolResult {
     | ExploreStructuredContent
     | RefreshResult
     | import('../index').ArchitectureReport
+    | import('../index').RiskHotspotReport
     | { index: import('../graph/code-query').IndexBlock }
     | { freshness: Record<string, unknown> };
   content: Array<{
@@ -2416,6 +2422,29 @@ export const tools: ToolDefinition[] = [
         maxViolations: {
           type: 'number',
           description: 'Maximum violations to return (default: 20)',
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: 'codegraph_hotspots',
+    description: 'Rank the functions most worth reading: complexity (decision count) × fan-in, boosted for symbols changed since a git ref and discounted for ones a test already covers. A lead, not a verdict. Not enabled by default — set CODEGRAPH_MCP_TOOLS to include it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        base: {
+          type: 'string',
+          description: 'Git ref to diff against; symbols changed since it are boosted. Omit for a whole-index ranking.',
+        },
+        threshold: {
+          type: 'number',
+          description: 'Score at or above which a symbol is reported as gated. Defaults to codegraph.json, then 50.',
+        },
+        maxItems: {
+          type: 'number',
+          description: 'Maximum hotspots to return (1-200). Defaults to codegraph.json, then 20.',
         },
         projectPath: projectPathProperty,
       },
@@ -3836,6 +3865,7 @@ export class ToolHandler {
       case 'codegraph_node': return await this.handleNode(args);
       case 'codegraph_files': return await this.handleFiles(args);
       case 'codegraph_architecture': return await this.handleArchitecture(args);
+      case 'codegraph_hotspots': return await this.handleHotspots(args);
       case 'codegraph_refresh': return await this.handleRefresh(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
     }
@@ -10514,6 +10544,80 @@ export class ToolHandler {
         }
       }
     }
+
+    return { ...this.textResult(lines.join('\n')), structuredContent: report };
+  }
+
+  /**
+   * Handle codegraph_hotspots — the ranking a reader should open first.
+   *
+   * Read-only and re-derived per call: the complexity count comes from parsing the files on disk, so
+   * the answer follows the working tree rather than whatever the index was built from. Bounded by
+   * `maxFiles`, and the text says so when the bound cut the scan short.
+   */
+  private async handleHotspots(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const config = loadHotspotsConfig(cg.getProjectRoot());
+    const base = typeof args.base === 'string' && args.base.trim() ? args.base.trim() : undefined;
+
+    const threshold = typeof args.threshold === 'number'
+      ? args.threshold
+      : config.threshold ?? DEFAULT_HOTSPOT_THRESHOLD;
+    const maxItems = typeof args.maxItems === 'number'
+      ? clamp(args.maxItems, 1, 200)
+      : config.maxItems ?? DEFAULT_HOTSPOT_ITEMS;
+
+    // `null` means the ref could not be read; the ranking then has no changed symbol to boost.
+    const changed = base === undefined
+      ? undefined
+      : (await analyzeChangeContext(cg, { baseRef: base }))?.symbols ?? [];
+
+    const report = await cg.getRiskHotspots({
+      changed,
+      maxItems,
+      maxFiles: config.maxFiles ?? DEFAULT_HOTSPOT_FILES,
+      threshold,
+      weights: { changed: config.changedBoost ?? undefined, tested: config.testPenalty ?? undefined },
+    });
+
+    const notes = [`${report.scannedFiles} file(s) parsed`, `${report.scoredSymbols} symbol(s) scored`];
+    if (report.truncatedFiles) notes.push(`file cap of ${config.maxFiles ?? DEFAULT_HOTSPOT_FILES} reached`);
+    if (report.skipped > 0) notes.push(`${report.skipped} skipped`);
+    const lines: string[] = [
+      `**Risk hotspots** — ${report.hotspots.length} shown (${notes.join(', ')})`,
+      '',
+    ];
+
+    if (report.hotspots.length === 0) {
+      lines.push('Nothing to rank: no scored symbol came out of the scanned files.');
+    }
+    for (const [index, hotspot] of report.hotspots.entries()) {
+      const flags = [
+        hotspot.changed ? 'changed' : null,
+        hotspot.hasTests ? `${hotspot.testFiles.length} test file(s)` : 'untested',
+      ].filter((flag): flag is string => flag !== null);
+      lines.push(
+        `${index + 1}. \`${hotspot.qualifiedName}\` — score ${hotspot.score} ` +
+        `(complexity ${hotspot.complexity} × ${1 + hotspot.callerCount} caller(s))`,
+        `   \`${hotspot.filePath}:${hotspot.line}\` ${hotspot.kind}${flags.length > 0 ? ` — ${flags.join(', ')}` : ''}`
+      );
+    }
+
+    if (report.threshold !== null) {
+      lines.push(
+        '',
+        report.gated === 0
+          ? `No scored symbol reaches the threshold of ${report.threshold}.`
+          : `**${report.gated} scored symbol(s) at or above ${report.threshold}** (counted over every scanned symbol, not just those listed).`
+      );
+    }
+    if (report.truncatedFiles) {
+      lines.push('', 'Only the first files by path were scanned; both the list and the threshold count cover those.');
+    }
+    lines.push(
+      '',
+      'Complexity is a decision count (branching, loops, catches, logical operators) — a coarse lead, not a verdict.'
+    );
 
     return { ...this.textResult(lines.join('\n')), structuredContent: report };
   }

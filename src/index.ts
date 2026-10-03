@@ -112,6 +112,19 @@ import {
   type RustManifestContext,
 } from './graph/rust-context';
 export type { RustManifestContext, RustCrateCatalog } from './graph/rust-context';
+import {
+  computeFileComplexities,
+  rankHotspots,
+  scoreHotspot,
+  supportsHotspots,
+  HOTSPOT_WEIGHTS,
+  DEFAULT_HOTSPOT_ITEMS,
+  DEFAULT_HOTSPOT_FILES,
+  type HotspotRow,
+} from './graph/hotspots';
+export { DEFAULT_HOTSPOT_ITEMS, DEFAULT_HOTSPOT_FILES, DEFAULT_HOTSPOT_THRESHOLD } from './graph/hotspots';
+import { DEFAULT_TESTS_DEPTH, findAffectedTests } from './graph/change-impact';
+import { graphNodeForSymbol, type ChangedSymbolContext } from './graph/change-context';
 export type { IndexRelationChanges } from './graph/index-relation-delta';
 export type { RelationshipCoverage } from './graph/relationship-coverage';
 export type { RelationEvidence } from './graph/edge-provenance';
@@ -276,6 +289,70 @@ export interface RefreshResult extends SyncResult {
 
 /** Default confidence floor for architecture counts, matching the viewer's `UNCERTAIN_BELOW`. */
 const DEFAULT_ARCHITECTURE_MIN_CONFIDENCE = 0.6;
+
+/** Files parsed for complexity at once. Parsing is CPU-bound and the grammars are shared. */
+const HOTSPOT_PARSE_CONCURRENCY = 8;
+/** The symbol kinds a "hotspot" can be: the units a reader opens and edits. */
+const HOTSPOT_NODE_KINDS = new Set<NodeKind>(['function', 'method', 'component']);
+
+export interface RiskHotspotOptions {
+  /** Restrict the scan to these files (repo-relative); null scans the index. */
+  files?: readonly string[] | null;
+  /** Symbols from the current diff, as `analyzeChangeContext` returns them. */
+  changed?: readonly ChangedSymbolContext[];
+  /** Cap on returned hotspots. */
+  maxItems?: number;
+  /** Cap on files parsed; `truncatedFiles` says whether any were left out. */
+  maxFiles?: number;
+  /** Score at or above which a hotspot counts as `gated`; null disables the gate. */
+  threshold?: number | null;
+  /** Skip the related-tests pass (it walks file dependents per candidate file). */
+  includeTests?: boolean;
+  /**
+   * Override the score weights; omitted fields keep `HOTSPOT_WEIGHTS`. Exposed so `codegraph.json`
+   * can retune the ranking without a code change.
+   */
+  weights?: { changed?: number; tested?: number };
+}
+
+export interface RiskHotspot {
+  id: string;
+  name: string;
+  qualifiedName: string;
+  kind: NodeKind;
+  filePath: string;
+  line: number;
+  /** `1 + decisions`; a coarse proxy, not a verdict. */
+  complexity: number;
+  callerCount: number;
+  /** Whether the symbol appears in the changed set the caller passed. */
+  changed: boolean;
+  hasTests: boolean;
+  testFiles: string[];
+  score: number;
+}
+
+export interface RiskHotspotReport {
+  /** Files whose symbols were actually scored. */
+  scannedFiles: number;
+  /** True when `maxFiles` cut the scan short — the gate then covers what was scanned. */
+  truncatedFiles: boolean;
+  /**
+   * Files dropped without scoring: a language with no decision rules, a file
+   * over the parse byte cap, or one that failed to parse. Reported rather than
+   * counted as complexity 1.
+   */
+  skipped: number;
+  /** Symbols scored before `maxItems` cut the list — the population `gated` counts. */
+  scoredSymbols: number;
+  hotspots: RiskHotspot[];
+  threshold: number | null;
+  /**
+   * Scored symbols at or above `threshold` — what `--strict` fails on. Counted
+   * over every scored symbol, so it can exceed `hotspots.length`.
+   */
+  gated: number;
+}
 
 export interface ArchitectureReportOptions {
   /**
@@ -3154,6 +3231,156 @@ export class CodeGraph {
   getRustBuildContextForFile(filePath: string): RustManifestContext | null {
     const catalog = loadRustCrateCatalog(this.getProjectRoot());
     return catalog === null ? null : rustContextForFile(catalog, filePath);
+  }
+
+  /**
+   * Risk hotspots: the functions most worth reading first, from branch
+   * complexity combined with fan-in, the current diff and related tests.
+   *
+   * Complexity is computed here, at read time — see `graph/hotspots.ts` for why
+   * it is not stored. The candidate set is bounded by `maxFiles`; a file whose
+   * language has no decision rules or that is over the parse byte cap is skipped
+   * and counted in `skipped`, never silently treated as complexity 1.
+   */
+  async getRiskHotspots(options: RiskHotspotOptions = {}): Promise<RiskHotspotReport> {
+    const maxItems = options.maxItems ?? DEFAULT_HOTSPOT_ITEMS;
+    const maxFiles = options.maxFiles ?? DEFAULT_HOTSPOT_FILES;
+    const threshold = options.threshold ?? null;
+    const includeTests = options.includeTests !== false;
+    const weights = {
+      changed: options.weights?.changed ?? HOTSPOT_WEIGHTS.changed,
+      tested: options.weights?.tested ?? HOTSPOT_WEIGHTS.tested,
+    };
+
+    const requested = options.files === null || options.files === undefined
+      ? null
+      : new Set(options.files.map((file) => toPosixPath(file)));
+
+    let skipped = 0;
+    const candidates: Array<{ filePath: string; language: Language }> = [];
+    for (const file of this.getFiles()) {
+      const filePath = toPosixPath(file.path);
+      if (requested && !requested.has(filePath)) continue;
+      const language = file.language as Language;
+      if (!supportsHotspots(language)) {
+        // Only count a skip the caller actually asked for; a whole-repo scan
+        // skips every markdown and JSON file and that number says nothing.
+        if (requested) skipped++;
+        continue;
+      }
+      candidates.push({ filePath, language });
+    }
+    candidates.sort((a, b) => a.filePath.localeCompare(b.filePath));
+    const truncatedFiles = candidates.length > maxFiles;
+    const scanned = candidates.slice(0, maxFiles);
+
+    // One batch for every caller count, and one test lookup per candidate file.
+    const byFile = new Map<string, Node[]>();
+    for (const candidate of scanned) {
+      const callables = this.getNodesInFile(candidate.filePath).filter((node) => HOTSPOT_NODE_KINDS.has(node.kind));
+      if (callables.length > 0) byFile.set(candidate.filePath, callables);
+    }
+    const ids = [...byFile.values()].flat().map((node) => node.id);
+    const callerCounts = new Map<string, number>();
+    if (ids.length > 0) {
+      for (const edge of this.getIncomingEdgesTo(ids, ['calls'])) {
+        callerCounts.set(edge.target, (callerCounts.get(edge.target) ?? 0) + 1);
+      }
+    }
+
+    const changedIds = new Set<string>();
+    for (const symbol of options.changed ?? []) {
+      const node = graphNodeForSymbol(this, symbol);
+      if (node) changedIds.add(node.id);
+    }
+
+    const testCache = new Map<string, string[]>();
+    const testsOf = (filePath: string): string[] => {
+      const hit = testCache.get(filePath);
+      if (hit) return hit;
+      const found = includeTests
+        ? findAffectedTests(this, [filePath], { depth: DEFAULT_TESTS_DEPTH }).tests.map((test) => test.filePath)
+        : [];
+      testCache.set(filePath, found);
+      return found;
+    };
+
+    const rows: HotspotRow[] = [];
+    let filesParsed = 0;
+    const concurrency = Math.max(1, Math.min(HOTSPOT_PARSE_CONCURRENCY, scanned.length));
+    for (let start = 0; start < scanned.length; start += concurrency) {
+      const batch = scanned.slice(start, start + concurrency);
+      const perFile = await Promise.all(
+        batch.map((candidate) => {
+          const callables = byFile.get(candidate.filePath);
+          if (!callables) return Promise.resolve(null);
+          const ranges = callables.map((node) => ({
+            id: node.id,
+            startLine: node.startLine,
+            endLine: node.endLine || node.startLine,
+          }));
+          return computeFileComplexities(
+            path.join(this.getProjectRoot(), candidate.filePath),
+            candidate.language,
+            ranges
+          );
+        })
+      );
+      for (let i = 0; i < batch.length; i++) {
+        const candidate = batch[i]!;
+        const complexities = perFile[i];
+        const callables = byFile.get(candidate.filePath);
+        if (!complexities || !callables || complexities.size === 0) {
+          skipped++;
+          continue;
+        }
+        filesParsed++;
+        const tests = testsOf(candidate.filePath);
+        for (const node of callables) {
+          const complexity = complexities.get(node.id);
+          if (complexity === undefined) continue;
+          const callerCount = callerCounts.get(node.id) ?? 0;
+          const changed = changedIds.has(node.id);
+          const hasTests = tests.length > 0;
+          rows.push({
+            node,
+            complexity,
+            callerCount,
+            changed,
+            hasTests,
+            testFiles: tests,
+            score: scoreHotspot({ complexity, callerCount, changed, hasTests }, weights),
+          });
+        }
+      }
+    }
+
+    const hotspots = rankHotspots(rows, maxItems).map((row) => ({
+      id: row.node.id,
+      name: row.node.name,
+      qualifiedName: row.node.qualifiedName,
+      kind: row.node.kind,
+      filePath: row.node.filePath,
+      line: row.node.startLine,
+      complexity: row.complexity,
+      callerCount: row.callerCount,
+      changed: row.changed,
+      hasTests: row.hasTests,
+      testFiles: row.testFiles,
+      score: row.score,
+    }));
+
+    return {
+      scannedFiles: filesParsed,
+      truncatedFiles,
+      skipped,
+      // Counted over EVERY scored symbol, not over the listed ones: `--strict` must fail on a
+      // symbol that reached the threshold even when `maxItems` cut it from the listing.
+      scoredSymbols: rows.length,
+      hotspots,
+      threshold,
+      gated: threshold === null ? 0 : rows.filter((row) => row.score >= threshold).length,
+    };
   }
 
   /**

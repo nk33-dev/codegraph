@@ -17,6 +17,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - LSP 按工作区配置应答。`.codegraph/lsp.json` 新增 `settings`，`workspace/configuration` 逐项判断 `scopeUri` 是否落在本项目内，再按 `section` 取值（字面量键优先，否则按 `.` 逐级下沉），客户端能力里的 `workspace.configuration` 由 `false` 改为 `true`；没有 `settings` 时行为与之前等价，仍返回 `null` 数组。rust-analyzer 的 `check`、pyright 的分析选项这类依赖该反向请求的服务此前拿不到任何项目配置。
 - pull 诊断与 push 诊断分开存储后合并。`textDocument/diagnostic` 请求携带 `previousResultId`，响应里的 `resultId` 被保留，`kind: "unchanged"` 复用上次结果；两种来源按位置、严重度、代码、来源与消息去重后合并，`-32802`（ServerCancelled）重试一次，其它错误降级到等 publish。此前 pull 是 push 的降级路径，同一张缓存表被整批覆盖。
 - 依赖边界与模块环检查：`codegraph architecture` 按 `codegraph.json` 里 `architecture.boundaries.deny` 声明的方向报告违规，附 `file:line`、边类型与声明/推断标记；`--strict` 在有违规时退出 1，供 CI 门禁。模块划分与查看器地图共用 `src/graph/module-map.ts`，范围默认用地图开屏那套 `pickDefaultView` 选取并在报告里以 `autoScope` 标注。只读、不落库、不新增边类型、不改 schema。
+- 风险热点排序：`codegraph hotspots` 按 `复杂度 × (1 + 调用方数) × 改动加权 × 测试折减` 排序最该先读的函数，`--base <ref>` 传入改动符号、`--strict` 在有符号达到阈值时退出 1，阈值、条数、文件上限与两个权重可在 `codegraph.json` 的 `hotspots` 块里改。复杂度是决策点计数，**读时现算不落库**——AST 提取后即丢弃，落库意味着改提取、升内核 ABI 与 schema 迁移；`gated` 在所有被评分符号上统计，所以被 `maxItems` 截掉的符号照样能让 CI 失败。
 
 - 同名符号支持 `file#qualifiedName` 与 `contextFile`；关系输出附带静态、推断、候选证据和动态覆盖边界。
 - 索引升级在同一写锁下报告关系增删、去重、类型、来源及可信度；提取版本 29 为新增关系登记全语言重抽取范围。
@@ -33,6 +34,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Personal fork
 
 - 新增 `codegraph_architecture` MCP 工具，但**不进默认表面**：默认仍是 `codegraph_explore` 与 `codegraph_edit` 两个，避免为它抬高初始化说明与 `tools/list` 的字符预算；要用需显式配置 `CODEGRAPH_MCP_TOOLS`。代价是 Agent 默认用不到它，属于明知的取舍。
+- 新增 `codegraph_hotspots` MCP 工具与 `codegraph hotspots` 同源，同样**不进默认表面**，理由与上面的字符预算取舍相同。CLI 与 MCP 共用 `src/index.ts` 的 `getRiskHotspots`，CLI 的 `codegraph node` 式委托在这里不适用（不是同一个 handler），但配置读取、默认值与权重回退只有一份。
 - 新增端到端图基线：索引一份刻意包含反例的 6 文件 fixture，整图与提交进仓库的 golden 逐行比对，并附具名不变量（同名方法解析到正确的类、未知 receiver 进 `unresolved_refs` 而不伪造边、删除文件后同步不留悬挂端点）。上游同步或解析器升级后「哪条关系丢了」此前没有答案——kernel↔wasm parity 是两个活体提取器互比，两边同时丢同一条边时照样全绿。归一化剔除 rowid、时间戳与 content hash，并把行尾归一化，使 CRLF 工作树与 LF CI 对同一份程序给出同一快照。
 - Vue 路由接收者不再只认字面 `router`。把 `useRouter()` 的返回值命名为 `nav`、`appRouter` 是常规写法，此前这类导航一条边都建不出来；现在按词法作用域确认该名字确实绑定到 `useRouter()` 才连边，参数或局部变量同名遮蔽时不会误连，数组的 `paths.push('/login')` 也仍然不会被当成导航。
 - 修 Vue 调用链的三处关系缺失。Nuxt 的 `navigateTo` 既是自动导入又是导航动词，而解析器注册顺序让自动导入那一个先以满分置信度截胡，导航边因此从不产生；`defineProps`、`useRouter` 这类工具链内建各自解析到提及它的那个符号自身，画出的边在调用方视图里读成「自己调用自己」；项目自己定义、与 Nuxt 自动导入同名的 composable（例如封装过的 `useRouter`）会被自动导入遮住，绑不到真实定义。现在 `navigateTo` 连到它命名的路由，内建只消费引用不建边，仓库里存在同名定义时自动导入降为候选、由 import 与名称解析先行绑定。
