@@ -12,13 +12,13 @@ Use \`codegraph_explore\` for indexed code and \`codegraph_edit\` for constraine
 
 - Call \`codegraph_explore\` first for source or flows; name symbols/files and flow endpoints. If the project has no \`.codegraph/\`, use built-in tools; do not run \`codegraph init\` yourself. Indexing is the user's decision.
 - Explore returns source and flow evidence. “Only the main/primary call chain” collapses side branches/source; \`expand:true\` opens them. Treat displayed lines as already read. Gaps: query the missing symbol or range before editing it. Use \`mode:"source"\`, file, startLine and limit for ranges.
-- JSON modes cover definitions, references, symbols, diagnostics, LSP actions, impact, tests, status and text. Omit \`backend\` for auto Graph/LSP. Positions use \`file\` + 1-based \`line\`, optional 0-based \`column\`; invalid combinations return a correction. Use \`backend:"lsp"\` for compiler-accurate types, definitions/references, diagnostics or fixes.
+- JSON modes cover definitions, references, symbols, diagnostics, completion, LSP actions, impact, tests, status and text. Omit \`backend\` for auto Graph/LSP. Positions use \`file\` + 1-based \`line\`, optional 0-based \`column\`; invalid combinations return a correction. Use \`backend:"lsp"\` for compiler-accurate types, definitions/references, completion, diagnostics or fixes.
 - Same-name definitions: \`file\` or \`file#qualifiedName\` selects; \`contextFile\` ranks and retains alternatives.
 - LSP cold starts wait where possible; provisional empty results say indexing. Zero callers/callees and missing targets are distinct. Empty/incomplete answers list checked matches and candidates; query the uncovered exact names.
 
 ## Editing
 
-- Rename, LSP code-action, replace-body, insert-before and insert-after preview by default. Apply only when \`canApply:true\` and \`blockers\` is empty.
+- Rename, LSP code-action, whole-file format, replace-body, insert-before and insert-after preview by default. Apply only when \`canApply:true\` and \`blockers\` is empty.
 - Direct \`apply:true\` needs no IDs; replans and verifies bytes. Reviewed apply passes \`previewHash\` as \`expectPreviewHash\` and reuses \`operationId\`.
 - Rename needs a configured language server and AST-verified references. Code-action applies text edits within the project; file operations and command execution are refused. Ambiguous/stale targets are refused.
 

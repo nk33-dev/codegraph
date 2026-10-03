@@ -2274,7 +2274,7 @@ export const tools: ToolDefinition[] = [
         },
         line: {
           type: 'number',
-          description: 'LSP position modes (definitions/references/completion): 1-based line.',
+          description: 'LSP position modes: 1-based line.',
         },
         column: {
           type: 'number',

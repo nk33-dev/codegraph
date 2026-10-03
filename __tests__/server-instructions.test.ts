@@ -50,13 +50,20 @@ const originalToolEnv = process.env[TOOL_ENV];
  */
 // 2026-10-01: expand adds a discoverable optional field. Measured tools/list:
 // 5,423 chars; explore: 3,612. Allow roughly 2% headroom for these definitions.
+//
+// 2026-10-04: `completion` mode and the `format` edit operation. Measured tools/list:
+// 5,686; explore: 3,690; edit: 1,991; 常驻说明 2,415（合计 8,101）。第三处有意增长，理由与
+// 上一次同类：两个能力原本在 schema 里**不可发现**——`format` 需要 `tabSize`/`insertSpaces`
+// 才能用，`completion` 是一个新的 mode 值。先压缩再调上限：`line` 描述删掉重复列出的模式名
+// （enum 已经是权威列表），`tabSize`/`insertSpaces` 的描述压到最短，并给常驻说明补上
+// 「completion」与「whole-file format」两句，否则 Agent 看不到这两条路。
 const SURFACE_MAX = {
   instructions: 2_700,
   noRootInstructions: 500,
-  toolsList: 5_500,
+  toolsList: 5_800,
   explore: 3_700,
   edit: 2_100,
-  combined: 8_050,
+  combined: 8_300,
 } as const;
 
 afterEach(() => {

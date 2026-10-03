@@ -53,8 +53,8 @@ export const editTools: ToolDefinition[] = [
           description: 'rename/code-action: 0-based UTF-16 column.',
         },
         actionIndex: { type: 'number', description: 'code-action result index (default 0).' },
-        tabSize: { type: 'number', description: 'format only: indentation width (default 2).' },
-        insertSpaces: { type: 'boolean', description: 'format only: indent with spaces, not tabs (default true).' },
+        tabSize: { type: 'number', description: 'format: indent width (default 2).' },
+        insertSpaces: { type: 'boolean', description: 'format: spaces, not tabs (default true).' },
         newName: {
           type: 'string',
           description: 'rename only: new name without whitespace.',
