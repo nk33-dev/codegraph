@@ -187,9 +187,9 @@ export interface LspCapabilities {  definition: boolean;
 export type LspServerState = 'starting' | 'ready' | 'crashed' | 'stopped';
 
 /**
- * 服务器停止原因，直接对应 `resourceMetrics().recordLspStop(reason)` 的取值：
- * `idle` 空闲退出，`budget` 每项目软上限 / 全局预算回收，`shutdown` 显式关闭，
- * `crash` 启动失败或异常退出，`other` 其它。
+ * Why a server stopped, matching the values `resourceMetrics().recordLspStop(reason)` takes:
+ * `idle` = idle exit, `budget` = per-project soft cap or global budget reclaim, `shutdown` =
+ * explicit shutdown, `crash` = failed start or abnormal exit, `other` = anything else.
  */
 export type LspStopReason = 'idle' | 'budget' | 'shutdown' | 'crash' | 'other';
 
@@ -243,8 +243,8 @@ const MAX_CACHED_FILE_TEXTS = 64;
 const MAX_COMPLETION_RESOLVES = 8;
 const IDLE_SWEEP_INTERVAL_MS = 30_000;
 /**
- * 租约心跳间隔。必须**明显小于**注册表的 {@link LSP_LEASE_STALE_MS}（60 秒），
- * 否则一次心跳抖动就会让别的 daemon 把本进程的服务器当成陈旧记录清掉。
+ * Lease heartbeat interval. It must be **well below** the registry's {@link LSP_LEASE_STALE_MS}
+ * (60s); otherwise one late heartbeat lets another daemon reclaim this process's servers as stale.
  */
 const LEASE_HEARTBEAT_INTERVAL_MS = 30_000;
 const MAX_CRASHES_PER_WINDOW = 3;
@@ -696,13 +696,13 @@ export interface LspManagerOptions {
   loadConfig?: (root: string) => LspProjectConfig;
   /** Disable the idle sweep timer (tests call sweepIdle manually instead). Lease heartbeats are NOT disabled by this. */
   idleSweep?: boolean;
-  /** 资源档位；默认 `resolveResourceProfile()`（含所有 CODEGRAPH_* 环境变量覆盖）。 */
+  /** Resource profile; defaults to `resolveResourceProfile()` (including every CODEGRAPH_* override). */
   profile?: ResourceProfileSettings;
-  /** 是否使用跨 daemon 的文件租约；默认由治理开关与 `CODEGRAPH_LSP_GLOBAL_LEASE` 决定。 */
+  /** Whether cross-daemon file leases are used; defaults to the governance switches and `CODEGRAPH_LSP_GLOBAL_LEASE`. */
   lease?: boolean;
-  /** 租约目录覆盖；默认 `CODEGRAPH_LSP_LEASE_DIR` 或 `~/.codegraph/lsp-leases`。 */
+  /** Lease directory override; defaults to `CODEGRAPH_LSP_LEASE_DIR` or `~/.codegraph/lsp-leases`. */
   leaseDir?: string;
-  /** 时间注入（测试用）；默认 `Date.now`。 */
+  /** Injected clock (tests); defaults to `Date.now`. */
   now?: () => number;
 }
 
@@ -710,11 +710,11 @@ export class LspManager {
   private readonly entries = new Map<LspFamily, ServerEntry>();
   private readonly profile: ResourceProfileSettings;
   /**
-   * 治理（每项目软上限驱逐）是否生效：`CODEGRAPH_RESOURCE_GOVERNANCE=0` 或
-   * `CODEGRAPH_LSP_GLOBAL_LEASE=0` 时关闭。
+   * Whether governance (per-project soft-cap eviction) is active: off when
+   * `CODEGRAPH_RESOURCE_GOVERNANCE=0` or `CODEGRAPH_LSP_GLOBAL_LEASE=0`.
    */
   private readonly governanceActive: boolean;
-  /** 是否注册/读取跨 daemon 租约。 */
+  /** Whether cross-daemon leases are registered and read. */
   private readonly leaseEnabled: boolean;
   private config: LspProjectConfig;
   private configMtimeMs: number;
@@ -734,9 +734,10 @@ export class LspManager {
   ) {
     this.profile = options.profile ?? resolveResourceProfile();
     /*
-     * 回退开关（要求 f）：`CODEGRAPH_RESOURCE_GOVERNANCE=0` 或 `CODEGRAPH_LSP_GLOBAL_LEASE=0`
-     * 时，本 manager 不做软上限驱逐、不注册/不读取 lease；正常启动/关闭 server 的行为不变。
-     * `options.lease` 只能在此基础上进一步关闭租约，不能强行打开（回退开关优先级最高）。
+     * Fallback switches (requirement f): with `CODEGRAPH_RESOURCE_GOVERNANCE=0` or
+     * `CODEGRAPH_LSP_GLOBAL_LEASE=0`, this manager does no soft-cap eviction and neither registers
+     * nor reads leases; starting and stopping servers is unchanged. `options.lease` can only turn
+     * leases further off, never back on — the fallback switches win.
      */
     const governance = this.profile.governanceEnabled && resourceGovernanceEnabled();
     this.governanceActive = governance && process.env.CODEGRAPH_LSP_GLOBAL_LEASE !== '0';
@@ -745,7 +746,7 @@ export class LspManager {
     this.configMtimeMs = this.currentConfigMtime();
   }
 
-  /** 注入式时钟：所有租约时间戳与 LRU 时间都走这里，便于测试制造陈旧记录。 */
+  /** Injected clock: lease timestamps and LRU times all go through it, so tests can age records. */
   private nowMs(): number {
     return this.options.now ? this.options.now() : Date.now();
   }
@@ -817,12 +818,12 @@ export class LspManager {
     await Promise.all(families.map((family) => this.shutdownFamily(family, 'shutdown')));
     this.clearIdleTimer();
     this.clearLeaseTimer();
-    // 兜底清理本项目的残留记录；同一 daemon 中其它项目的 live 租约必须保留。
+    // Best-effort cleanup of this project's leftovers; live leases of other projects in the same daemon must stay.
     if (this.leaseEnabled) {
       try {
         releaseAllLspLeases(process.pid, this.options.leaseDir, this.projectRoot);
       } catch {
-        /* best-effort：租约清理失败不能影响关闭流程 */
+        /* best-effort: a failed lease cleanup must not break the shutdown path */
       }
     }
   }
@@ -850,7 +851,7 @@ export class LspManager {
 
   // ------------------------------------------------------- Resource governance (phase 1)
 
-  /** 本 manager 当前 live 的 family 数（已启动且未停止）。 */
+  /** Number of families this manager currently has live (started and not stopped). */
   private countLiveFamilies(): number {
     let live = 0;
     for (const entry of this.entries.values()) {
@@ -863,7 +864,7 @@ export class LspManager {
     return entry.child !== null && entry.state !== 'stopped';
   }
 
-  /** 「可安全关闭」：ready、无活跃请求、没有正在进行的启动/关闭；软上限与全局预算共用同一判据。 */
+  /** "Safe to stop": ready, no active requests, no start/stop in flight; the soft cap and the global budget share this predicate. */
   private isCloseable(entry: ServerEntry): boolean {
     return entry.child !== null
       && entry.state === 'ready'
@@ -872,7 +873,7 @@ export class LspManager {
       && !entry.shutdownPromise;
   }
 
-  /** 可关闭候选，按 `lastUsedAt` 升序（最久未使用在前）；`exclude` 用于排除正在请求的 family。 */
+  /** Stoppable candidates, ascending by `lastUsedAt` (least recently used first); `exclude` keeps the requesting family out. */
   private closeableEntries(exclude?: LspFamily): ServerEntry[] {
     const out: ServerEntry[] = [];
     for (const [family, entry] of this.entries) {
@@ -883,11 +884,13 @@ export class LspManager {
   }
 
   /**
-   * 每项目软上限（要求 b）：真正启动一个新的 family 之前，如果本 manager 的 live family 数
-   * 已达到 `profile.lspPerProjectSoftMax`，先关闭最久未使用的**空闲** server。
+   * Per-project soft cap (requirement b): before actually starting a new family, if this manager's
+   * live family count already reached `profile.lspPerProjectSoftMax`, stop the least recently used
+   * **idle** server first.
    *
-   * 软上限的含义：没有可关闭的空闲 server 时**不阻塞查询**，允许临时超出，只记一条 stderr
-   * 日志。绝不关闭有活跃请求（`activeQueries > 0`）或正在启动/关闭的 server。
+   * What the soft cap means: with no idle server to close, the query is **not blocked** — the cap
+   * may be exceeded temporarily and only a stderr line is logged. A server with active requests
+   * (`activeQueries > 0`) or a start/stop in flight is never closed.
    */
   private async evictForPerProjectLimit(starting: LspFamily): Promise<void> {
     if (!this.governanceActive) return;
@@ -907,16 +910,19 @@ export class LspManager {
   }
 
   /**
-   * 全局预算协作回收（要求 c + 开发计划 §4「超过全局上限时按最久未使用且无活跃请求的顺序退出」）。
+   * Cooperative global-budget reclaim (requirement c + plan §4: "past the global cap, exit least
+   * recently used and request-free first").
    *
-   * 语义是**跨 daemon 的全局 LRU**：超出的名额是 `excess = 租约总数 - lspGlobalMax`，
-   * 只有全局租约列表里**最旧的 excess 条**中属于本 manager（同项目根 + family）的空闲
-   * server 才让位；绝不为了凑数关闭「不是最旧」的自己的 server，否则持有最旧租约的另一个
-   * daemon 会继续超预算、而本 daemon 反复杀掉刚启动的服务器。
+   * The semantics are a **cross-daemon global LRU**: the overage is
+   * `excess = total leases - lspGlobalMax`, and only an idle server of this manager (same project
+   * root + family) sitting in the **oldest `excess`** leases steps aside. A server of ours that is
+   * *not* among the oldest is never closed just to make up numbers — otherwise the daemon holding
+   * the oldest leases keeps overspending while this one keeps killing freshly started servers.
    *
-   * 这是**协作式**设计：本方法只关闭自己的服务器，绝不跨进程 kill。最旧的那批租约都不属于
-   * 本 manager，或属于本 manager 但都有活跃请求时，什么都不做（只记 debug 日志）。
-   * 返回实际关闭的 family 列表（reason 一律为 `budget`）。
+   * This is **cooperative** by design: the method only closes its own servers and never kills across
+   * processes. When the oldest leases all belong to other managers, or to this one but with active
+   * requests, nothing happens (a debug line only). Returns the families actually closed, all with
+   * `reason: "budget"`.
    */
   async sweepGlobalBudget(now = this.nowMs()): Promise<LspFamily[]> {
     if (!this.leaseEnabled) return [];
@@ -925,7 +931,7 @@ export class LspManager {
 
     let leases: LspLeaseRecord[];
     try {
-      // listLiveLspLeases 已按 startedAt 升序（最旧在前）。
+      // listLiveLspLeases is already sorted by startedAt ascending (oldest first).
       leases = listLiveLspLeases(now, LSP_LEASE_STALE_MS, this.options.leaseDir);
     } catch {
       return [];
@@ -948,14 +954,14 @@ export class LspManager {
       return [];
     }
 
-    // 本 manager 自己的 LRU 顺序（lastUsedAt 升序），只保留最旧租约命中的 family。
+    // This manager's own LRU order (lastUsedAt ascending), keeping only the families the oldest leases hit.
     const candidates = this.closeableEntries().filter((entry) => oldestOwnFamilies.has(entry.family));
     const closed: LspFamily[] = [];
     let live = leases.length;
     for (const entry of candidates) {
       if (live <= max) break;
       const current = this.entries.get(entry.family);
-      // 候选是快照，关闭前再确认一次：期间可能已有新请求进来。
+      // The candidates are a snapshot; re-check before stopping, because new requests may have arrived.
       if (!current || !this.isCloseable(current)) continue;
       lspLog(`global LSP budget: ${live} live leases exceed max ${max}; closing idle ${entry.family} (oldest lease)`);
       await this.shutdownFamily(entry.family, 'budget');
@@ -972,10 +978,10 @@ export class LspManager {
   }
 
   /**
-   * 刷新本 manager 每个 live family 的租约心跳与资源指标（要求 d/e）。
+   * Refresh every live family's lease heartbeat and resource metrics (requirements d/e).
    *
-   * 由独立的 30 秒 unref 定时器调用，**不受 `idleSweep: false`（测试模式）影响**；
-   * 心跳间隔（30s）必须明显小于注册表的 60s 陈旧窗口。
+   * Called by its own 30s unref timer and **not affected by `idleSweep: false`** (test mode); the
+   * heartbeat interval (30s) must stay well below the registry's 60s staleness window.
    */
   heartbeatLeases(now = this.nowMs()): void {
     if (!this.leaseEnabled) return;
@@ -986,7 +992,7 @@ export class LspManager {
       try {
         heartbeatLspLease(this.projectRoot, entry.family, entry.activeQueries, now, this.options.leaseDir);
       } catch {
-        /* best-effort：单条心跳失败不影响其它 family */
+        /* best-effort: one failed heartbeat must not affect the other families */
       }
     }
     let globalLeases = 0;
@@ -999,7 +1005,7 @@ export class LspManager {
     if (liveServers === 0) this.clearLeaseTimer();
   }
 
-  /** 第一个 server 启动成功时创建；与 idle sweep 定时器相互独立。 */
+  /** Created when the first server starts successfully; independent of the idle-sweep timer. */
   private ensureLeaseTimer(): void {
     if (this.leaseTimer) return;
     this.leaseTimer = setInterval(() => {
@@ -1359,7 +1365,7 @@ export class LspManager {
       const freshEmpty = !entry.emptyRetryDone && this.shouldRetryAfterWarmup(entry);
       if (first.items.length > 0 || (!busy && !freshEmpty)) return { ...first, retried: false };
 
-      // 刚启动时的空诊断可能只是尚未分析完成，等索引稳定后再查一次。
+      // An empty result right after startup may just mean analysis is unfinished; look again once indexing settles.
       if (freshEmpty) entry.emptyRetryDone = true;
       await this.waitForIndexing(entry, true);
       const second = await this.collectDiagnostics(entry, uri, key, -1);
@@ -1616,8 +1622,8 @@ export class LspManager {
       };
     }
 
-    // 每项目软上限（要求 b）：只在「马上要真正启动一个新 family」时驱逐一次，
-    // 复用已有 server、配置不可用、并发共享启动的路径都不受影响。
+    // Per-project soft cap (requirement b): evict once, only when a new family is actually about to
+    // start; reusing an existing server, an unusable config and a shared concurrent start are unaffected.
     if (!entry.child) await this.evictForPerProjectLimit(family);
 
     entry.startPromise = this.startServer(entry);
@@ -1783,8 +1789,9 @@ export class LspManager {
       entry.capabilities = capabilitiesFromInitialize(result);
       connection.notify('initialized', {});
       entry.state = 'ready';
-      // 启动耗时指标 + 跨 daemon 租约（要求 d/e）：都在 initialize 成功后登记，
-      // 启动失败的 server 不写租约（否则会凭空多出一个全局 lease）。
+      // Start-duration metrics + the cross-daemon lease (requirements d/e) are both registered only
+      // after initialize succeeds; a server that failed to start writes no lease (it would otherwise
+      // add a global lease out of nowhere).
       const startedAt = entry.startedAt ?? this.nowMs();
       resourceMetrics().recordLspStart(Math.max(0, this.nowMs() - startedAt));
       if (this.leaseEnabled) {
@@ -1797,7 +1804,7 @@ export class LspManager {
           });
           this.ensureLeaseTimer();
         } catch {
-          /* best-effort：租约写入失败不影响服务器可用性 */
+          /* best-effort: a failed lease write must not affect server availability */
         }
       }
       lspLog(`${entry.family}: ${path.basename(resolvedPath)} ready (pid ${child.pid ?? '?'}, encoding ${entry.capabilities.positionEncoding}, diagnostics ${entry.capabilities.diagnostics})`);
@@ -1811,13 +1818,14 @@ export class LspManager {
       if (entry.state === 'stopped') return;
       entry.state = 'crashed';
       entry.lastError = `language server exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`;
-      // 服务器进程已经不存在：立即释放租约并记一条 crash 停止指标，避免崩溃后继续
-      // 占用全局预算（下一次查询重启成功时会重新 acquire / recordLspStart）。
+      // The server process is already gone: release the lease and record a crash stop metric right
+      // away, so a crash does not keep occupying global budget (the next successful restart
+      // acquires and records again).
       if (this.leaseEnabled) {
         try {
           releaseLspLease(this.projectRoot, entry.family, this.options.leaseDir);
         } catch {
-          /* best-effort：注册表不可用不影响崩溃处理 */
+          /* best-effort: an unavailable registry must not change crash handling */
         }
       }
       resourceMetrics().recordLspStop('crash');
@@ -1995,6 +2003,8 @@ export class LspManager {
   /**
    * Document sync: open documents only for the files this query touches; a disk change sends a
    * whole-document didChange (LSP allows full sync), and a vanished file sends didClose.
+   *
+   * The text comes from {@link readFileText}, so an unchanged file is neither re-read nor re-sent.
    */
   private async syncDocument(entry: ServerEntry, filePath: string, language: Language | null): Promise<void> {
     const uri = pathToUri(filePath);
@@ -2150,8 +2160,8 @@ export class LspManager {
       const first = extract(await this.request(entry, method, params, timeoutMs));
       if (first.length > 0) return { items: first, retried: false };
 
-      // 服务器报告忙碌时允许再次等待，例如 rust-analyzer 重新加载依赖；
-      // 首次启动的额外重试才受 emptyRetryDone 限制。
+      // A server that reports being busy may be waited on again (rust-analyzer reloading
+      // dependencies, for example); only the extra retry right after startup is gated by emptyRetryDone.
       const busy = this.isIndexing(entry);
       const freshEmpty = !entry.emptyRetryDone && this.shouldRetryAfterWarmup(entry);
       if (!busy && !freshEmpty) return { items: first, retried: false };
@@ -2163,7 +2173,7 @@ export class LspManager {
     });
   }
 
-  /** 等待服务器分析也属于正在使用，不能被空闲清理中断。 */
+  /** Waiting for the server to analyze is still "in use" and must not be interrupted by idle cleanup. */
   private async withActiveQuery<T>(entry: ServerEntry, query: () => Promise<T>): Promise<T> {
     entry.activeQueries += 1;
     try {
@@ -2241,8 +2251,9 @@ export class LspManager {
     if (this.idleTimer || this.config.idleTimeoutMs <= 0) return;
     this.idleTimer = setInterval(() => {
       void this.sweepIdle().catch((err) => lspDebug(`idle sweep failed: ${err instanceof Error ? err.message : String(err)}`));
-      // 全局预算协作回收复用同一个 30 秒节拍（要求 c）。注意 `idleTimeoutMs: 0` 表示
-      // 「常驻不退」，此时本定时器不创建，预算回收也随之关闭（与「不自动退出」的语义一致）。
+      // Cooperative global-budget reclaim reuses the same 30s tick (requirement c). Note that
+      // `idleTimeoutMs: 0` means "stay resident": the timer is not created and budget reclaim is off
+      // with it, consistent with "never exits on its own".
       void this.sweepGlobalBudget().catch(
         (err) => lspDebug(`global budget sweep failed: ${err instanceof Error ? err.message : String(err)}`),
       );
@@ -2282,13 +2293,13 @@ export class LspManager {
       for (const wake of waiters) wake();
       entry.diagnosticWaiters.delete(key);
     }
-    // 停止即释放租约并记一条停止指标（要求 d/e）：放在拆连接之前，避免全局计数
-    // 在「正在关闭」的窗口里仍把这个 server 算成 live。
+    // Stopping releases the lease and records a stop metric (requirements d/e); both run before the
+    // connection is torn down, so the global count does not treat a closing server as live.
     if (this.leaseEnabled) {
       try {
         releaseLspLease(this.projectRoot, entry.family, this.options.leaseDir);
       } catch {
-        /* best-effort：租约删除失败不能影响关闭流程；下一次 listLive 会自愈 */
+        /* best-effort: a failed lease delete must not break shutdown; the next listLive self-heals */
       }
     }
     resourceMetrics().recordLspStop(reason);

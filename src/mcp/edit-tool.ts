@@ -23,9 +23,10 @@ export const EDIT_TOOL_ANNOTATIONS: ToolAnnotations = {
 export const editTools: ToolDefinition[] = [
   {
     name: 'codegraph_edit',
-    // 工具描述保持「一句话定位 + 何时使用」（P0 问题 2）：apply/previewHash/operationId 的用法
-    // 属于参数行为，写在 schema 里；「canApply 为真且 blockers 为空才应用」以及重命名只认
-    // 语言服务器 + 已核实 Graph 引用的约束，在初始化说明的 Editing 段声明一次。
+    // The description stays "what it is + when to use it" (P0 issue 2): how apply/previewHash/
+    // operationId behave belongs to the schema, while "apply only when canApply is true and
+    // blockers is empty" and the rename constraints (language server plus verified Graph
+    // references) are stated once in the Editing section of the initialize instructions.
     description: 'Structured code write: rename, LSP code action, replace a definition, or insert code. Previews by default; writes are transactional.',
     inputSchema: {
       type: 'object',

@@ -6,7 +6,8 @@
  *   initialize / initialized / shutdown / exit / $/cancelRequest
  *   textDocument didOpen / didChange / didClose / publishDiagnostics
  *   definition / references / documentSymbol / diagnostic(pull)
- *   hover / implementation / typeDefinition / callHierarchy / typeHierarchy / codeAction
+ *   hover / implementation / typeDefinition / callHierarchy / typeHierarchy / codeAction /
+ *   completion / formatting
  *
  * Command-line switches:
  *   --log <file>               append one JSON line per received event (tests assert the request sequence)

@@ -232,7 +232,7 @@ export interface IndexOptions {
   verbose?: boolean;
   /** Watcher fast path: reconcile ONLY these project-relative paths (see ExtractionOrchestrator.sync). */
   paths?: string[];
-  /** 资源调度等级；普通保存、接口结构变化或全局配置变化。 */
+  /** Scheduling level: an ordinary save, an interface-level change, or a global configuration change. */
   taskLevel?: IndexTaskLevel;
   /** Re-extract unchanged file bytes when an extraction upgrade requires it. */
   force?: boolean;
@@ -544,7 +544,8 @@ export class CodeGraph {
 
     const instance = new CodeGraph(db, queries, resolvedRoot);
 
-    // 实例返回前由 init 持有；初始化索引失败时，调用方还拿不到实例来关闭连接。
+    // Held by init until the instance is returned; when the first indexing fails the caller has no
+    // instance yet to close connections with.
     try {
       if (options.index) {
         await instance.indexAll({ onProgress: options.onProgress });
@@ -776,8 +777,9 @@ export class CodeGraph {
    *
    * Uses a mutex to prevent concurrent indexing operations.
    *
-   * 阶段一基线：全量索引耗时/文件数记入进程内资源指标，供 `codegraph status`
-   * 与后续阶段的「索引时间相对阶段一基线增长」比较；记录本身不参与索引逻辑。
+   * Phase-one baseline: the full index duration/file count goes into the in-process resource
+   * metrics so `codegraph status` and later phases can compare growth against that baseline;
+   * recording it never affects indexing itself.
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
     return this.completeIndexAll(options, false);
@@ -1185,8 +1187,10 @@ export class CodeGraph {
   }
 
   /**
-   * 按文件执行一次显式局部刷新。普通正文修改只触碰该文件；接口、导出和
-   * 路由变化扩大到关联同步；项目配置变化走全项目 reconcile。
+   * One explicit targeted refresh for a file. The scope comes from the actual difference between
+   * the index snapshot and the current file (see planRefresh): a body-only change refreshes just
+   * the file, a changed export surface or import block also refreshes the dependents the resolver
+   * knows, and a project-config change goes through a full reconcile.
    */
   async refresh(filePath: string): Promise<RefreshResult> {
     const absolute = path.resolve(this.projectRoot, filePath);
@@ -1239,16 +1243,17 @@ export class CodeGraph {
    *
    * Uses a mutex to prevent concurrent indexing operations.
    *
-   * 阶段一基线：增量同步耗时与变更文件数记入资源指标。拿不到文件锁的零结果
-   * （durationMs 为 0）不计入基线，避免把「被别的进程挡住」误当成一次增量。
+   * Phase-one baseline: incremental sync duration and changed-file count go into the resource
+   * metrics. A zero result from an unavailable write lock (durationMs 0) is not counted, so being
+   * blocked by another process never reads as an incremental sync.
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
     return this.completeSync(options, false);
   }
 
   private async completeSync(options: IndexOptions, writerHeld: boolean): Promise<SyncResult> {
-    // 进程被中断后，局部同步只修复指定文件，不能宣称整个索引已恢复完整；
-    // 保留 indexing 标记，等下一次全量 reconcile 再关闭它（#1556）。
+    // After an interrupted process, a partial sync repairs only the named files and must not claim
+    // the whole index is whole again; the indexing marker stays until the next full reconcile (#1556).
     const recoveringPartialIndex = options.paths !== undefined
       && options.paths.length > 0
       && this.getIndexState() === 'indexing';
@@ -1928,7 +1933,7 @@ export class CodeGraph {
     return value;
   }
 
-  /** 统一索引状态快照，供 CLI、MCP 和 UI 共享。 */
+  /** The one index-status snapshot the CLI, MCP and UI share. */
   getIndexStatus(checkFiles = true): IndexStatus {
     const changes = checkFiles ? this.getChangedFiles() : { added: [], modified: [], removed: [] };
     const textChanges = checkFiles ? getFileTextChanges(this.db.getDb(), this.projectRoot) : null;
@@ -1968,11 +1973,12 @@ export class CodeGraph {
   }
 
   /**
-   * 把当前提取版本写进索引元数据。
+   * Write the current extraction version into the index metadata.
    *
-   * 只允许在“确认受影响的提取范围已全部重新提取”之后调用（`sync --upgrade-index` 的
-   * 增量迁移路径）：`isIndexStale()` 与 `codegraph status` 都读这个戳，提前盖上会让
-   * 状态说谎。完整重建由 indexAll 自己盖戳，不需要走这里。
+   * Only call this once the affected extraction scope has all been re-extracted for sure (the
+   * incremental path of `sync --upgrade-index`): `isIndexStale()` and `codegraph status` both read
+   * this stamp, and setting it early makes the status lie. A full rebuild stamps it through
+   * indexAll itself and does not come here.
    */
   stampExtractionVersion(): void {
     try {
@@ -2564,18 +2570,18 @@ export class CodeGraph {
   }
 
   /**
-   * 资源治理状态（阶段一）：生效档位 + 本进程已上报的实际资源状态。
+   * Resource-governance status (phase one): the effective profile plus what this process reported.
    *
-   * 刻意只读内存与磁盘上的快照：**不启动任何 LSP、不探测进程**，所以
-   * `codegraph status` 可以在任何时刻安全调用。语言服务器的跨 daemon 实时数量
-   * 由 `listLiveLspLeases()` 单独读取，不在这里触发。
+   * Deliberately reads only in-memory and on-disk snapshots — **it starts no LSP and probes no
+   * process** — so `codegraph status` is safe to call at any moment. The cross-daemon live count of
+   * language servers is read separately through `listLiveLspLeases()` and is not triggered here.
    */
   resourceStatus(): {
     profile: ReturnType<typeof resolveResourceProfile>;
     description: string;
-    /** 本进程内的实时计数（CLI 单独运行时通常是零值）。 */
+    /** The live count inside this process (usually zero when the CLI runs on its own). */
     process: ResourceMetricsSnapshot;
-    /** daemon 周期写入的快照；不存在时为 null（例如 daemon 未运行）。 */
+    /** The snapshot the daemon writes periodically; null when there is none (the daemon is not running). */
     reported: ResourceMetricsSnapshot | null;
   } {
     const profile = resolveResourceProfile();
@@ -2602,7 +2608,7 @@ export class CodeGraph {
     return editCode(this, this.getLspManager(), request);
   }
 
-  /** 启动时恢复中断事务；完整提交保留源码结果并补做一次索引刷新。 */
+  /** Recover interrupted transactions at startup; a fully committed edit keeps its source result and gets one index refresh. */
   private async recoverInterruptedEdits(): Promise<void> {
     const recovered = recoverPendingEditTransactions(this.projectRoot);
     const committed = recovered.filter((item) => item.needsIndexSync);

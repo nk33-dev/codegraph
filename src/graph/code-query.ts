@@ -95,7 +95,7 @@ export interface CodeSymbol {
   endColumn: number;
   parentId: string | null;
   freshness: FileFreshness;
-  /** 该符号与行号所属的索引生成版本。 */
+  /** The index generation the symbol and its line belong to. */
   indexVersion?: string | null;
 }
 
@@ -108,7 +108,7 @@ export interface CodeReference {
   evidence?: RelationEvidence;
   /** Stays null when there is no call-site coordinate; it must not impersonate the source function's definition position. */
   site: { filePath: string; line: number | null; column: number | null };
-  /** 同一关系的所有去重位置；只有多个位置时才出现。 */
+  /** Every deduplicated site of one relation; present only when there is more than one. */
   sites?: Array<{ filePath: string; line: number | null; column: number | null }>;
   indexVersion?: string | null;
 }
@@ -253,7 +253,7 @@ export interface AffectedTestItem {
   distance: number;
   reason: 'changed' | 'dependent';
   confidence: 'direct' | 'high' | 'indirect';
-  /** 文件名与改动路径有明确主题交集时为 focused，其余仍是依赖图确认的 related。 */
+  /** `focused` when the file name and the changed path share a clear subject; otherwise still `related`, as confirmed by the dependency graph. */
   priority: 'focused' | 'related';
   testTypes: TestType[];
   /** Deduplicated, sorted predecessor files on the shortest path at the selected confidence. */
@@ -325,7 +325,7 @@ export interface IndexBlock {
   /** null means no full working-tree scan was done; it does not mean the whole index matches disk. */
   changes: ReturnType<CodeGraph['getChangedFiles']> | null;
   changeCounts: { added: number; modified: number; removed: number } | null;
-  /** 供调用方快速判断索引和工作区是否同步的摘要。 */
+  /** A summary callers can use to tell at a glance whether the index and the working tree agree. */
   freshness: 'current' | 'syncing' | 'stale' | 'degraded' | 'unverified';
   freshnessReason: string | null;
   stats: GraphStats | null;
@@ -397,7 +397,7 @@ export interface CodeQueryResult {
   filenameCandidates?: import('./change-impact').AffectedTestsAnalysis['filenameCandidates'];
   page: { offset: number; limit: number; total: number; nextOffset: number | null };
   index: IndexBlock | null;
-  /** 仅 status 模式返回当前服务进程的版本与构建提交。 */
+  /** Returned by status mode only: the running service process's version and build commit. */
   runtime: RuntimeBuildIdentity | null;
   lsp: LspResultBlock | null;
   /** Which source the request resolved to, why, and whether the shared daemon served it. */
@@ -847,7 +847,7 @@ export function makeSymbolBuilder(cg: CodeGraph, root: string): (node: Node) => 
 
 type GraphRelation = { edge: Edge; source: Node; target: Node };
 
-/** 同一关系的多个位置合并到一行分页结果，同时保留调用点。 */
+/** Several sites of one relation collapse into a single paginated row while the call sites are kept. */
 function groupGraphRelations(
   relations: GraphRelation[],
   symbol: (node: Node) => CodeSymbol,

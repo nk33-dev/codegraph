@@ -72,7 +72,7 @@ export interface CodeQueryRouteDeps {
 
 const MERGE_SOURCE_PAGE_SIZE = 200;
 
-/** 合并前取全两侧结果，避免把调用方的 offset 在单侧和合并结果上重复应用。 */
+/** Fetch both sides in full before merging, so the caller's offset applies once to the merged result instead of once per side. */
 async function collectSourceResult(
   query: (request: CodeQueryRequest) => CodeQueryResult | Promise<CodeQueryResult>,
   request: CodeQueryRequest,

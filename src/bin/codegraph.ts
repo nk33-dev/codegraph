@@ -94,7 +94,7 @@ import { readResourceMetricsSnapshot, reportedSnapshotState, resourceMetrics, wr
 import { describeResourceProfile, resolveResourceProfile, resolveQueryPoolSizing } from '../resource-profile';
 import { countLiveLspLeases } from '../lsp/lease-registry';
 import type { Node, Edge } from '../types';
-// 只作类型使用：运行时仍通过 loadCodeGraph() 懒加载，保持 CLI 冷启动不变。
+// Types only: the runtime still lazy-loads through loadCodeGraph(), keeping CLI cold start unchanged.
 import type CodeGraphInstance from '../index';
 import type { SyncResult } from '../index';
 
@@ -813,8 +813,8 @@ async function runInit(
       );
     }
 
-    // 跨层 HTTP 关联是可选的。两种位置使用同一份 schema：本地覆盖写入
-    // .codegraph/codegraph.json，团队共享写入项目根 codegraph.json。
+    // Cross-layer HTTP correlation is optional. Both locations use the same schema: the local
+    // override goes to .codegraph/codegraph.json, the team-shared one to codegraph.json at the root.
     if (!options.yes && process.stdin.isTTY && process.stdout.isTTY) {
       const enabled = await clack.confirm({
         message: '启用前后端 HTTP 接口关联（Axios/fetch ↔ Spring/Express 等路由）？',
@@ -904,8 +904,8 @@ async function runInit(
     } catch { /* non-fatal */ }
 
     clack.outro('Done');
-    // 阶段一：把这次全量索引的耗时/文件数留成基线（`codegraph status` 的
-    // Baselines 段读取的就是这份快照）。
+    // Phase one: keep this full index's duration/file count as the baseline (the Baselines section
+    // of `codegraph status` reads exactly this snapshot).
     persistResourceBaseline(projectPath);
     cg.destroy();
   } catch (err) {
@@ -1122,13 +1122,15 @@ program
   });
 
 /**
- * `codegraph sync --upgrade-index` —— 把索引升级到当前提取版本（个人版）。
+ * `codegraph sync --upgrade-index` — upgrade the index to the current extraction version (personal fork).
  *
- * 为什么不是一个提示就够了：以前这里只提醒 “run codegraph index -f .”，大仓库上那是一次
- * 没有预告、没有确认的完整重建。现在这条命令
- *   1. 先算清楚范围、文件数、预计耗时与预计峰值磁盘（依据会一起说明）；
- *   2. 提取规则兼容（受影响语言有登记）时只重新提取那些语言，再补分辨率并如实盖戳；
- *   3. 范围未知时按完整重建处理，并要求用户确认（非交互运行必须显式 --yes）。
+ * Why a warning alone is not enough: this used to say only "run codegraph index -f .", which on a
+ * large repository is a full rebuild with no forecast and no confirmation. This command instead
+ *   1. works out the scope, file count, estimated time and estimated peak disk, with the evidence;
+ *   2. re-extracts only the affected languages when their extraction rules are compatible (those
+ *      languages are registered), then re-resolves and stamps the result honestly;
+ *   3. falls back to a full rebuild when the scope is unknown and asks the user to confirm
+ *      (a non-interactive run must pass --yes explicitly).
  */
 async function runIndexUpgrade(
   projectPath: string,
@@ -1163,7 +1165,7 @@ async function runIndexUpgrade(
 
   if (!options.yes) {
     if (!process.stdout.isTTY || !process.stdin.isTTY || options.quiet) {
-      // 非交互运行（agent / CI / git hook）不允许猜着重建：把计划打出来，要求显式确认。
+      // A non-interactive run (agent / CI / git hook) must not rebuild on a guess: print the plan and require explicit confirmation.
       error(lines);
       error('Re-run with --yes to run this upgrade non-interactively.');
       process.exit(1);
@@ -1361,11 +1363,12 @@ program
   });
 
 /**
- * 资源治理状态（阶段一）。
+ * Resource-governance status (phase one).
  *
- * 只读三样东西：环境变量解析出的档位、本进程刚记录到的指标、以及磁盘上由
- * daemon 周期写入的快照与全局 LSP 租约文件。**刻意不启动任何语言服务器**，
- * 因此 `codegraph status` 在任何时刻都能安全执行（开发计划 §5 验收标准）。
+ * It reads exactly three things: the profile resolved from environment variables, the metrics this
+ * process just recorded, and the on-disk daemon snapshot plus global LSP lease files. It
+ * **deliberately starts no language server**, so `codegraph status` is safe to run at any moment
+ * (acceptance criterion §5 of the plan).
  */
 function collectResourceReport(projectPath: string): {
   profile: ReturnType<typeof resolveResourceProfile>;
@@ -1399,12 +1402,12 @@ function collectResourceReport(projectPath: string): {
   };
 }
 
-/** 把本进程记录的资源基线写进 `.codegraph/`，让没跑 daemon 的 status 也能看到。 */
+/** Write this process's resource baseline into `.codegraph/`, so status sees it even without a daemon. */
 function persistResourceBaseline(projectPath: string): void {
   try {
     writeResourceMetricsSnapshot(projectPath, resourceMetrics().snapshot());
   } catch {
-    /* best-effort：基线写不进去不影响索引结果 */
+    /* best-effort: a baseline that cannot be written does not change the index result */
   }
 }
 
@@ -1457,7 +1460,7 @@ program
       // Zero on a healthy index; non-zero at rest means a resolution pass was
       // interrupted, so some files' call edges are missing (#1187).
       const pendingRefs = cg.getPendingReferenceCount();
-      // 资源治理（阶段一）：档位 + 实际资源状态，全程不启动 LSP。
+      // Resource governance (phase one): the profile plus actual resource state; no LSP is started.
       const resources = collectResourceReport(projectPath);
 
       // JSON output mode
@@ -1518,7 +1521,7 @@ program
             queryPoolMax: resources.poolMax,
             queryPoolSource: resources.poolSource,
             liveLspLeases: resources.liveLeases,
-            // daemon 周期写入的快照；daemon 未运行时为 null。
+            // The snapshot the daemon writes periodically; null when the daemon is not running.
             reported: resources.snapshot,
             reportedState: resources.snapshotState,
             reportedAgeMs: resources.snapshotAgeMs,
@@ -1594,7 +1597,7 @@ program
       console.log(`  Journal:   ${journalLabel}`);
       console.log();
 
-      // Resource governance (阶段一). Purely informational: reading the profile
+      // Resource governance (phase one). Purely informational: reading the profile
       // and the daemon's metrics snapshot starts no language server.
       console.log(chalk.bold('Resource Governance:'));
       const profileLabel = resources.profile.governanceEnabled
@@ -1640,8 +1643,8 @@ program
           `  LSP usage: ${lsp.liveServers} live, ${lsp.starts} starts/${lsp.stops} stops (idle ${lsp.idleStops}, budget ${lsp.budgetStops}), ` +
           (live ? `reported ${age}s ago by pid ${reported.pid}` : `last reported ${age}s ago by pid ${reported.pid}`)
         );
-        // 首个调用的 catch-up 门等待：与 queries 的 p95（检索耗时）分开显示，
-        // 否则分不清冷启动对账和检索本身谁在吃时延。旧快照没有这个字段。
+        // First-call catch-up gate wait: shown apart from queries' p95 (retrieval time), otherwise
+        // cold-start reconciliation and retrieval itself blur together. Old snapshots lack this field.
         const catchUp = reported.catchUp;
         if (catchUp && catchUp.count > 0) {
           console.log(
@@ -1917,9 +1920,9 @@ program
  */
 program
   .command('edit [symbol]')
-  .description('Structured edit: rename, code-action, replace-body, insert-before, insert-after (previews unless --apply)')
+  .description('Structured edit: rename, code-action, format, replace-body, insert-before, insert-after (previews unless --apply)')
   .option('-p, --path <path>', 'Project path')
-  .option('--operation <operation>', 'rename, code-action, replace-body, insert-before, or insert-after', 'rename')
+  .option('--operation <operation>', 'rename, code-action, format, replace-body, insert-before, or insert-after', 'rename')
   .option('--file <file>', 'Exact project-relative file; pins the target when a name matches several definitions')
   .option('--line <number>', 'rename/code-action: 1-based target line')
   .option('--column <number>', 'rename/code-action: 0-based UTF-16 column (default 0)')
@@ -1974,7 +1977,7 @@ program
       if (options.expectPreviewHash !== undefined) args.expectPreviewHash = options.expectPreviewHash;
       if (options.operationId !== undefined) args.operationId = options.operationId;
 
-      // 编辑只复用已经运行的 daemon；一旦找到活动 daemon，调用未确认时也不在本进程重放。
+      // Editing only reuses an already running daemon; once an active daemon is found, an unconfirmed call is not replayed in this process either.
       const { callViaSharedDaemonAtMostOnce, sharedServiceEnabled } = await import('../mcp/daemon-client');
       if (sharedServiceEnabled()) {
         const shared = await callViaSharedDaemonAtMostOnce(projectPath, 'codegraph_edit', args);
@@ -1991,9 +1994,10 @@ program
           );
         }
         if (shared.state === 'version-mismatch') {
-          // 版本不一致是在 hello 握手阶段发现的：这次 tools/call 从未送达，因此在本进程执行
-          // 不会重复写入（at-most-once 语义仍然成立）。同时旧进程已经被请走，下次调用就能
-          // 直接连上新版 daemon —— 用户不必再手工 `codegraph daemon` 停旧进程。
+          // The version mismatch is found during the hello handshake: this tools/call was never
+          // delivered, so running it in this process cannot double-write (at-most-once still
+          // holds). The old process has been asked to leave, so the next call connects to the new
+          // daemon directly — no manual `codegraph daemon` restart needed.
           warn(
             `the running daemon (pid ${shared.daemonPid}, v${shared.daemonVersion ?? 'unknown'}) is a different CodeGraph ` +
             `version than this CLI (v${packageJson.version}); ` +
@@ -2585,8 +2589,9 @@ program
     const { listVerifiedDaemons, stopDaemonAt, stopAllDaemons } = await import('../mcp/daemon-registry');
     const { runDaemonPicker } = await import('../mcp/daemon-manager');
 
-    // 一键重启：升级后旧 daemon 仍在跑时的手工出口。自动切换已经覆盖了“客户端发现版本不一致”
-    // 的场景，这条命令留给“我没有客户端在跑，但想把 daemon 换成当前版本”。
+    // One-shot restart: the manual way out when an old daemon still runs after an upgrade. The
+    // automatic switch already covers "a client noticed the version mismatch"; this command is for
+    // "no client is running, but I want the daemon on the current version".
     if (options.restart) {
       const projectPath = resolveProjectPath(options.path);
       if (!isInitialized(projectPath)) {
@@ -3574,7 +3579,7 @@ program
         const expectedRoot = path.join(npmRoot?.code === 0 ? npmRoot.stdout.trim() : '', packageJson.name);
         globalInstall = npmRoot?.code === 0
           && path.relative(fs.realpathSync(expectedRoot), fs.realpathSync(path.resolve(__dirname, '..', '..'))) === '';
-      } catch { /* 无法确认当前全局目录时，不能新建另一份安装冒充原地升级。 */ }
+      } catch { /* when the current global directory cannot be confirmed, do not create another install and call it an in-place upgrade */ }
       if (!globalInstall) {
         error('This entry is not the package in the active npm global prefix. Use its original package manager or resolve the competing install with `codegraph doctor`.');
         process.exit(1);
@@ -3594,14 +3599,14 @@ program
         ? up.defaultCapture('cmd.exe', ['/d', '/s', '/c', 'codegraph doctor --json'])
         : up.defaultCapture('codegraph', ['doctor', '--json']);
       let installed: ReturnType<typeof runtimeInfo> | null = null;
-      try { if (probe?.code === 0) installed = JSON.parse(probe.stdout); } catch { /* 旧入口可能没有 doctor。 */ }
+      try { if (probe?.code === 0) installed = JSON.parse(probe.stdout); } catch { /* an older entry point may have no doctor */ }
       const reported = installed?.version;
       let matchesEntry = false;
       try {
         matchesEntry = installed?.distribution === 'personal'
           && installed.packageName === packageJson.name
           && path.relative(fs.realpathSync(installed.packageRoot), fs.realpathSync(path.resolve(__dirname, '..', '..'))) === '';
-      } catch { /* PATH 指向了不存在或无法确认的包。 */ }
+      } catch { /* PATH points at a package that is missing or cannot be confirmed */ }
       if (!matchesEntry || !reported || !up.parseSemver(reported) || up.compareVersions(reported, target) !== 0) {
         warn(`Installed ${target}, but the active PATH entry's package identity or version could not be verified (reported: ${reported ?? 'unknown'}).`);
         console.log('Run `codegraph doctor` to find and remove the stale competing entry. Client configs were not refreshed.');

@@ -52,9 +52,12 @@ const MAX_RELATED_FILES = 200;
 /**
  * Plan the scope and resource level of one targeted refresh.
  *
- * 这是有意保守的语法启发式：普通函数体修改只刷新该文件；接口、导出
- * 和路由相关变更刷新关联图；项目配置变更刷新整个项目。无法读取文件时
- * 按普通文件处理，真正的 sync 仍会以文件系统为最终事实来源。
+ * The decision comes from the actual change, not from whether the file mentions interface/export/
+ * route keywords anywhere: the index's symbol snapshot is compared with the symbols the same
+ * extractor produces from the current text, and only a changed export surface or import block widens
+ * the refresh to the dependents the resolved symbol graph names. A body-only edit stays inside the
+ * file; an unreadable file is treated as an ordinary one, because the sync itself still treats the
+ * filesystem as the source of truth.
  */
 export function planRefresh(projectRoot: string, filePath: string, sources: RefreshSources): RefreshPlan {
   const normalized = filePath.replace(/\\/g, '/').replace(/^\.\//, '');

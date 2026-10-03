@@ -78,7 +78,7 @@ export interface CodeEditRequest {
    * The hash and ID below are optional bindings for a reviewed two-step write.
    */
   apply?: boolean;
-  /** 仅影响 CLI/MCP 文本展示；结构化结果、预览哈希与 operation ID 不变。 */
+  /** Only affects CLI/MCP text rendering; the structured result, preview hash and operation ID stay the same. */
   verbosePreview?: boolean;
   /** apply only, optional: bind the write to a previous preview; a mismatch refuses to write. */
   expectPreviewHash?: string;
@@ -422,7 +422,7 @@ export function summarizeEditFiles(files: EditFilePreview[]): CodeEditSummary {
   };
 }
 
-/** MCP/CLI 默认文本摘要；完整编辑始终保留在 structuredContent，verbose 时才原样输出。 */
+/** The default MCP/CLI text summary; the full edit always stays in structuredContent and is printed verbatim only with verbose. */
 export function formatCodeEditText(result: CodeEditResult, verbose = false): string {
   if (verbose) return JSON.stringify(result);
   const compactText = (text: string): string => text.length <= 240 ? text : `${text.slice(0, 239)}…`;
@@ -455,7 +455,7 @@ export function formatCodeEditText(result: CodeEditResult, verbose = false): str
     previewHash: result.previewHash,
     operationId: result.operationId,
     routing: result.routing,
-    // 冲突、事务恢复和写后索引状态不能被摘要隐藏。
+    // Conflict, transaction recovery and post-write index state must not be hidden by the summary.
     applied: result.applied,
     warnings: result.warnings,
   });

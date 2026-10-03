@@ -25,7 +25,7 @@ import { lineStartOffsets, offsetAt, type InternalPosition } from './text-edits'
 const MAX_AMBIGUOUS_LISTED = 5;
 
 export interface ResolvedEditTarget {
-  /** The index node the operation applies to; null only for a position-based rename with no covering node. */
+  /** The index node the operation applies to; null for a position-based rename with no covering node, or a whole-file operation. */
   node: Node | null;
   /** Project-relative path (forward slashes). */
   filePath: string;
