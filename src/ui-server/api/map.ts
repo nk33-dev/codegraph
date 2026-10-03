@@ -34,6 +34,9 @@
  * excluded rides on the payload so the side panel can say so.
  */
 
+import { collapseLoneRootFiles, levelEnds, moduleIdFor, normalizeRoot, passThroughDirs } from '../../graph/module-map';
+import { tarjan } from '../../graph/scc';
+import { MODULE_DEPENDENCY_EDGE_KINDS } from '../../graph/architecture';
 import type { CodeGraph } from '../../index';
 import type { EdgeKind, Language } from '../../types';
 import { isTestFile } from '../../search/query-utils';
@@ -45,16 +48,11 @@ import { UNCERTAIN_BELOW, toPosixPath, wireList, type WireList } from './wire';
  *
  * `contains` is absent on purpose — a file containing its own symbols is not a
  * dependency, and including it would make every module depend on itself.
+ *
+ * Re-exported from `src/graph/architecture.ts` so the map and `codegraph architecture` count the
+ * same relationships.
  */
-export const MAP_EDGE_KINDS: readonly EdgeKind[] = [
-  'calls',
-  'imports',
-  'references',
-  'instantiates',
-  'extends',
-  'implements',
-  'navigates',
-];
+export const MAP_EDGE_KINDS: readonly EdgeKind[] = MODULE_DEPENDENCY_EDGE_KINDS;
 
 /**
  * The kinds whose symbol pairs the tooltip names.
@@ -87,9 +85,6 @@ const MAX_DEPTH = 4;
 
 // Module grouping and cycle detection live in `src/graph/` so the architecture report and this
 // map cannot disagree about what a module is. The public names are re-exported below.
-import { collapseLoneRootFiles, levelEnds, moduleIdFor, normalizeRoot, passThroughDirs } from '../../graph/module-map';
-import { tarjan } from '../../graph/scc';
-
 export { moduleIdFor, normalizeRoot, passThroughDirs, rootFilesId } from '../../graph/module-map';
 
 // =============================================================================

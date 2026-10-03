@@ -84,6 +84,9 @@ const impactRules = [
   [/^src\/sync\/worktree\.ts$/, /^__tests__\/worktree-detection\.test\.ts$/],
   [/^ui\/src\//, /^__tests__\/ui-package\.test\.ts$/],
   [/^__tests__\/fixtures\/fake-lsp-server\.js$/, /^__tests__\/(?:lsp|edit-lsp)-.*\.test\.ts$/],
+  // The architecture report reads project config and adds a query of its own; the direct-import
+  // graph does not connect either file to the report's test.
+  [/^src\/(?:project-config|db\/queries)\.ts$/, /^__tests__\/(?:architecture|project-config).*\.test\.ts$/],
 ];
 
 for (const file of changed) {

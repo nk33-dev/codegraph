@@ -12,7 +12,7 @@
  */
 
 /** Normalize backslashes so the same path is one module on every platform. */
-const toPosixPath = (p: string): string => p.replace(/\\/g, '/');
+export const toPosixPath = (p: string): string => p.replace(/\\/g, '/');
 
 /**
  * Basenames that stay their own box when they sit loose in a module root.

@@ -93,6 +93,39 @@ export interface ProjectConfig {
     clientPaths?: string[];
     serverPaths?: string[];
   };
+  /**
+   * Dependency boundary rules for `codegraph architecture`. Committed rather than local: a
+   * forbidden direction is a property of the codebase, not of one machine.
+   */
+  architecture?: {
+    /** Directory the module grouping starts at; `''` (the default) is the repository root. */
+    root?: string;
+    /** Path segments under `root` that name a module; default 2, so `src/graph` and `src/bin` differ. */
+    depth?: number;
+    /** Edges below this confidence are left out of every count; default 0.6. */
+    minConfidence?: number;
+    /** Only count edges the source writes down; default true. */
+    requireDeclared?: boolean;
+    boundaries?: {
+      deny?: Array<{ from?: string; to?: string; reason?: string }>;
+    };
+  };
+}
+
+/** One forbidden dependency direction; `from`/`to` are module ids or directory prefixes. */
+export interface ArchitectureBoundaryRule {
+  from: string;
+  to: string;
+  reason?: string;
+}
+
+/** Validated view of the project's `architecture` settings. */
+export interface ArchitectureConfig {
+  root: string;
+  depth: number;
+  minConfidence: number;
+  requireDeclared: boolean;
+  deny: ArchitectureBoundaryRule[];
 }
 
 /** Parsed, validated view of a project's `codegraph.json`. */
@@ -107,6 +140,9 @@ interface ParsedConfig {
     clientPaths: string[];
     serverPaths: string[];
   };
+  architecture: ArchitectureConfig;
+  /** Which `architecture` sub-keys this layer actually set, so an overlay only overrides those. */
+  architecturePresent: ReadonlySet<string>;
   /** Top-level keys explicitly present in this file, for overlay merging. */
   present: ReadonlySet<string>;
 }
@@ -115,6 +151,11 @@ interface CacheEntry {
   signature: string;
   config: ParsedConfig;
 }
+
+/** Path segments under `architecture.root` that name a module by default. */
+const DEFAULT_ARCHITECTURE_DEPTH = 2;
+/** Edges below this confidence are left out of the architecture counts by default. */
+const DEFAULT_ARCHITECTURE_MIN_CONFIDENCE = 0.6;
 
 /**
  * Cache keyed by project root. The loader is called once per indexing/scan/sync
@@ -136,6 +177,14 @@ const EMPTY_CONFIG: ParsedConfig = Object.freeze({
     clientPaths: Object.freeze([]) as unknown as string[],
     serverPaths: Object.freeze([]) as unknown as string[],
   }),
+  architecture: Object.freeze({
+    root: '',
+    depth: DEFAULT_ARCHITECTURE_DEPTH,
+    minConfidence: DEFAULT_ARCHITECTURE_MIN_CONFIDENCE,
+    requireDeclared: true,
+    deny: Object.freeze([]) as unknown as ArchitectureBoundaryRule[],
+  }),
+  architecturePresent: new Set<string>(),
   present: new Set<string>(),
 });
 
@@ -192,6 +241,7 @@ function parseConfig(file: string): ParsedConfig {
   const include = extractInclude(parsed, file);
   const deprioritize = extractPatternList(parsed, file, 'deprioritize');
   const apiCorrelation = extractApiCorrelation(parsed, file);
+  const { config: architecture, present: architecturePresent } = extractArchitecture(parsed, file);
   if (
     extensions === EMPTY_EXTENSIONS &&
     includeIgnored.length === 0 &&
@@ -201,16 +251,31 @@ function parseConfig(file: string): ParsedConfig {
     && apiCorrelation.enabled === true
     && apiCorrelation.clientPaths.length === 0
     && apiCorrelation.serverPaths.length === 0
+    && architecture === EMPTY_CONFIG.architecture
     && present.size === 0
   ) {
     return EMPTY_CONFIG;
   }
-  return { extensions, includeIgnored, exclude, include, deprioritize, apiCorrelation, present };
+  return {
+    extensions,
+    includeIgnored,
+    exclude,
+    include,
+    deprioritize,
+    apiCorrelation,
+    architecture,
+    architecturePresent,
+    present,
+  };
 }
 
 /** Merge a local overlay without letting absent keys erase shared settings. */
 function mergeConfig(base: ParsedConfig, overlay: ParsedConfig): ParsedConfig {
   const pick = <T>(key: string, shared: T, local: T): T => overlay.present.has(key) ? local : shared;
+  // `architecture` merges one level deeper: a local file that only turns off `requireDeclared`
+  // must not wipe the shared `boundaries.deny` list, which is the part that carries the rules.
+  const arch = overlay.architecturePresent;
+  const pickArch = <T>(key: keyof ArchitectureConfig, shared: T, local: T): T => arch.has(key) ? local : shared;
   return {
     extensions: pick('extensions', base.extensions, overlay.extensions),
     includeIgnored: pick('includeIgnored', base.includeIgnored, overlay.includeIgnored),
@@ -218,8 +283,94 @@ function mergeConfig(base: ParsedConfig, overlay: ParsedConfig): ParsedConfig {
     include: pick('include', base.include, overlay.include),
     deprioritize: pick('deprioritize', base.deprioritize, overlay.deprioritize),
     apiCorrelation: pick('apiCorrelation', base.apiCorrelation, overlay.apiCorrelation),
+    architecture: {
+      root: pickArch('root', base.architecture.root, overlay.architecture.root),
+      depth: pickArch('depth', base.architecture.depth, overlay.architecture.depth),
+      minConfidence: pickArch('minConfidence', base.architecture.minConfidence, overlay.architecture.minConfidence),
+      requireDeclared: pickArch('requireDeclared', base.architecture.requireDeclared, overlay.architecture.requireDeclared),
+      // The rule list hangs off `boundaries`, so that is the key that decides it.
+      deny: arch.has('boundaries') ? overlay.architecture.deny : base.architecture.deny,
+    },
+    architecturePresent: new Set([...base.architecturePresent, ...overlay.architecturePresent]),
     present: new Set([...base.present, ...overlay.present]),
   };
+}
+
+/**
+ * Validate the `architecture` block. Every failure mode degrades to the default for that field —
+ * a malformed rule is dropped with a warning rather than making the whole section unusable.
+ *
+ * The returned `present` set names the sub-keys this layer actually set, so a local overlay only
+ * overrides what it mentions.
+ */
+function extractArchitecture(
+  parsed: object,
+  file: string
+): { config: ArchitectureConfig; present: ReadonlySet<string> } {
+  const raw = (parsed as ProjectConfig).architecture;
+  if (raw === undefined) return { config: EMPTY_CONFIG.architecture, present: new Set<string>() };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    logWarn(`Ignoring "architecture" in ${PROJECT_CONFIG_FILENAME}: must be an object`, { file });
+    return { config: EMPTY_CONFIG.architecture, present: new Set<string>() };
+  }
+  const present = new Set(Object.keys(raw));
+
+  const readDepth = (value: unknown): number => {
+    if (value === undefined) return DEFAULT_ARCHITECTURE_DEPTH;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 4) {
+      logWarn(`Ignoring "architecture.depth" in ${PROJECT_CONFIG_FILENAME}: must be an integer from 1 to 4`, { file });
+      return DEFAULT_ARCHITECTURE_DEPTH;
+    }
+    return value;
+  };
+  const readConfidence = (value: unknown): number => {
+    if (value === undefined) return DEFAULT_ARCHITECTURE_MIN_CONFIDENCE;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+      logWarn(`Ignoring "architecture.minConfidence" in ${PROJECT_CONFIG_FILENAME}: must be a number from 0 to 1`, { file });
+      return DEFAULT_ARCHITECTURE_MIN_CONFIDENCE;
+    }
+    return value;
+  };
+
+  const denyRaw = raw.boundaries?.deny;
+  const deny: ArchitectureBoundaryRule[] = [];
+  if (denyRaw !== undefined) {
+    if (!Array.isArray(denyRaw)) {
+      logWarn(`Ignoring "architecture.boundaries.deny" in ${PROJECT_CONFIG_FILENAME}: must be an array`, { file });
+    } else {
+      for (const entry of denyRaw) {
+        const from = typeof entry?.from === 'string' ? normalizeModulePrefix(entry.from) : '';
+        const to = typeof entry?.to === 'string' ? normalizeModulePrefix(entry.to) : '';
+        if (!from || !to) {
+          logWarn(`Ignoring a boundary rule in ${PROJECT_CONFIG_FILENAME}: "from" and "to" must be non-empty module paths`, { file });
+          continue;
+        }
+        const rule: ArchitectureBoundaryRule = { from, to };
+        if (typeof entry?.reason === 'string' && entry.reason.trim()) rule.reason = entry.reason.trim();
+        deny.push(rule);
+      }
+    }
+  }
+
+  const root = typeof raw.root === 'string' ? normalizeModulePrefix(raw.root) : '';
+  const requireDeclared = raw.requireDeclared === undefined ? true : raw.requireDeclared === true;
+  const depth = readDepth(raw.depth);
+  const minConfidence = readConfidence(raw.minConfidence);
+  if (
+    root === '' &&
+    depth === DEFAULT_ARCHITECTURE_DEPTH &&
+    minConfidence === DEFAULT_ARCHITECTURE_MIN_CONFIDENCE &&
+    requireDeclared &&
+    deny.length === 0
+  ) {
+    return { config: EMPTY_CONFIG.architecture, present: new Set<string>() };
+  }
+  return { config: { root, depth, minConfidence, requireDeclared, deny }, present };
+}
+
+/** A module path as the report compares it: posix, no leading `./`, no trailing slash. */
+function normalizeModulePrefix(raw: string): string {
+  return raw.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
 }
 
 function extractApiCorrelation(parsed: object, file: string): ParsedConfig['apiCorrelation'] {
@@ -436,6 +587,16 @@ export function loadExcludePatterns(rootDir: string): string[] {
  */
 export function loadDeprioritizePatterns(rootDir: string): string[] {
   return loadParsedConfig(rootDir).deprioritize;
+}
+
+/**
+ * Load the validated `architecture` block for a project, mtime-cached.
+ *
+ * The zero-config default maps modules at two path segments under the repository root and declares
+ * no forbidden directions, so the check reports cycles and nothing else until rules are written.
+ */
+export function loadArchitectureConfig(rootDir: string): ArchitectureConfig {
+  return loadParsedConfig(rootDir).architecture;
 }
 
 /**

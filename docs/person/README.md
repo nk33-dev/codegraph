@@ -13,6 +13,7 @@
 - [测试与前后端关联](api-correlation.md)：测试类型/证据区分、HTTP 方法路径参数匹配、init 配置和 Vue 推断关系。
 - [幂等与事务式结构化编辑](edit-transactions.md)：稳定 operation ID、跨文件暂存/提交/回滚、启动恢复、逐文件恢复清单与 LSP 文件通知。
 - [LSP 语义查询与安全自动修复](lsp-semantic-actions.md)：类型提示、实现/类型定义、调用/类型层级、全项目诊断，以及补导入和整理导入等 Code Action 的预览与事务写入。
+- [依赖边界与循环依赖检查](architecture-boundaries.md)：从已解析的文件依赖推导目录/模块级的禁止方向与模块环，附具体 `file:line` 证据，CLI 与 MCP 共用。
 - [个人版生产硬化与发布准备](release-readiness.md)：三平台门禁、夜间真实依赖验证、个人安装产物和发布边界。
 
 | 功能 | 文档 |
@@ -30,6 +31,7 @@
 | 查询输出折叠、过滤、新文件状态与失败分类 | [查询输出、过滤与索引状态](query-output-indexing.md) |
 | 首调用 catch-up 时延、alwaysLoad 固定成本与 explore→Read 回退比例 | [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md) |
 | Git 调用成本、测试选择与 Windows CI 分片 | [测试性能](test-performance.md) |
+| 依赖方向规则、模块环与 `codegraph architecture` | [架构边界](architecture-boundaries.md) |
 | Steps、Windows 清理、WASM 测试运行与性能修复 | [开发验证记录](test-repairs.md) |
 
 CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_explore` 和 `codegraph_edit`，局部刷新通过 CLI `codegraph refresh <file>` 与公共 API 提供。可视化沿用上游功能；上游 v1.6.1 起 viewer 默认不随发布开放，`codegraph ui` / `web` 需要显式设置 `CODEGRAPH_UI=1` 才会启动，不设置就完全不运行 HTTP 服务。

@@ -82,6 +82,15 @@ import {
 } from './resolution';
 import { hasSynthesisPattern } from './resolution/callback-synthesizer';
 import { indexRevision, type RevisionStatus } from './graph/index-health';
+import { collapseLoneRootFiles, moduleIdFor, passThroughDirs, toPosixPath } from './graph/module-map';
+import {
+  MODULE_DEPENDENCY_EDGE_KINDS,
+  matchBoundaryRules,
+  moduleCycles,
+  type ArchitectureBoundaryRule,
+  type BoundaryViolation,
+  type ModuleCycleReport,
+} from './graph/architecture';
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
@@ -249,6 +258,61 @@ export interface IndexStatus {
 export interface RefreshResult extends SyncResult {
   plan: RefreshPlan;
   version: string | null;
+}
+
+/** Default segments under the root that name a module when no `architecture` config says otherwise. */
+const DEFAULT_ARCHITECTURE_DEPTH = 2;
+/** Default confidence floor for architecture counts, matching the viewer's `UNCERTAIN_BELOW`. */
+const DEFAULT_ARCHITECTURE_MIN_CONFIDENCE = 0.6;
+
+export interface ArchitectureReportOptions {
+  /** Directory the module grouping starts at; `''` (the default) is the repository root. */
+  root?: string;
+  /** Path segments under `root` that name a module. */
+  depth?: number;
+  /** Edges below this confidence are left out of every count. */
+  minConfidence?: number;
+  /** Only count edges the source writes down. */
+  requireDeclared?: boolean;
+  rules?: readonly ArchitectureBoundaryRule[];
+  /** Cap on reported violations; `violationsTruncated` says whether any were left out. */
+  maxViolations?: number;
+  /** Edges shown per violation; `evidenceTotal` says how many exist. */
+  maxEdgesPerViolation?: number;
+  maxCycles?: number;
+}
+
+/** One edge behind a violation, at the site a reader can open. */
+export interface ArchitectureViolationEvidence {
+  fromFile: string;
+  toFile: string;
+  fromName: string;
+  toName: string;
+  kind: Edge['kind'];
+  line: number | null;
+  column: number | null;
+  /** Whether the edge came from something the source writes down (import, qualified name, ...). */
+  declared: boolean;
+}
+
+export interface ArchitectureReport {
+  root: string;
+  depth: number;
+  minConfidence: number;
+  requireDeclared: boolean;
+  /** Modules the files were grouped into, after loose-file buckets were folded. */
+  modules: number;
+  /** Cross-module links, counted per edge kind before the per-pair fold. */
+  dependencies: number;
+  rules: { configured: number; violated: number };
+  /** Rule matches dropped because every edge behind them was a bare name match. */
+  uncertainPairs: number;
+  violations: Array<BoundaryViolation & {
+    evidence: ArchitectureViolationEvidence[];
+    evidenceTotal: number;
+  }>;
+  violationsTruncated: boolean;
+  cycles: ModuleCycleReport;
 }
 
 /**
@@ -2216,6 +2280,94 @@ export class CodeGraph {
    */
   getFileDependencyPairs(minConfidence = 0): Array<{ source: string; target: string }> {
     return this.queries.getCrossFileDependencyPairs(minConfidence);
+  }
+
+  /**
+   * Dependency boundaries and module cycles for the current index.
+   *
+   * Read-only and computed on demand: nothing is persisted, so the answer always reflects the
+   * current index and no migration or new edge kind is involved. Files are grouped into modules with
+   * the same rule the viewer's map uses ({@link moduleIdFor}), then the resolved file dependencies
+   * are rolled up and checked against the rules.
+   *
+   * `requireDeclared` filters out pairs whose edges are all bare name matches — see
+   * {@link matchBoundaryRules}. Whatever it filters is reported as `uncertainPairs` instead of
+   * being dropped silently.
+   */
+  getArchitectureReport(options: ArchitectureReportOptions = {}): ArchitectureReport {
+    const root = options.root ?? '';
+    const depth = options.depth ?? DEFAULT_ARCHITECTURE_DEPTH;
+    const minConfidence = options.minConfidence ?? DEFAULT_ARCHITECTURE_MIN_CONFIDENCE;
+    const requireDeclared = options.requireDeclared ?? true;
+    const rules = options.rules ?? [];
+    const maxViolations = options.maxViolations ?? 50;
+    const edgesPerViolation = options.maxEdgesPerViolation ?? 5;
+    const maxCycles = options.maxCycles ?? 20;
+
+    const paths = this.getFiles().map((file) => toPosixPath(file.path));
+    const passThrough = passThroughDirs(paths);
+    const assignments: Array<{ filePath: string; module: string }> = [];
+    for (const filePath of paths) {
+      const assigned = moduleIdFor(filePath, root, depth, passThrough);
+      if (assigned) assignments.push({ filePath, module: assigned.id });
+    }
+    const renamed = collapseLoneRootFiles(new Set(assignments.map((entry) => entry.module)));
+    if (renamed.size > 0) {
+      for (const entry of assignments) {
+        const next = renamed.get(entry.module);
+        if (next !== undefined) entry.module = next;
+      }
+    }
+    const moduleOfFile = new Map(assignments.map((entry) => [entry.filePath, entry.module]));
+
+    const aggregation = assignments.length === 0
+      ? { links: [], pairs: [] }
+      : this.getModuleAggregation(assignments, {
+          kinds: MODULE_DEPENDENCY_EDGE_KINDS,
+          minConfidence,
+          topPairsPerLink: 0,
+          pairKinds: [],
+        });
+
+    const allMatches = matchBoundaryRules(aggregation.links, rules, { requireDeclared: false });
+    const matched = matchBoundaryRules(aggregation.links, rules, { requireDeclared });
+    const uncertainPairs = requireDeclared ? allMatches.length - matched.length : 0;
+    const violations = matched.slice(0, maxViolations);
+    const edges = violations.length === 0
+      ? []
+      : this.queries.getCrossModuleEdges(
+          assignments,
+          violations.map((violation) => ({ source: violation.source, target: violation.target })),
+          { kinds: MODULE_DEPENDENCY_EDGE_KINDS, minConfidence, maxRowsPerPair: edgesPerViolation },
+        );
+    const evidenceByPair = new Map<string, typeof edges>();
+    for (const edge of edges) {
+      const key = `${edge.sourceModule}\u0000${edge.targetModule}`;
+      const list = evidenceByPair.get(key);
+      if (list) list.push(edge);
+      else evidenceByPair.set(key, [edge]);
+    }
+
+    return {
+      root,
+      depth,
+      minConfidence,
+      requireDeclared,
+      modules: new Set(assignments.map((entry) => entry.module)).size,
+      dependencies: aggregation.links.length,
+      rules: { configured: rules.length, violated: matched.length },
+      uncertainPairs,
+      violations: violations.map((violation) => {
+        const pairEdges = evidenceByPair.get(`${violation.source}\u0000${violation.target}`) ?? [];
+        return {
+          ...violation,
+          evidenceTotal: pairEdges[0]?.pairTotal ?? pairEdges.length,
+          evidence: pairEdges.map(({ pairTotal: _pairTotal, ...rest }) => rest),
+        };
+      }),
+      violationsTruncated: matched.length > violations.length,
+      cycles: moduleCycles(this.getFileDependencyPairs(minConfidence), moduleOfFile, { maxCycles }),
+    };
   }
 
   /**
