@@ -153,9 +153,13 @@ export { PathRefusalError } from '../errors';
 import { PathRefusalError } from '../errors';
 import { indexedHashInput } from '../file-limits';
 import { resolve as resolvePath, relative as relativePath } from 'path';
+import type { RustManifestContext } from '../graph/rust-context';
 
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
+
+/** How many declared dependencies the rust build-context line names before summarizing. */
+const BUILD_CONTEXT_DEP_LIMIT = 8;
 
 /**
  * Maximum length for free-form string inputs (query, task, symbol).
@@ -9986,7 +9990,8 @@ export class ToolHandler {
         code = await cg.getCode(node.id);
       }
     }
-    return this.formatNodeDetails(node, code, outline, cg.getIndexVersion()) + this.formatTrail(cg, node);
+    const buildContext = node.language === 'rust' ? cg.getRustBuildContext(node.id) : null;
+    return this.formatNodeDetails(node, code, outline, cg.getIndexVersion(), buildContext) + this.formatTrail(cg, node);
   }
 
   // Whole-file fallback caps for a drifted file (#1474): small enough to fit
@@ -10016,6 +10021,8 @@ export class ToolHandler {
     if (node.signature) {
       lines.push(`**Signature:** \`${node.signature}\``);
     }
+    const staleBuild = this.formatRustBuildContext(node.language === 'rust' ? cg.getRustBuildContext(node.id) : null);
+    if (staleBuild) lines.push(staleBuild);
     lines.push('');
     let embedded = false;
     if (includeCode) {
@@ -10767,7 +10774,45 @@ export class ToolHandler {
     return lines.join('\n');
   }
 
-  private formatNodeDetails(node: Node, code: string | null, outline?: string | null, indexVersion?: string | null): string {
+  /**
+   * One evidence line for a Rust symbol's build context, or null when there is
+   * none to show.
+   *
+   * Deliberately terse and deliberately qualified: it reports the crate the
+   * file lives in and what that crate's manifest DECLARES. It is not a resolved
+   * build graph — no feature unification, no `--features` selection, and no
+   * `#[cfg]` evaluation, because `#[cfg(...)]` is not extracted at all.
+   */
+  private formatRustBuildContext(context: RustManifestContext | null | undefined): string | null {
+    if (!context) return null;
+    const parts: string[] = [`crate \`${context.crate}\``];
+    if (context.crateRoot) parts.push(`workspace member \`${context.crateRoot}\``);
+    if (context.features.length > 0) {
+      parts.push(`declares features: ${context.features.map((name) => `\`${name}\``).join(', ')}`);
+    }
+    const shown = context.dependencies.slice(0, BUILD_CONTEXT_DEP_LIMIT);
+    if (shown.length > 0) {
+      const deps = shown.map((dep) => {
+        const source = dep.source === 'path'
+          ? `path ${dep.path}`
+          : dep.source === 'git'
+            ? 'git'
+            : `registry${dep.version ? ` ${dep.version}` : ''}`;
+        return `\`${dep.name}\` (${source}${dep.optional ? ', optional' : ''})`;
+      });
+      const more = context.dependencies.length - shown.length;
+      parts.push(`declared deps: ${deps.join(', ')}${more > 0 ? ` (+${more} more)` : ''}`);
+    }
+    return `**Build context:** ${parts.join('; ')}`;
+  }
+
+  private formatNodeDetails(
+    node: Node,
+    code: string | null,
+    outline?: string | null,
+    indexVersion?: string | null,
+    buildContext?: RustManifestContext | null
+  ): string {
     const location = node.startLine ? `:${node.startLine}` : '';
     const lines: string[] = [
       `**${node.name}** (${node.kind})`,
@@ -10779,6 +10824,9 @@ export class ToolHandler {
     if (node.signature) {
       lines.push(`**Signature:** \`${node.signature}\``);
     }
+
+    const build = this.formatRustBuildContext(buildContext);
+    if (build) lines.push(build);
 
     // Only include docstring if it's short and useful
     if (node.docstring && node.docstring.length < 200) {

@@ -106,6 +106,12 @@ import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError, planRefre
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
 import { planIndexUpgrade, type IndexUpgradeAssessment } from './sync/upgrade-index';
 import { IndexRelationSnapshot, type IndexRelationChanges } from './graph/index-relation-delta';
+import {
+  loadRustCrateCatalog,
+  rustContextForFile,
+  type RustManifestContext,
+} from './graph/rust-context';
+export type { RustManifestContext, RustCrateCatalog } from './graph/rust-context';
 export type { IndexRelationChanges } from './graph/index-relation-delta';
 export type { RelationshipCoverage } from './graph/relationship-coverage';
 export type { RelationEvidence } from './graph/edge-provenance';
@@ -3126,6 +3132,28 @@ export class CodeGraph {
    */
   async getCode(nodeId: string): Promise<string | null> {
     return this.contextBuilder.getCode(nodeId);
+  }
+
+  /**
+   * The Rust build context for a symbol: the crate its file belongs to, and
+   * what that crate's manifest declares (features, dependencies).
+   *
+   * Read-only evidence derived from Cargo.toml on disk — nothing is stored, and
+   * it says nothing about conditional compilation: `#[cfg(...)]` is not
+   * extracted, so this is the crate's declaration, not the resolved build
+   * graph. Returns null for any non-Rust node and for projects without a
+   * Cargo.toml.
+   */
+  getRustBuildContext(nodeId: string): RustManifestContext | null {
+    const node = this.getNode(nodeId);
+    if (!node || node.language !== 'rust') return null;
+    return this.getRustBuildContextForFile(node.filePath);
+  }
+
+  /** {@link getRustBuildContext} for a file path instead of a node id. */
+  getRustBuildContextForFile(filePath: string): RustManifestContext | null {
+    const catalog = loadRustCrateCatalog(this.getProjectRoot());
+    return catalog === null ? null : rustContextForFile(catalog, filePath);
   }
 
   /**
