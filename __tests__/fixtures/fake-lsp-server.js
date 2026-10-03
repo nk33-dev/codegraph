@@ -11,6 +11,8 @@
  * Command-line switches:
  *   --log <file>               append one JSON line per received event (tests assert the request sequence)
  *   --pull-diagnostics         declare diagnosticProvider and answer textDocument/diagnostic
+ *   --pull-result-ids          answer with a resultId and reply "unchanged" when previousResultId matches
+ *   --pull-mirrors-push        include the push diagnostic in the pull reply (exercises deduplication)
  *   --push-diagnostics         publishDiagnostics on didOpen/didChange
  *   --slow-init <ms>           delay the initialize response
  *   --indexing-for <ms>        report indexing progress after initialization
@@ -51,6 +53,8 @@ const opt = (name, fallback) => {
 
 const logFile = opt('--log', null);
 const pullDiagnostics = flag('--pull-diagnostics');
+const pullResultIds = flag('--pull-result-ids');
+const pullMirrorsPush = flag('--pull-mirrors-push');
 const pushDiagnostics = flag('--push-diagnostics');
 const slowInitMs = Number(opt('--slow-init', '0'));
 const indexingMs = Number(opt('--indexing-for', '0'));
@@ -134,6 +138,8 @@ process.stdin.on('data', (chunk) => {
 
 // ---------------------------------------------------------------- behaviour
 const documentText = new Map();
+let pullResultCounter = 0;
+const lastPullResultId = new Map();
 
 function range() {
   // Real servers point at the symbol NAME, not at the declaration keyword (`export`/`int`),
@@ -500,7 +506,13 @@ function handle(message) {
       return;
     }
     case 'textDocument/diagnostic': {
-      const items = diagnosticsFor(params.textDocument.uri, 1, 'fake pull diagnostic');
+      const uri = params.textDocument.uri;
+      if (pullResultIds && params.previousResultId && lastPullResultId.get(uri) === params.previousResultId) {
+        result(id, { kind: 'unchanged', resultId: params.previousResultId });
+        return;
+      }
+      const items = diagnosticsFor(uri, 1, 'fake pull diagnostic');
+      if (pullMirrorsPush) items.push(...diagnosticsFor(uri, 1, 'fake push diagnostic'));
       if (mixedDiagnostics) {
         items.push({
           range: { start: { line: 4, character: 0 }, end: { line: 4, character: 3 } },
@@ -509,6 +521,13 @@ function handle(message) {
           source: 'fake-lsp',
           message: 'fake hint diagnostic',
         });
+      }
+      if (pullResultIds) {
+        pullResultCounter += 1;
+        const resultId = `fake-result-${pullResultCounter}`;
+        lastPullResultId.set(uri, resultId);
+        result(id, { kind: 'full', items, resultId });
+        return;
       }
       result(id, { kind: 'full', items });
       return;

@@ -316,6 +316,46 @@ describe('LSP manager: document sync and diagnostics', () => {
     expect(second.items).toHaveLength(2);
     expect(second.items[0]!.message).toContain('after change');
   });
+
+  it('pull 诊断保存 resultId，下一次请求带上 previousResultId 并复用 unchanged 结果', async () => {
+    const project = makeProject({ 'a.ts': FILE_CONTENT }, { serverArgs: ['--pull-diagnostics', '--pull-result-ids'] });
+    const manager = makeManager(project);
+    const absolute = filePath(project);
+
+    const first = await manager.diagnostics(absolute, 'typescript');
+    expect(first.source).toBe('pull');
+    expect(first.items).toHaveLength(1);
+    const requests = project.events('textDocument/diagnostic');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.params.previousResultId).toBeUndefined();
+
+    const second = await manager.diagnostics(absolute, 'typescript');
+    expect(second.source).toBe('pull');
+    expect(second.items).toHaveLength(1);
+    const afterSecond = project.events('textDocument/diagnostic');
+    expect(afterSecond).toHaveLength(2);
+    expect(afterSecond[1]!.params.previousResultId).toBe('fake-result-1');
+  });
+
+  it('push 与 pull 分开保存并合并去重，两种来源都不丢', async () => {
+    const project = makeProject({ 'a.ts': FILE_CONTENT }, {
+      serverArgs: ['--pull-diagnostics', '--push-diagnostics', '--pull-mirrors-push'],
+    });
+    const manager = makeManager(project);
+    const absolute = filePath(project);
+
+    // Opening the document schedules the push batch; poll until both sources have landed.
+    await manager.documentSymbols(absolute, 'typescript');
+    let result = await manager.diagnostics(absolute, 'typescript');
+    for (let attempt = 0; attempt < 40 && result.source !== 'merged'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      result = await manager.diagnostics(absolute, 'typescript');
+    }
+
+    expect(result.source).toBe('merged');
+    const messages = result.items.map((item) => item.message).sort();
+    expect(messages).toEqual(['fake pull diagnostic #1', 'fake push diagnostic #1']);
+  });
 });
 
 describe('LSP manager: unavailable states', () => {

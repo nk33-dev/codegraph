@@ -15,6 +15,7 @@ export {
   SERVER_WARMUP_HINT_MS,
   type LspCapabilities,
   type LspDiagnostic,
+  type LspDiagnosticSource,
   type LspCodeAction,
   type LspHierarchyItem,
   type LspHover,

@@ -487,6 +487,18 @@ interface DiagnosticCacheEntry {
   generation: number;
 }
 
+/**
+ * One file's pulled-diagnostics state. `resultId` is the protocol's incremental token: the next
+ * `textDocument/diagnostic` sends it as `previousResultId`, and `kind: "unchanged"` reuses `items`.
+ */
+interface PulledDiagnosticEntry {
+  resultId: string | null;
+  items: LspDiagnostic[];
+}
+
+/** Where a diagnostics result came from; `merged` means both push and pull contributed items. */
+export type LspDiagnosticSource = 'pull' | 'push' | 'cache' | 'merged' | 'none';
+
 interface ResolvedServer {
   family: LspFamily;
   config: LspServerConfig;
@@ -522,7 +534,10 @@ interface ServerEntry {
   emptyRetryDone: boolean;
   /** Wake-up functions waiting for "indexing finished". */
   idleWaiters: Array<() => void>;
+  /** Diagnostics from `publishDiagnostics` (the push table; `waitForPublish` polls its generation). */
   diagnostics: Map<string, DiagnosticCacheEntry>;
+  /** Diagnostics from `textDocument/diagnostic` (the pull table), kept separately so one source cannot overwrite the other. */
+  pullDiagnostics: Map<string, PulledDiagnosticEntry>;
   diagnosticsGeneration: number;
   diagnosticWaiters: Map<string, Array<() => void>>;
   documents: Map<string, OpenDocument>;
@@ -1165,7 +1180,7 @@ export class LspManager {
   async diagnostics(
     filePath: string,
     language: Language | null,
-  ): Promise<{ items: LspDiagnostic[]; source: 'pull' | 'push' | 'cache' | 'none'; retried: boolean }> {
+  ): Promise<{ items: LspDiagnostic[]; source: LspDiagnosticSource; retried: boolean }> {
     const entry = await this.requireServer(language);
     return this.withActiveQuery(entry, async () => {
       await this.syncDocument(entry, filePath, language);
@@ -1184,30 +1199,41 @@ export class LspManager {
     });
   }
 
-  /** Pull diagnostics or wait for a push; an empty result is a legitimate result. */
+  /**
+   * Pull diagnostics or wait for a push; an empty result is a legitimate result.
+   *
+   * The two sources are stored separately and merged on read: a server may answer
+   * `textDocument/diagnostic` with its own analysis while build-tool results (Cargo check, tsc)
+   * arrive through `publishDiagnostics`, and a single table would let either one overwrite the other.
+   */
   private async collectDiagnostics(
     entry: ServerEntry,
     uri: string,
     key: string,
     afterGeneration: number,
-  ): Promise<{ items: LspDiagnostic[]; source: 'pull' | 'push' | 'cache' | 'none' }> {
+  ): Promise<{ items: LspDiagnostic[]; source: LspDiagnosticSource }> {
     if (entry.capabilities?.diagnostics === 'pull') {
+      const previous = entry.pullDiagnostics.get(key);
       try {
         const result = await this.request(
           entry,
           'textDocument/diagnostic',
-          { textDocument: { uri } },
+          {
+            textDocument: { uri },
+            ...(previous?.resultId ? { previousResultId: previous.resultId } : {}),
+          },
           Math.min(this.config.requestTimeoutMs, this.config.diagnosticsTimeoutMs),
         );
         if (isRecord(result) && result.kind === 'unchanged') {
           // "unchanged" is the protocol's authoritative "same as last time" answer, not a stale cache.
-          const cached = entry.diagnostics.get(key);
-          return cached ? { items: [...cached.items], source: 'pull' } : { items: [], source: 'pull' };
+          const resultId = typeof result.resultId === 'string' ? result.resultId : previous?.resultId ?? null;
+          this.storePulled(entry, key, resultId, previous?.items ?? []);
+          return this.mergedDiagnostics(entry, key, 'pull');
         }
         if (isRecord(result) && Array.isArray(result.items)) {
-          const items = normalizeDiagnostics(result.items);
-          this.storeDiagnostics(entry, key, items);
-          return { items, source: 'pull' };
+          const resultId = typeof result.resultId === 'string' ? result.resultId : null;
+          this.storePulled(entry, key, resultId, normalizeDiagnostics(result.items));
+          return this.mergedDiagnostics(entry, key, 'pull');
         }
       } catch (err) {
         if (err instanceof LspIndexingError) throw err;
@@ -1216,10 +1242,43 @@ export class LspManager {
       }
     }
     const published = await this.waitForPublish(entry, key, afterGeneration, PUBLISH_WAIT_MS);
-    if (published) return { items: published, source: 'push' };
-    const cached = entry.diagnostics.get(key);
-    if (cached) return { items: [...cached.items], source: 'cache' };
+    if (published) return this.mergedDiagnostics(entry, key, 'push');
+    const merged = this.mergedDiagnostics(entry, key);
+    if (merged.items.length > 0) return merged;
     return { items: [], source: 'none' };
+  }
+
+  private storePulled(entry: ServerEntry, key: string, resultId: string | null, items: LspDiagnostic[]): void {
+    entry.pullDiagnostics.set(key, { resultId, items });
+  }
+
+  /**
+   * Merge the pull and push tables for one file, dropping duplicates by content.
+   *
+   * `fresh` names the source that just answered: the result is `merged` when both tables hold
+   * something, that source alone when only one does, and `cache` when this is a lookup without a
+   * fresh reply. An empty result keeps the requested source so callers can still tell "the server
+   * answered nothing" from "nothing has arrived yet".
+   */
+  private mergedDiagnostics(
+    entry: ServerEntry,
+    key: string,
+    fresh?: 'pull' | 'push',
+  ): { items: LspDiagnostic[]; source: LspDiagnosticSource } {
+    const pulled = entry.pullDiagnostics.get(key)?.items ?? [];
+    const pushed = entry.diagnostics.get(key)?.items ?? [];
+    const seen = new Set<string>();
+    const items: LspDiagnostic[] = [];
+    for (const diagnostic of [...pulled, ...pushed]) {
+      const identity = JSON.stringify([diagnostic.range, diagnostic.severity, diagnostic.code, diagnostic.source, diagnostic.message]);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      items.push(diagnostic);
+    }
+    if (items.length === 0) return { items, source: fresh ?? 'none' };
+    if (fresh === undefined) return { items, source: 'cache' };
+    if (pulled.length > 0 && pushed.length > 0) return { items, source: 'merged' };
+    return { items, source: pulled.length > 0 ? 'pull' : 'push' };
   }
 
   // ------------------------------------------------------------ Internal: lifecycle
@@ -1448,6 +1507,7 @@ export class LspManager {
       emptyRetryDone: false,
       idleWaiters: [],
       diagnostics: new Map(),
+      pullDiagnostics: new Map(),
       diagnosticsGeneration: 0,
       diagnosticWaiters: new Map(),
       documents: new Map(),
@@ -2016,6 +2076,7 @@ export class LspManager {
     entry.connection = null;
     entry.startedAt = null;
     entry.diagnostics.clear();
+    entry.pullDiagnostics.clear();
     if (this.entries.size > 0 && !this.hasLiveServer()) {
       this.clearIdleTimer();
       this.clearLeaseTimer();

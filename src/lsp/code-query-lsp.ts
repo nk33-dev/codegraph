@@ -666,7 +666,7 @@ export async function queryCodeLsp(
         if (source === 'none') {
           result.warnings.push('No diagnostics arrived within the wait window (neither a pull response nor publishDiagnostics); the server may not have analyzed this file yet.');
         } else if (source === 'cache') {
-          result.warnings.push('Diagnostics come from the last published batch and may not reflect the current content.');
+          result.warnings.push('Diagnostics come from the last received batch and may not reflect the current content.');
         }
         if (retried) result.warnings.push('The first diagnostics request came back empty right after startup; it was retried after the server finished indexing.');
         const threshold = request.severity ?? 4;
