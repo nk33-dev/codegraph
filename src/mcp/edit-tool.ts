@@ -32,8 +32,8 @@ export const editTools: ToolDefinition[] = [
       properties: {
         operation: {
           type: 'string',
-          description: 'rename, code-action, replace-body, insert-before, or insert-after.',
-          enum: ['rename', 'code-action', 'replace-body', 'insert-before', 'insert-after'],
+          description: 'rename, code-action, format, replace-body, insert-before, or insert-after.',
+          enum: ['rename', 'code-action', 'format', 'replace-body', 'insert-before', 'insert-after'],
         },
         symbol: {
           type: 'string',
@@ -52,6 +52,8 @@ export const editTools: ToolDefinition[] = [
           description: 'rename/code-action: 0-based UTF-16 column.',
         },
         actionIndex: { type: 'number', description: 'code-action result index (default 0).' },
+        tabSize: { type: 'number', description: 'format only: indentation width (default 2).' },
+        insertSpaces: { type: 'boolean', description: 'format only: indent with spaces, not tabs (default true).' },
         newName: {
           type: 'string',
           description: 'rename only: new name without whitespace.',

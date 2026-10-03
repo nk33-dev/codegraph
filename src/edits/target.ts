@@ -137,6 +137,25 @@ export function resolveEditTarget(cg: CodeGraph, request: CodeEditRequest): Reso
   const root = cg.getProjectRoot();
   const positional = request.line !== undefined;
 
+  // A whole-file operation: no symbol to resolve, no position to validate, and an index row that
+  // lags the bytes on disk does not matter — the edits are planned from the file and the server.
+  if (request.operation === 'format') {
+    if (!request.file) throw new CodeEditRefusal('format needs a file', 'error');
+    const filePath = resolveProjectFile(root, request.file);
+    const absolutePath = path.resolve(root, filePath);
+    const text = readFileText(absolutePath);
+    return {
+      node: null,
+      filePath,
+      absolutePath,
+      language: languageOfFile(cg, root, filePath),
+      freshness: indexedFileFreshness(root, cg.getFile(filePath), text),
+      text,
+      // Formatting is whole-file; the start of the file is the only position that describes it.
+      position: { line: 0, character: 0 },
+    };
+  }
+
   if (positional) {
     if (!request.file) throw new CodeEditRefusal('a position target needs a file', 'error');
     const filePath = resolveProjectFile(root, request.file);

@@ -21,7 +21,7 @@ import { createHash } from 'crypto';
 import type { Language, Node } from '../types';
 import type { FileFreshness } from '../sync/file-freshness';
 
-export const CODE_EDIT_OPERATIONS = ['rename', 'code-action', 'replace-body', 'insert-before', 'insert-after'] as const;
+export const CODE_EDIT_OPERATIONS = ['rename', 'code-action', 'format', 'replace-body', 'insert-before', 'insert-after'] as const;
 export type CodeEditOperation = typeof CODE_EDIT_OPERATIONS[number];
 
 /** Operations that are purely textual at an indexed range; they need no language server. */
@@ -70,6 +70,9 @@ export interface CodeEditRequest {
   newName?: string;
   /** replace-body / insert-before / insert-after: the replacement or inserted text. */
   content?: string;
+  /** format only: indentation sent to the language server (defaults: tabSize 2, insertSpaces true). */
+  tabSize?: number;
+  insertSpaces?: boolean;
   /**
    * false (default) previews only. true replans, re-verifies current bytes, and writes directly.
    * The hash and ID below are optional bindings for a reviewed two-step write.
@@ -290,7 +293,8 @@ export function validateCodeEditRequest(request: CodeEditRequest): void {
   }
   // `file` is optional for a name-based target: the name is resolved through the index and a name
   // that matches several definitions is refused (status "ambiguous") rather than guessed.
-  if (!positional && !request.symbol?.trim()) {
+  // `format` is the exception: it is a whole-file operation with no symbol and no position.
+  if (!positional && !request.symbol?.trim() && request.operation !== 'format') {
     throw new CodeEditRefusal(`operation "${request.operation}" needs a symbol name (or rename/code-action with file + line)`, 'error');
   }
 
@@ -325,6 +329,19 @@ export function validateCodeEditRequest(request: CodeEditRequest): void {
     if (endLine < startLine || (endLine === startLine && endColumn < startColumn)) {
       throw new CodeEditRefusal('code-action range end must not be before its start', 'error');
     }
+  } else if (request.operation === 'format') {
+    if (!request.file) {
+      throw new CodeEditRefusal('format requires file', 'error');
+    }
+    if (request.symbol !== undefined || request.newName !== undefined || request.content !== undefined) {
+      throw new CodeEditRefusal('format does not accept symbol, newName or content', 'error');
+    }
+    if (request.tabSize !== undefined && (!Number.isSafeInteger(request.tabSize) || request.tabSize < 1 || request.tabSize > 16)) {
+      throw new CodeEditRefusal('tabSize must be an integer between 1 and 16', 'error');
+    }
+    if (request.insertSpaces !== undefined && typeof request.insertSpaces !== 'boolean') {
+      throw new CodeEditRefusal('insertSpaces must be boolean', 'error');
+    }
   } else {
     if (typeof request.content !== 'string') {
       throw new CodeEditRefusal(`operation "${request.operation}" requires content`, 'error');
@@ -357,6 +374,8 @@ export function editRequestHash(request: CodeEditRequest): string {
     actionIndex: request.actionIndex ?? null,
     newName: request.newName ?? null,
     content: request.content ?? null,
+    tabSize: request.tabSize ?? null,
+    insertSpaces: request.insertSpaces ?? null,
   })).digest('hex');
 }
 

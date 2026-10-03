@@ -173,6 +173,8 @@ export interface LspCapabilities {  definition: boolean;
   completion: boolean;
   /** completionProvider.resolveProvider: detail/documentation can be filled in with completionItem/resolve. */
   completionResolve: boolean;
+  /** textDocument/formatting: true when the server advertises documentFormattingProvider. */
+  documentFormatting: boolean;
   workspaceDiagnostics: boolean;
   /** textDocument/rename: true when the server advertises renameProvider (an object form counts too). */
   rename: boolean;
@@ -453,6 +455,18 @@ function normalizeCompletion(result: unknown): CompletionResponse {
   };
 }
 
+/** `textDocument/formatting` (and any other request returning TextEdit[]): drop malformed entries rather than invent one. */
+function normalizeTextEdits(result: unknown): LspTextEdit[] {
+  if (!Array.isArray(result)) return [];
+  const out: LspTextEdit[] = [];
+  for (const entry of result) {
+    const range = isRecord(entry) ? asRange(entry.range) : null;
+    if (!range || !isRecord(entry) || typeof entry.newText !== 'string') continue;
+    out.push({ range, newText: entry.newText });
+  }
+  return out;
+}
+
 function normalizeWorkspaceDiagnostics(result: unknown): LspWorkspaceDiagnostic[] {
   if (!isRecord(result) || !Array.isArray(result.items)) return [];
   const out: LspWorkspaceDiagnostic[] = [];
@@ -664,6 +678,7 @@ function capabilitiesFromInitialize(result: unknown): LspCapabilities {
     codeAction: provided(capabilities.codeActionProvider),
     completion: provided(capabilities.completionProvider),
     completionResolve: isRecord(capabilities.completionProvider) && capabilities.completionProvider.resolveProvider === true,
+    documentFormatting: provided(capabilities.documentFormattingProvider),
     workspaceDiagnostics: isRecord(capabilities.diagnosticProvider) && capabilities.diagnosticProvider.workspaceDiagnostics === true,
     rename: provided(capabilities.renameProvider),
     diagnostics: capabilities.diagnosticProvider !== undefined ? 'pull' : 'push',
@@ -1230,8 +1245,27 @@ export class LspManager {
   }
 
   /**
-   * 把已经提交的工作区编辑同步给当前存活的语言服务器；不会为通知而启动新进程。
-   * 不支持 workspace 文件事件的服务器仍会收到旧文档 didClose，避免继续持有已删除路径。
+   * Whole-file formatting. The edits come back unapplied on purpose: the caller previews them or
+   * writes them through the edit transaction, so formatting never gets its own write path.
+   */
+  async formatting(
+    filePath: string,
+    language: Language | null,
+    options: { tabSize: number; insertSpaces: boolean },
+  ): Promise<LspQueryOutcome<LspTextEdit>> {
+    const entry = await this.requireServer(language);
+    this.requireCapability(entry, entry.capabilities?.documentFormatting, 'textDocument/formatting');
+    await this.syncDocument(entry, filePath, language);
+    return this.requestWithWarmupRetry(entry, 'textDocument/formatting', {
+      textDocument: { uri: pathToUri(filePath) },
+      options,
+    }, normalizeTextEdits);
+  }
+
+  /**
+   * Tell the live language servers about committed workspace edits; no process is started just to
+   * notify one. A server without workspace file-event support still gets a didClose for the old
+   * document, so it never keeps holding a deleted path.
    */
   notifyFileOperations(files: EditFilePreview[]): string[] {
     const warnings: string[] = [];

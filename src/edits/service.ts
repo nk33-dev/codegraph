@@ -33,6 +33,7 @@ import {
 import { planGraphEdit, FRAGMENT_KINDS } from './graph-edit';
 import { planRename } from './lsp-rename';
 import { planCodeAction } from './lsp-code-action';
+import { planFormatting } from './lsp-formatting';
 import { resolveEditTarget, toCodeEditTarget } from './target';
 import {
   applyEditTransaction,
@@ -87,7 +88,8 @@ function fail(result: CodeEditResult, error: unknown): void {
     const detail = error.remedy ? `${error.message} — ${error.remedy}` : error.message;
     result.blockers.push(detail);
     result.warnings.push(detail);
-    if ((result.operation === 'rename' || result.operation === 'code-action') && error.status === 'unavailable') {
+    if ((result.operation === 'rename' || result.operation === 'code-action' || result.operation === 'format')
+      && error.status === 'unavailable') {
       result.routing.lsp = { ...result.routing.lsp, available: false, reason: error.message };
     }
     return;
@@ -125,7 +127,7 @@ export async function editCode(
     }
     const target = resolveEditTarget(cg, request);
     result.target = toCodeEditTarget(target, {
-      source: request.operation === 'rename' || request.operation === 'code-action' ? 'lsp' : 'index',
+      source: request.operation === 'rename' || request.operation === 'code-action' || request.operation === 'format' ? 'lsp' : 'index',
     });
 
     if (request.operation === 'rename') {
@@ -150,6 +152,13 @@ export async function editCode(
       result.routing.lsp = { requested: true, available: true, family: plan.family, reason: null };
       result.canApply = plan.files.length > 0;
       result.warnings.push(`Selected code action: ${plan.title}`);
+      result.warnings.push(...plan.warnings);
+    } else if (request.operation === 'format') {
+      const plan = await planFormatting(cg, manager, request, target);
+      result.files = plan.files;
+      result.routing.source = 'lsp';
+      result.routing.lsp = { requested: true, available: true, family: plan.family, reason: null };
+      result.canApply = plan.files.length > 0;
       result.warnings.push(...plan.warnings);
     } else {
       const planned = planGraphEdit(request, target);

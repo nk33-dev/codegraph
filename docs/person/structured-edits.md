@@ -36,12 +36,13 @@ Library users call `CodeGraph.editCode(request)`; `queryCode`/`queryCodeWithBack
 
 | Field | Meaning |
 | --- | --- |
-| `operation` | `rename`, `replace-body`, `insert-before`, `insert-after` |
+| `operation` | `rename`, `code-action`, `format`, `replace-body`, `insert-before`, `insert-after` |
 | `symbol` | The target name or qualified name, resolved through the index (an exact-match lookup, never a text scan) |
 | `file` | An exact project-relative path; narrows an ambiguous name to one file. If that file still has multiple matches, pass a qualified `symbol` name. Optional when a name matches exactly one indexed definition |
 | `line` / `column` | `rename` only: a position target (1-based line, 0-based UTF-16 column) instead of a name |
 | `newName` | `rename` only, no whitespace |
 | `content` | `replace-body`/`insert-*` only |
+| `tabSize` / `insertSpaces` | `format` only: the indentation sent to the language server (defaults 2 / true) |
 | `apply` | `false` (default) = preview only. `true` replans and writes in the same call; the two IDs below are optional |
 | `expectPreviewHash` | `apply: true` only, optional: bind the write to a specific preview and refuse on mismatch |
 | `operationId` | Optional idempotency key; preview supplies one, while direct apply derives a default from request identity |
@@ -83,6 +84,7 @@ The MCP tool sets `isError` for every status other than `preview`/`applied`: a r
 - **`insert-after`** inserts at the start of the line following the definition. When the definition ends without a line break (end of file) one is added, and an existing blank separator line is kept before the new code.
 - **`rename`** asks the server for `textDocument/rename` at the symbol's name position (found on the declaration line, because a server returns nothing for a rename at `pub`/`int`/`export`), then flattens the returned WorkspaceEdit: `changes` plus the ordered `documentChanges` (text-document edits, and `create`/`rename`/`delete` file operations). Every target must be inside the project root; a `documentChanges` kind the client does not understand refuses the **whole** rename before anything is written; a delete-plus-edit for one file is refused as ambiguous. Inserted text takes the file's own line ending (a CRLF file stays CRLF).
 - Root containment is symlink-aware for existing files and for not-yet-created destinations: a path below an in-project link whose real parent is outside the project is rejected before preview or write.
+- **`format`** asks the server for `textDocument/formatting` over one whole file and runs the returned edits through the same preview and transaction as every other operation — there is no separate write path. `tabSize`/`insertSpaces` are forwarded as FormattingOptions. A server that reports no edits produces an empty plan (`canApply: false`) and a warning instead of rewriting the file with identical bytes.
 
 ## Writing
 

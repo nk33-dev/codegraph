@@ -29,7 +29,8 @@ export interface CodeActionPlan {
   warnings: string[];
 }
 
-function filesFromWorkspaceEdit(root: string, operations: LspWorkspaceEditOperation[]): EditFilePreview[] {
+/** Turn a workspace edit's text edits into per-file previews, refusing file creates/renames/deletes. */
+export function filesFromWorkspaceEdit(root: string, operations: LspWorkspaceEditOperation[]): EditFilePreview[] {
   if (operations.some((operation) => operation.kind !== 'edits')) {
     throw new CodeEditRefusal(
       'the selected code action creates, renames, or deletes files; only text edits are supported',

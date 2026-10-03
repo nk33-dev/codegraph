@@ -30,6 +30,7 @@
  *   --semantic-tools           declare and answer the semantic query/code-action capabilities
  *   --code-action-command-only return a command-only action (the edit layer must refuse it)
  *   --code-action-extra <file> add a text edit for another absolute path
+ *   --format-noop              answer textDocument/formatting with no edits (already formatted)
  *
  * Phase-4 rename switches:
  *   --rename                   declare renameProvider and answer textDocument/rename by replacing
@@ -73,6 +74,7 @@ const renameEnabled = flag('--rename') || renameNull || renameExtra !== null;
 const fileOperations = flag('--file-operations');
 const semanticTools = flag('--semantic-tools');
 const codeActionCommandOnly = flag('--code-action-command-only');
+const formatNoop = flag('--format-noop');
 const codeActionExtra = opt('--code-action-extra', null);
 let workspaceRootUri = null;
 
@@ -292,6 +294,7 @@ function handle(message) {
         capabilities.typeHierarchyProvider = true;
         // resolveProvider exercises the completion refill path (detail/documentation arrive lazily).
         capabilities.completionProvider = { resolveProvider: true, triggerCharacters: ['.'] };
+        capabilities.documentFormattingProvider = true;
         capabilities.codeActionProvider = {
           resolveProvider: true,
           codeActionKinds: ['quickfix', 'source.organizeImports'],
@@ -393,6 +396,18 @@ function handle(message) {
         documentation: { kind: 'markdown', value: `Docs for ${params.label}.` },
       });
       return;
+    case 'textDocument/formatting': {
+      if (formatNoop) {
+        result(id, []);
+        return;
+      }
+      // One insertion at the very top, so an applied result is trivially predictable.
+      result(id, [{
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+        newText: '// formatted by fake-lsp\n',
+      }]);
+      return;
+    }
     case 'textDocument/references':
       result(id, [
         { uri: params.textDocument.uri, range: { start: { line: 1, character: 4 }, end: { line: 1, character: 9 } } },

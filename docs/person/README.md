@@ -12,7 +12,7 @@
 - [AI 改动上下文与语义差异](change-context.md)：Git 改动符号、语义边差异、影响入口、关联测试，以及显式深度基准图的隔离与清理。
 - [测试与前后端关联](api-correlation.md)：测试类型/证据区分、HTTP 方法路径参数匹配、init 配置和 Vue 推断关系。
 - [幂等与事务式结构化编辑](edit-transactions.md)：稳定 operation ID、跨文件暂存/提交/回滚、启动恢复、逐文件恢复清单与 LSP 文件通知。
-- [LSP 语义查询与安全自动修复](lsp-semantic-actions.md)：类型提示、实现/类型定义、调用/类型层级、全项目诊断，以及补导入和整理导入等 Code Action 的预览与事务写入。
+- [LSP 语义查询与安全自动修复](lsp-semantic-actions.md)：类型提示、位置补全、实现/类型定义、调用/类型层级、全项目诊断，以及补导入和整理导入等 Code Action、整文件格式化的预览与事务写入。
 - [依赖边界与循环依赖检查](architecture-boundaries.md)：从已解析的文件依赖推导目录/模块级的禁止方向与模块环，附具体 `file:line` 证据，CLI 与 MCP 共用。
 - 端到端图基线：索引一份刻意包含反例的 fixture，整图与提交进仓库的 golden 比对，用于发现上游同步或解析器升级后**丢失**的关系；更新流程与行号敏感性见[开发参考](../development.md#end-to-end-graph-baseline)。
 - [个人版生产硬化与发布准备](release-readiness.md)：三平台门禁、夜间真实依赖验证、个人安装产物和发布边界。
@@ -22,7 +22,7 @@
 | Graph 定义、同名消歧、关系证据/动态覆盖、引用、调用方、文件符号、全文检索、行范围、文件级影响与启动入口 | [结构化查询](structured-queries.md) |
 | C/C++、JS/TS、Java、Rust、Go、Python 的按需语言服务 | [LSP](lsp-mvp.md) |
 | Graph/LSP 自动路由、结果合并、影响分析与多窗口共享 | [统一路由与影响分析](unified-routing.md) |
-| 符号重命名、正文替换、前后插入与默认预览 | [结构化编辑](structured-edits.md) |
+| 符号重命名、正文替换、前后插入、整文件格式化与默认预览 | [结构化编辑](structured-edits.md) |
 | 本地入口、doctor、GitHub 安装、版本切换、daemon 版本切换与索引升级 | [个人使用与安装](personal-usage.md) |
 | 资源档位、查询池自动缩容与 LSP 预算 | [资源档位与自动回收](resource-governance.md) |
 | 索引状态、升级关系差异、内容标记、监听原因与局部刷新 | [索引状态、局部刷新与内容标记](index-refresh-and-versioning.md) |

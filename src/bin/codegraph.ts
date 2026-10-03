@@ -1930,6 +1930,8 @@ program
   .option('--new-name <name>', 'rename: the new symbol name')
   .option('--content <text>', 'replace-body/insert-*: the text to replace the body with, or to insert')
   .option('--content-file <file>', 'replace-body/insert-*: read the text from this file ("-" reads stdin)')
+  .option('--tab-size <number>', 'format: indentation width (default 2)')
+  .option('--tabs', 'format: indent with tabs instead of spaces')
   .option('--apply', 'Write the files (without this flag the command only previews)')
   .option('-v, --verbose', 'Show the complete per-edit JSON preview')
   .option('--expect-preview-hash <hash>', 'apply only: refuse to write unless the preview hash matches')
@@ -1938,6 +1940,7 @@ program
     path?: string; operation?: string; file?: string; line?: string; column?: string; endLine?: string; endColumn?: string;
     actionKind?: string[]; actionIndex?: string; newName?: string;
     content?: string; contentFile?: string; apply?: boolean; verbose?: boolean; expectPreviewHash?: string; operationId?: string;
+    tabSize?: string; tabs?: boolean;
   }) => {
     const projectPath = resolveProjectPath(options.path);
 
@@ -1964,6 +1967,8 @@ program
           : fs.readFileSync(path.resolve(options.contentFile), 'utf-8');
       }
       if (content !== undefined) args.content = content;
+      if (options.tabSize !== undefined) args.tabSize = Number(options.tabSize);
+      if (options.tabs) args.insertSpaces = false;
       if (options.apply) args.apply = true;
       if (options.verbose) args.verbosePreview = true;
       if (options.expectPreviewHash !== undefined) args.expectPreviewHash = options.expectPreviewHash;
