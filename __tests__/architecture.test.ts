@@ -222,6 +222,26 @@ describe('architecture report over a real index', () => {
     expect(report.uncertainPairs).toBe(0);
     expect(report.cycles.total).toBe(1);
   });
+
+  it('groups at the scope the viewer would open on, and says it chose it', async () => {
+    const root = makeRoot();
+    write(root, FIXTURE);
+    const graph = await index(root);
+
+    // Every file lives under `src/`, so the auto rule picks it and a depth that
+    // splits it into the five directories rather than one box named `src`.
+    const auto = graph.getArchitectureReport();
+    expect(auto.autoScope).toBe(true);
+    expect(auto.root).toBe('src');
+    expect(auto.depth).toBe(1);
+    expect(auto.modules).toBe(5);
+
+    // Naming a root turns the choice into the caller's, and the whole repository
+    // at depth 1 is one module.
+    const named = graph.getArchitectureReport({ root: '', depth: 1 });
+    expect(named.autoScope).toBe(false);
+    expect(named.modules).toBe(1);
+  });
 });
 
 describe('architecture config loading', () => {
@@ -262,8 +282,8 @@ describe('architecture config loading', () => {
     write(root, { 'codegraph.json': JSON.stringify({ exclude: ['vendor/'] }) });
 
     expect(loadArchitectureConfig(root)).toEqual({
-      root: '',
-      depth: 2,
+      root: null,
+      depth: null,
       minConfidence: 0.6,
       requireDeclared: true,
       deny: [],
@@ -277,7 +297,7 @@ describe('architecture config loading', () => {
     });
 
     const config = loadArchitectureConfig(root);
-    expect(config.depth).toBe(2);
+    expect(config.depth).toBeNull();
     expect(config.minConfidence).toBe(0.6);
   });
 });

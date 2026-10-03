@@ -181,3 +181,183 @@ export function collapseLoneRootFiles(ids: ReadonlySet<string>): Map<string, str
   }
   return renamed;
 }
+
+// =============================================================================
+// Which grouping to draw when the reader named none
+// =============================================================================
+
+/** A file as the grouping rules see it: where it is, how big it is, whether it is program. */
+export interface ModuleViewFile {
+  path: string;
+  symbols: number;
+  test: boolean;
+}
+
+/** Default segments below the root that name a module. */
+export const DEFAULT_MODULE_DEPTH = 1;
+export const MAX_MODULE_DEPTH = 4;
+
+/**
+ * A box holding more than this share of the mapped symbols IS the program, and
+ * a map whose subject is one box has not said anything.
+ */
+const DOMINANT_SHARE = 0.4;
+
+/**
+ * …but only if there is something inside it. A dominant box of four files is a
+ * small project honestly drawn; opening it just spreads four files over four
+ * boxes. This is the line between "grouped too coarsely" and "actually small".
+ */
+const DOMINANT_MIN_FILES = 25;
+
+/** Fewer boxes than this is a list, not a picture. */
+const MIN_MODULES = 4;
+
+/** More than this and a deeper grouping has traded one unreadable map for another. */
+const MAX_MODULES = 60;
+
+/**
+ * The root to open on: the directory holding the most non-test symbols.
+ *
+ * A repository's source almost always lives under one directory (`src`, `lib`,
+ * `pkg`, `app`), and opening there is what keeps the default view about the
+ * program rather than about its tests, scripts and sibling packages. The
+ * fallback is the repository root, which is correct for a flat project.
+ *
+ * A directory only wins if it holds a clear majority of the symbols — anything
+ * less and the honest answer is "this repository has no single source root".
+ */
+export function pickDefaultRoot(files: ReadonlyArray<ModuleViewFile>): string {
+  const byDir = new Map<string, number>();
+  let total = 0;
+  for (const file of files) {
+    if (file.test) continue;
+    // A file loose in the repository root is program too: git's hundreds of
+    // top-level `.c` files made `builtin/` look like the majority of the code.
+    total += file.symbols;
+    const slash = file.path.indexOf('/');
+    if (slash <= 0) continue;
+    const dir = file.path.slice(0, slash);
+    byDir.set(dir, (byDir.get(dir) ?? 0) + file.symbols);
+  }
+  if (total === 0) return '';
+  let best = '';
+  let bestSymbols = 0;
+  let second = 0;
+  for (const [dir, symbols] of [...byDir].sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (symbols > bestSymbols) {
+      second = bestSymbols;
+      best = dir;
+      bestSymbols = symbols;
+    } else if (symbols > second) second = symbols;
+  }
+  // A second root holding a fifth of the code (a React Native app's `ios/`
+  // beside its `src/`) belongs on the picture: map the whole project.
+  if (second * 5 >= total) return '';
+  return bestSymbols * 2 > total ? best : '';
+}
+
+/** The non-test modules a given depth would draw, and how concentrated they are. */
+function tallyModules(
+  files: ReadonlyArray<ModuleViewFile>,
+  root: string,
+  depth: number,
+  passThrough?: ReadonlySet<string>
+): { count: number; share: number; largestFiles: number } {
+  const byModule = new Map<string, { symbols: number; files: number }>();
+  let total = 0;
+  for (const file of files) {
+    if (file.test) continue;
+    const assigned = moduleIdFor(file.path, root, depth, passThrough);
+    if (assigned === null) continue;
+    let entry = byModule.get(assigned.id);
+    if (!entry) byModule.set(assigned.id, (entry = { symbols: 0, files: 0 }));
+    entry.symbols += file.symbols;
+    entry.files += 1;
+    total += file.symbols;
+  }
+  let largest = { symbols: 0, files: 0 };
+  for (const entry of byModule.values()) {
+    if (entry.symbols > largest.symbols) largest = entry;
+  }
+  return {
+    count: byModule.size,
+    share: total === 0 ? 0 : largest.symbols / total,
+    largestFiles: largest.files,
+  };
+}
+
+/**
+ * How many segments name a module, when the reader has not said.
+ *
+ * Depth is not a property of the reader's taste, it is a property of the
+ * repository: one level under the root is the right grouping for a project
+ * whose directories ARE its modules, and the wrong one for the very common
+ * shape where every line of the program lives under a single `src/`. Drawing
+ * that project at depth 1 produces the map this rule exists to prevent — a box
+ * labelled `src`, holding two thirds of the code, with nothing to say about it.
+ *
+ * So: take the shallowest depth that is neither dominated by one box worth
+ * opening nor too small to be a picture; stop before a deeper one becomes a
+ * crowd; and never go past the last level the directory tree actually has.
+ *
+ * The walk does NOT stop at the first depth that fails to add boxes. A repo
+ * packaged as `frontend/src/...` plateaus at two boxes for two levels running
+ * before the third splits it, and a rule that gave up on the plateau would
+ * draw exactly the picture this function exists to avoid.
+ */
+export function pickDefaultDepth(
+  files: ReadonlyArray<ModuleViewFile>,
+  root: string,
+  passThrough?: ReadonlySet<string>
+): number {
+  // Past the deepest directory, a bigger number only renames boxes to
+  // `src/a/(root files)`. There is nothing below the leaves.
+  let deepest = DEFAULT_MODULE_DEPTH;
+  for (const file of files) {
+    if (file.test) continue;
+    const path = toPosixPath(file.path);
+    if (root && !path.startsWith(`${root}/`)) continue;
+    const rel = root ? path.slice(root.length + 1) : path;
+    const dirs = rel.split('/').filter(Boolean).slice(0, -1);
+    deepest = Math.max(deepest, levelEnds(root, dirs, passThrough).length);
+  }
+
+  let fallback = DEFAULT_MODULE_DEPTH;
+  let fallbackCount = 0;
+  for (let depth = DEFAULT_MODULE_DEPTH; depth <= Math.min(MAX_MODULE_DEPTH, deepest); depth += 1) {
+    const tally = tallyModules(files, root, depth, passThrough);
+    if (tally.count === 0) break;
+    // Deeper only gets more crowded from here.
+    if (tally.count > MAX_MODULES) break;
+    const dominated = tally.share > DOMINANT_SHARE && tally.largestFiles >= DOMINANT_MIN_FILES;
+    if (tally.count >= MIN_MODULES && !dominated) return depth;
+    // Not a picture yet. Worth keeping only if it drew more than the last one:
+    // a deeper grouping that splits nothing is the same map with longer labels.
+    if (tally.count > fallbackCount) {
+      fallback = depth;
+      fallbackCount = tally.count;
+    }
+  }
+  return fallback;
+}
+
+/**
+ * The root and depth to open on when the reader named neither.
+ *
+ * A source directory whose files all sit in one folder — Express's `lib/`, an
+ * R package's `R/`, an Erlang app's `src/`, fmt's `include/fmt/` — draws as one
+ * box at any depth, and a map whose subject is one box has said nothing. The
+ * repository around it (that folder beside a CLI, a `src/`, the examples) is
+ * then the picture worth opening on, when it draws more than one box.
+ */
+export function pickDefaultView(
+  files: ReadonlyArray<ModuleViewFile>,
+  passThrough?: ReadonlySet<string>
+): { root: string; depth: number } {
+  const root = pickDefaultRoot(files);
+  const depth = pickDefaultDepth(files, root, passThrough);
+  if (root === '' || tallyModules(files, root, depth, passThrough).count > 1) return { root, depth };
+  const wholeDepth = pickDefaultDepth(files, '', passThrough);
+  return tallyModules(files, '', wholeDepth, passThrough).count > 1 ? { root: '', depth: wholeDepth } : { root, depth };
+}

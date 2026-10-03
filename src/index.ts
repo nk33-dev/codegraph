@@ -82,7 +82,15 @@ import {
 } from './resolution';
 import { hasSynthesisPattern } from './resolution/callback-synthesizer';
 import { indexRevision, type RevisionStatus } from './graph/index-health';
-import { collapseLoneRootFiles, moduleIdFor, passThroughDirs, toPosixPath } from './graph/module-map';
+import {
+  collapseLoneRootFiles,
+  moduleIdFor,
+  normalizeRoot,
+  passThroughDirs,
+  pickDefaultDepth,
+  pickDefaultView,
+  toPosixPath,
+} from './graph/module-map';
 import {
   MODULE_DEPENDENCY_EDGE_KINDS,
   matchBoundaryRules,
@@ -103,7 +111,7 @@ export type { RelationshipCoverage } from './graph/relationship-coverage';
 export type { RelationEvidence } from './graph/edge-provenance';
 export { formatIndexRelationChanges } from './graph/index-relation-delta';
 import { getCodeGraphDir } from './directory';
-import { deriveProjectNameTokens } from './search/query-utils';
+import { deriveProjectNameTokens, isTestFile } from './search/query-utils';
 import ignore from 'ignore';
 import { loadDeprioritizePatterns } from './project-config';
 import { CodeGraphPackageVersion } from './mcp/version';
@@ -260,15 +268,19 @@ export interface RefreshResult extends SyncResult {
   version: string | null;
 }
 
-/** Default segments under the root that name a module when no `architecture` config says otherwise. */
-const DEFAULT_ARCHITECTURE_DEPTH = 2;
 /** Default confidence floor for architecture counts, matching the viewer's `UNCERTAIN_BELOW`. */
 const DEFAULT_ARCHITECTURE_MIN_CONFIDENCE = 0.6;
 
 export interface ArchitectureReportOptions {
-  /** Directory the module grouping starts at; `''` (the default) is the repository root. */
-  root?: string;
-  /** Path segments under `root` that name a module. */
+  /**
+   * Directory the module grouping starts at; `''` is the repository root.
+   *
+   * Left out (or `null`), the scope is picked the way the viewer's map picks it — the source
+   * directory holding the most non-test symbols, with a depth that is neither one dominant box
+   * nor a crowd. Name a root to check a scope the auto rule would not have chosen.
+   */
+  root?: string | null;
+  /** Path segments under `root` that name a module. Defaults to the depth the auto rule picks. */
   depth?: number;
   /** Edges below this confidence are left out of every count. */
   minConfidence?: number;
@@ -298,6 +310,13 @@ export interface ArchitectureViolationEvidence {
 export interface ArchitectureReport {
   root: string;
   depth: number;
+  /**
+   * Whether `root`/`depth` were picked here rather than asked for.
+   *
+   * Worth carrying: a CI gate whose scope is chosen at run time checks a different set of modules
+   * the day a new top-level directory changes which one wins.
+   */
+  autoScope: boolean;
   minConfidence: number;
   requireDeclared: boolean;
   /** Modules the files were grouped into, after loose-file buckets were folded. */
@@ -2295,8 +2314,6 @@ export class CodeGraph {
    * being dropped silently.
    */
   getArchitectureReport(options: ArchitectureReportOptions = {}): ArchitectureReport {
-    const root = options.root ?? '';
-    const depth = options.depth ?? DEFAULT_ARCHITECTURE_DEPTH;
     const minConfidence = options.minConfidence ?? DEFAULT_ARCHITECTURE_MIN_CONFIDENCE;
     const requireDeclared = options.requireDeclared ?? true;
     const rules = options.rules ?? [];
@@ -2304,8 +2321,23 @@ export class CodeGraph {
     const edgesPerViolation = options.maxEdgesPerViolation ?? 5;
     const maxCycles = options.maxCycles ?? 20;
 
-    const paths = this.getFiles().map((file) => toPosixPath(file.path));
-    const passThrough = passThroughDirs(paths);
+    // Grouping the whole repository at a fixed depth mixes tests, scripts and
+    // sibling packages into the picture, and on a repository whose program lives
+    // under one directory it collapses into a single box made of everything. The
+    // viewer faces the same choice and answers it in `pickDefaultView`; a report
+    // that answered it differently would disagree with the map about what a
+    // module is. Naming a root (or a depth) opts out.
+    const fileRecords = this.getFiles().map((file) => {
+      const path = toPosixPath(file.path);
+      return { path, symbols: file.nodeCount ?? 0, test: isTestFile(path) };
+    });
+    const passThrough = passThroughDirs(fileRecords.map((file) => file.path));
+    const autoRoot = options.root === undefined || options.root === null;
+    const view = autoRoot ? pickDefaultView(fileRecords, passThrough) : null;
+    const root = view ? view.root : normalizeRoot(options.root ?? '');
+    const depth = options.depth ?? view?.depth ?? pickDefaultDepth(fileRecords, root, passThrough);
+
+    const paths = fileRecords.map((file) => file.path);
     const assignments: Array<{ filePath: string; module: string }> = [];
     for (const filePath of paths) {
       const assigned = moduleIdFor(filePath, root, depth, passThrough);
@@ -2351,6 +2383,7 @@ export class CodeGraph {
     return {
       root,
       depth,
+      autoScope: view !== null,
       minConfidence,
       requireDeclared,
       modules: new Set(assignments.map((entry) => entry.module)).size,

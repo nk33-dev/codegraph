@@ -121,8 +121,10 @@ export interface ArchitectureBoundaryRule {
 
 /** Validated view of the project's `architecture` settings. */
 export interface ArchitectureConfig {
-  root: string;
-  depth: number;
+  /** Directory the module grouping starts at; `null` lets CodeGraph pick one, `''` means the repo root. */
+  root: string | null;
+  /** Path segments under `root` that name a module; `null` picks a depth for the chosen root. */
+  depth: number | null;
   minConfidence: number;
   requireDeclared: boolean;
   deny: ArchitectureBoundaryRule[];
@@ -152,8 +154,6 @@ interface CacheEntry {
   config: ParsedConfig;
 }
 
-/** Path segments under `architecture.root` that name a module by default. */
-const DEFAULT_ARCHITECTURE_DEPTH = 2;
 /** Edges below this confidence are left out of the architecture counts by default. */
 const DEFAULT_ARCHITECTURE_MIN_CONFIDENCE = 0.6;
 
@@ -178,8 +178,8 @@ const EMPTY_CONFIG: ParsedConfig = Object.freeze({
     serverPaths: Object.freeze([]) as unknown as string[],
   }),
   architecture: Object.freeze({
-    root: '',
-    depth: DEFAULT_ARCHITECTURE_DEPTH,
+    root: null,
+    depth: null,
     minConfidence: DEFAULT_ARCHITECTURE_MIN_CONFIDENCE,
     requireDeclared: true,
     deny: Object.freeze([]) as unknown as ArchitectureBoundaryRule[],
@@ -315,11 +315,11 @@ function extractArchitecture(
   }
   const present = new Set(Object.keys(raw));
 
-  const readDepth = (value: unknown): number => {
-    if (value === undefined) return DEFAULT_ARCHITECTURE_DEPTH;
+  const readDepth = (value: unknown): number | null => {
+    if (value === undefined) return null;
     if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 4) {
       logWarn(`Ignoring "architecture.depth" in ${PROJECT_CONFIG_FILENAME}: must be an integer from 1 to 4`, { file });
-      return DEFAULT_ARCHITECTURE_DEPTH;
+      return null;
     }
     return value;
   };
@@ -352,13 +352,13 @@ function extractArchitecture(
     }
   }
 
-  const root = typeof raw.root === 'string' ? normalizeModulePrefix(raw.root) : '';
+  const root = typeof raw.root === 'string' ? normalizeModulePrefix(raw.root) : null;
   const requireDeclared = raw.requireDeclared === undefined ? true : raw.requireDeclared === true;
   const depth = readDepth(raw.depth);
   const minConfidence = readConfidence(raw.minConfidence);
   if (
-    root === '' &&
-    depth === DEFAULT_ARCHITECTURE_DEPTH &&
+    root === null &&
+    depth === null &&
     minConfidence === DEFAULT_ARCHITECTURE_MIN_CONFIDENCE &&
     requireDeclared &&
     deny.length === 0
