@@ -470,7 +470,15 @@ function compareFileSnapshots(
   return { symbols, edges };
 }
 
-function graphNodeForSymbol(cg: CodeGraph, symbol: ChangedSymbolContext): Node | null {
+/**
+ * The live index node behind a changed symbol, or null when the change is a
+ * deletion (or the symbol was renamed and no longer exists).
+ *
+ * Exported because the risk-hotspot report marks the same symbols the change
+ * context reports, and the two must agree on what "the node for this changed
+ * symbol" means.
+ */
+export function graphNodeForSymbol(cg: CodeGraph, symbol: ChangedSymbolContext): Node | null {
   const candidates = cg.getNodesInFile(symbol.filePath);
   return candidates.find((node) => node.kind === symbol.kind && node.qualifiedName === symbol.qualifiedName)
     ?? candidates.find((node) => node.kind === symbol.kind && node.name === symbol.name && node.startLine === symbol.line)

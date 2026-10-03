@@ -30,9 +30,11 @@
  */
 
 import * as fs from 'fs';
-import type { Node as SyntaxNode, Tree } from 'web-tree-sitter';
+import type { Node as SyntaxNode } from 'web-tree-sitter';
 import type { Language } from '../types';
 import { getParser, loadGrammarsForLanguages } from '../extraction/grammars';
+import { getCachedTree, parse, remember, treeFor, MAX_PARSE_BYTES } from './tree-cache';
+import type { CachedTree } from './tree-cache';
 import { parseWithinBudget } from '../extraction/parse-budget';
 
 // =============================================================================
@@ -153,83 +155,14 @@ function isSimpleOperand(text: string): boolean {
 }
 
 // =============================================================================
-// Trees, cached per file version
+// Trees, cached per file version.
+//
+// The LRU, the parse helper and the per-call byte cap live in graph/tree-cache.ts
+// so the hotspot report shares them instead of keeping a second copy.
 // =============================================================================
 
-interface CachedTree {
-  key: string;
-  tree: Tree;
-  source: string;
-  guards?: Map<string, BranchGuard[]>;
-}
-
-const TREE_CACHE_SIZE = 8;
-const treeCache = new Map<string, CachedTree>();
-
-/**
- * Files above this size are not parsed for labels. A 300 KB source file costs
- * tens of milliseconds to parse, and a Symbol view is budgeted at 100 ms end
- * to end; a call site in such a file simply shows no `when`.
- */
-export const MAX_PARSE_BYTES = 256 * 1024;
-
-/** The `web-tree-sitter` trees held above are native memory: evict explicitly. */
-function remember(path: string, entry: CachedTree): void {
-  const old = treeCache.get(path);
-  if (old) old.tree.delete();
-  treeCache.delete(path);
-  treeCache.set(path, entry);
-  if (treeCache.size > TREE_CACHE_SIZE) {
-    const oldest = treeCache.keys().next().value as string;
-    treeCache.get(oldest)?.tree.delete();
-    treeCache.delete(oldest);
-  }
-}
-
-async function treeFor(absPath: string, language: Language, deadline = Infinity): Promise<CachedTree | null> {
-  if (Date.now() >= deadline) return null;
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(absPath);
-  } catch {
-    return null;
-  }
-  const key = `${language}:${stat.mtimeMs}:${stat.size}`;
-  const hit = treeCache.get(absPath);
-  if (hit && hit.key === key) return hit;
-  if (stat.size > MAX_PARSE_BYTES) return null;
-  let source: string;
-  try {
-    source = fs.readFileSync(absPath, 'utf8');
-  } catch {
-    return null;
-  }
-  const tree = await parse(source, language, deadline);
-  if (!tree) return null;
-  const entry = { key, tree, source };
-  remember(absPath, entry);
-  return entry;
-}
-
-async function parse(source: string, language: Language, deadline = Infinity): Promise<Tree | null> {
-  try {
-    await loadGrammarsForLanguages([language]);
-    const parser = getParser(language);
-    if (!parser || Date.now() >= deadline) return null;
-    // 限时标注可以取消一个大文件的解析；共享 parser 必须重置，不能把半棵树带到下次请求。
-    let tree: Tree | null = null;
-    try {
-      tree = parser.parse(source, null, Number.isFinite(deadline)
-        ? { progressCallback: () => Date.now() >= deadline }
-        : undefined);
-      return tree;
-    } finally {
-      if (!tree) parser.reset();
-    }
-  } catch {
-    return null;
-  }
-}
+export { MAX_PARSE_BYTES } from './tree-cache';
+export type { CachedTree } from './tree-cache';
 
 // =============================================================================
 // Entry points
@@ -265,7 +198,7 @@ export async function guardsForFile(
 ): Promise<Map<string, BranchGuard[]>> {
   const out = new Map<string, BranchGuard[]>();
   if (!supportsBranchGuards(language) || sites.length === 0) return out;
-  const cached = await treeFor(absPath, language, deadline);
+  const cached = await treeFor<BranchGuard[]>(absPath, language, deadline);
   if (!cached) return out;
   for (const site of sites) {
     if (Date.now() >= deadline) break;
@@ -277,7 +210,7 @@ export async function guardsForFile(
 }
 
 /** 重复查看同一调用点时复用推导；文件变化会连同语法树一起失效。 */
-function cachedGuards(cached: CachedTree, language: Language, site: CallSite): BranchGuard[] {
+function cachedGuards(cached: CachedTree<BranchGuard[]>, language: Language, site: CallSite): BranchGuard[] {
   const guards = cached.guards ??= new Map<string, BranchGuard[]>();
   const key = siteKey(site);
   let result = guards.get(key);
@@ -309,7 +242,7 @@ export function guardsForFileSync(
     return out;
   }
   const key = `${language}:${stat.mtimeMs}:${stat.size}`;
-  let cached = treeCache.get(absPath);
+  let cached = getCachedTree<BranchGuard[]>(absPath);
   if (!cached || cached.key !== key) {
     if (stat.size > MAX_PARSE_BYTES) return out;
     const parser = getParser(language);
@@ -427,7 +360,7 @@ export async function callArgumentsForFile(
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (!supportsBranchGuards(language) || sites.length === 0) return out;
-  const cached = await treeFor(absPath, language);
+  const cached = await treeFor<BranchGuard[]>(absPath, language);
   if (!cached) return out;
   for (const site of sites) {
     const key = siteKey(site);
@@ -645,7 +578,7 @@ export async function callSitesForFile(
 ): Promise<Map<string, CallSiteText>> {
   const out = new Map<string, CallSiteText>();
   if (!supportsBranchGuards(language) || sites.length === 0) return out;
-  const cached = await treeFor(absPath, language);
+  const cached = await treeFor<BranchGuard[]>(absPath, language);
   if (!cached) return out;
   for (const site of sites) {
     const key = siteKey(site);
@@ -829,7 +762,7 @@ export async function triggersForFile(
 ): Promise<Map<string, SiteTrigger>> {
   const out = new Map<string, SiteTrigger>();
   if (!JS_FAMILY.has(language) || sites.length === 0) return out;
-  const cached = await treeFor(absPath, language);
+  const cached = await treeFor<BranchGuard[]>(absPath, language);
   if (!cached) return out;
   for (const site of sites) {
     const key = siteKey(site);
@@ -1059,7 +992,7 @@ export function loopsInTree(root: SyntaxNode, source: string, language: Language
 export async function loopsForFile(absPath: string, language: Language, sites: readonly CallSite[]): Promise<Map<string, SiteLoop[]>> {
   const out = new Map<string, SiteLoop[]>();
   if (!supportsBranchGuards(language) || sites.length === 0) return out;
-  const cached = await treeFor(absPath, language);
+  const cached = await treeFor<BranchGuard[]>(absPath, language);
   if (!cached) return out;
   for (const site of sites) {
     const key = siteKey(site);
@@ -2128,7 +2061,7 @@ const NESTED_SCOPE_TYPES: ReadonlySet<string> = new Set([
 
 export async function returnsForFile(absPath: string, language: Language, line: number): Promise<ReturnSite[]> {
   if (!supportsBranchGuards(language)) return [];
-  const cached = await treeFor(absPath, language);
+  const cached = await treeFor<BranchGuard[]>(absPath, language);
   if (!cached) return [];
   return returnsInTree(cached.tree.rootNode, line);
 }
@@ -2223,7 +2156,7 @@ export async function decoratorsForFile(
 ): Promise<Map<number, DefinitionDecorators>> {
   const out = new Map<number, DefinitionDecorators>();
   if (!supportsBranchGuards(language) || lines.length === 0) return out;
-  const cached = await treeFor(absPath, language);
+  const cached = await treeFor<BranchGuard[]>(absPath, language);
   if (!cached) return out;
   for (const line of lines) {
     if (out.has(line)) continue;
@@ -2322,7 +2255,7 @@ function decoratorText(node: SyntaxNode): string {
 export async function memberTypesForFile(absPath: string, language: Language, line: number): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (!supportsBranchGuards(language)) return out;
-  const cached = await treeFor(absPath, language);
+  const cached = await treeFor<BranchGuard[]>(absPath, language);
   if (!cached) return out;
   return memberTypesInTree(cached.tree.rootNode, cached.source, line);
 }

@@ -119,9 +119,27 @@ export function getFrameworkResolver(name: string): FrameworkResolver | undefine
 
 /**
  * Detect which frameworks are used in a project
+ *
+ * A detector that names the languages it applies to is skipped when the project
+ * contains none of them: on a pure-Python repo the Swift, C#, Terraform and Go
+ * detectors have nothing to find, but each one used to walk the whole file list
+ * anyway — and detection runs two to three times per index. A detector without
+ * `languages` stays universal and always runs.
+ *
+ * An empty (or unavailable) language set means "not known yet" — that is the
+ * pre-index construction pass, where every detector must still run.
  */
 export function detectFrameworks(context: ResolutionContext): FrameworkResolver[] {
+  const presentLanguages = context.getAllFileLanguages?.();
+  const known = presentLanguages && presentLanguages.size > 0 ? presentLanguages : null;
   return FRAMEWORK_RESOLVERS.filter((resolver) => {
+    if (
+      known &&
+      resolver.languages &&
+      !resolver.languages.some((language) => known.has(language))
+    ) {
+      return false;
+    }
     try {
       return resolver.detect(context);
     } catch {

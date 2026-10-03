@@ -14,6 +14,8 @@
 - [幂等与事务式结构化编辑](edit-transactions.md)：稳定 operation ID、跨文件暂存/提交/回滚、启动恢复、逐文件恢复清单与 LSP 文件通知。
 - [LSP 语义查询与安全自动修复](lsp-semantic-actions.md)：类型提示、位置补全、实现/类型定义、调用/类型层级、全项目诊断，以及补导入和整理导入等 Code Action、整文件格式化的预览与事务写入。
 - [依赖边界与循环依赖检查](architecture-boundaries.md)：从已解析的文件依赖推导目录/模块级的禁止方向与模块环，附具体 `file:line` 证据，CLI 与 MCP 共用。
+- [Rust 符号的构建上下文](rust-build-context.md)：`codegraph node` 附加 crate 归属、workspace 成员关系与该 crate 声明的 feature 和依赖；查询期现算，并明确声明它不表示条件编译。
+- [风险热点报告与阈值门禁](risk-hotspots.md)：把分支复杂度、调用方数量、改动符号与关联测试合成一个排序，供 `codegraph hotspots --strict` 做 CI 门禁；复杂度读时现算，不落库。
 - 端到端图基线：索引一份刻意包含反例的 fixture，整图与提交进仓库的 golden 比对，用于发现上游同步或解析器升级后**丢失**的关系；更新流程与行号敏感性见[开发参考](../development.md#end-to-end-graph-baseline)。
 - [个人版生产硬化与发布准备](release-readiness.md)：三平台门禁、夜间真实依赖验证、个人安装产物和发布边界。
 
@@ -27,12 +29,15 @@
 | 资源档位、查询池自动缩容与 LSP 预算 | [资源档位与自动回收](resource-governance.md) |
 | 索引状态、升级关系差异、内容标记、监听原因与局部刷新 | [索引状态、局部刷新与内容标记](index-refresh-and-versioning.md) |
 | 同步幂等、中断恢复、索引增长与查询测量 | [索引可靠性审查](index-reliability.md) |
+| 索引期读缓存的生命周期、失效点与框架语言过滤 | [索引读缓存](index-caching.md) |
 | MCP 固定表面、缓存稳定性与字符开销边界 | [MCP 表面与缓存稳定性](mcp-surface.md) |
 | Explore stale 输出、跨调用去重边界与点名文件的头部保留和续读脚注 | [Explore 响应稳定性](explore-response.md) |
 | 查询输出折叠、过滤、新文件状态与失败分类 | [查询输出、过滤与索引状态](query-output-indexing.md) |
 | 首调用 catch-up 时延、alwaysLoad 固定成本与 explore→Read 回退比例 | [MCP 时延、常驻加载与 Read 回退](mcp-latency-and-load.md) |
 | Git 调用成本、测试选择与 Windows CI 分片 | [测试性能](test-performance.md) |
 | 依赖方向规则、模块环与 `codegraph architecture` | [架构边界](architecture-boundaries.md) |
+| Rust 符号的 crate 归属、feature 与依赖证据 | [Rust 构建上下文](rust-build-context.md) |
+| 复杂度/扇入/改动/测试合成的热点排序与 `codegraph hotspots --strict` 门禁 | [风险热点](risk-hotspots.md) |
 | Steps、Windows 清理、WASM 测试运行与性能修复 | [开发验证记录](test-repairs.md) |
 
 CLI/MCP 共用 `src/index.ts` 的公共接口；默认 MCP 工具为 `codegraph_explore` 和 `codegraph_edit`，局部刷新通过 CLI `codegraph refresh <file>` 与公共 API 提供。可视化沿用上游功能；上游 v1.6.1 起 viewer 默认不随发布开放，`codegraph ui` / `web` 需要显式设置 `CODEGRAPH_UI=1` 才会启动，不设置就完全不运行 HTTP 服务。

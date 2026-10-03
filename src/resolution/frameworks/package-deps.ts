@@ -13,7 +13,7 @@ import type { ResolutionContext } from '../types';
 const MAX_MANIFESTS = 24;
 
 /**
- * Cached per context, keyed by how many files are indexed.
+ * Cached per context, keyed by the identity of the file list it was computed from.
  *
  * The resolver is constructed — and every `detect()` runs once — BEFORE any
  * file exists, so that first pass sees no directories to probe and reads only
@@ -21,16 +21,19 @@ const MAX_MANIFESTS = 24;
  * indexing (`CodeGraph.indexAll`) a cache hit on the empty set, and every
  * framework whose dependency lives one directory down stayed undetected: a
  * proshop-shaped repo indexed its React Router routes (extraction is not
- * gated on detection) and then resolved none of its navigation. Re-reading
- * when the file count changes costs one manifest sweep per index.
+ * gated on detection) and then resolved none of its navigation. Comparing the
+ * list itself rather than its length also notices a re-index that swaps files
+ * without changing the count, and it costs nothing: `getAllFiles()` memoizes
+ * the array against the database change stamp, so the same array comes back
+ * until something is written.
  */
-const cache = new WeakMap<ResolutionContext, { files: number; names: Set<string> }>();
+const cache = new WeakMap<ResolutionContext, { files: readonly string[]; names: Set<string> }>();
 
 /** Every dependency name declared at the root or up to two directories down, de-duplicated. */
 export function declaredDependencies(context: ResolutionContext): Set<string> {
   const files = context.getAllFiles();
   const cached = cache.get(context);
-  if (cached && cached.files === files.length) return cached.names;
+  if (cached && cached.files === files) return cached.names;
   const names = new Set<string>();
   // The index lists source files, never manifests: the candidate directories
   // are the first one or two segments of what IS indexed, probed on disk.
@@ -58,7 +61,7 @@ export function declaredDependencies(context: ResolutionContext): Set<string> {
       // Not JSON — a template, a broken manifest; nothing to read.
     }
   }
-  cache.set(context, { files: files.length, names });
+  cache.set(context, { files, names });
   return names;
 }
 

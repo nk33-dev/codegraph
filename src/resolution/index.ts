@@ -303,18 +303,23 @@ export class ReferenceResolver {
   private nodesByKindCache = new Map<Node['kind'], Node[]>();
   // Filesystem existence probes behind context.fileExists (paths not in knownFiles).
   private fileExistsMemo = new Map<string, boolean>();
+  // context.fileContains answers, keyed `path\0needle`. The needles are a small
+  // fixed set (package markers, macro names, framework directives), so this is a
+  // plain Map like fileExistsMemo. Without it, a file that is not otherwise read
+  // during resolution was re-read from disk for every probe.
+  private containsMemo = new Map<string, boolean>();
   private knownNames: Set<string> | null = null; // all known symbol names for fast pre-filtering
   private knownFiles: Set<string> | null = null;
   private cachesWarmed = false;
   // tsconfig/jsconfig path-alias map. `undefined` = not yet computed,
-  // `null` = computed and absent. Treated as immutable for the
-  // resolver's lifetime; callers re-create the resolver if config changes.
+  // `null` = computed and absent. Stable within a resolution pass and
+  // re-derived at each clearCaches().
   private projectAliases: AliasMap | null | undefined = undefined;
   // Per directory: the aliases of the nearest non-root tsconfig declaring `paths`.
   private dirAliases = new Map<string, AliasMap | null>();
-  // go.mod module path. Same lazy/immutable convention as projectAliases.
+  // go.mod module path. Same lazy/convention as projectAliases.
   private goModule: GoModule | null | undefined = undefined;
-  // Monorepo workspace member packages. Same lazy/immutable convention.
+  // Monorepo workspace member packages. Same lazy convention.
   private workspacePackages: WorkspacePackages | null | undefined = undefined;
 
   constructor(projectRoot: string, queries: QueryBuilder) {
@@ -448,7 +453,16 @@ export class ReferenceResolver {
     this.supertypeGen++;
     this.nodesByKindCache.clear();
     this.fileExistsMemo.clear();
+    this.containsMemo.clear();
     this.manifestScopes.clear();
+    // Config-derived lookups. The comments on these fields call them immutable
+    // for the resolver's lifetime, but a watch-mode resolver outlives a rewritten
+    // tsconfig / go.mod / package.json, and this is the pass boundary where every
+    // other assumption of a stable filesystem is dropped too.
+    this.projectAliases = undefined;
+    this.dirAliases.clear();
+    this.goModule = undefined;
+    this.workspacePackages = undefined;
     this.knownNames = null;
     this.knownLowerNames = null;
     this.knownFiles = null;
@@ -496,14 +510,24 @@ export class ReferenceResolver {
    */
   private fileContains(filePath: string, needle: string): boolean {
     if (this.fileCache.has(filePath)) return this.fileCache.get(filePath)?.includes(needle) ?? false;
+    const key = `${filePath}\u0000${needle}`;
+    const memo = this.containsMemo.get(key);
+    if (memo !== undefined) return memo;
+    let found = false;
     const fullPath = path.join(this.projectRoot, filePath);
     try {
       const stats = fs.statSync(fullPath);
-      if (!stats.isFile() || stats.size > MAX_SOURCE_FILE_SIZE_BYTES) return false;
-      return fs.readFileSync(fullPath).includes(needle);
+      if (stats.isFile() && stats.size <= MAX_SOURCE_FILE_SIZE_BYTES) {
+        found = fs.readFileSync(fullPath).includes(needle);
+      }
     } catch {
-      return false;
+      found = false;
     }
+    // Same bound as fileExistsMemo: probes are per (file, marker) and a miss is
+    // as meaningful as a hit, so both are kept.
+    if (this.containsMemo.size >= 200_000) this.containsMemo.clear();
+    this.containsMemo.set(key, found);
+    return found;
   }
 
   /**
@@ -685,6 +709,8 @@ export class ReferenceResolver {
       getAllFiles: () => {
         return this.queries.getAllFilePaths();
       },
+
+      getAllFileLanguages: () => this.queries.getDistinctFileLanguages(),
 
       listDirectories: (relativePath: string) => {
         const target = relativePath === '.' || relativePath === ''
@@ -1225,6 +1251,7 @@ export class ReferenceResolver {
     const tFw = this.profileStages ? process.hrtime.bigint() : 0n;
     let fwEarly: ResolvedRef | null = null;
     for (const framework of this.frameworks) {
+      if (this.frameworkCannotResolveLanguage(framework, ref)) continue;
       const resolved = this.gateFrameworkLanguage(framework.resolve(ref, this.context), ref);
       // Name the resolver on the edge (`metadata.framework`): a Swift→ObjC or
       // React Native bridge hop says how it got into the graph, as a
@@ -3096,6 +3123,28 @@ export class ReferenceResolver {
   private gateLanguage(result: ResolvedRef | null, ref: UnresolvedRef): ResolvedRef | null {
     if (!result) return result;
     return gateLanguageMatch(result, ref, this.context);
+  }
+
+  /**
+   * Whether {@link gateFrameworkLanguage} is guaranteed to reject anything this
+   * framework can return for `ref` — in which case calling `resolve()` at all is
+   * wasted work.
+   *
+   * The gate drops a result exactly when its target crosses the ref's code
+   * family, and `languages` is the set of languages the framework resolves in.
+   * So if every declared language crosses, no result this framework can produce
+   * would survive the gate — this is that same predicate applied before the call
+   * instead of after it.
+   *
+   * `calls` refs are exempt because the gate lets them through unconditionally
+   * (React Native / Expo JS → native bridges are deliberate evidence), and a
+   * declared language list cannot rule one out. A framework that declares
+   * nothing stays universal.
+   */
+  private frameworkCannotResolveLanguage(framework: FrameworkResolver, ref: UnresolvedRef): boolean {
+    if (ref.referenceKind === 'calls') return false;
+    if (!ref.language || !framework.languages || framework.languages.length === 0) return false;
+    return framework.languages.every((language) => crossesCodeBoundary(language, ref.language));
   }
 
   /**

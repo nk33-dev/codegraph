@@ -18,6 +18,7 @@
 | 全局 LSP 上限 | 2 | 3 | 6 |
 | LSP 空闲退出 | 90 秒 | 300 秒 | 600 秒 |
 | 每项目会话缓存预算 | 64MB | 128MB | 256MB |
+| 存储窗口字节预算 | 48MB | 96MB | 192MB |
 | 深度双索引 | 仅显式请求 | 按需临时创建 | 可预热 |
 
 `battery` 的「只保留一个 LSP」是软目标：一个语言服务器服务同一语言家族的全部文件、窗口和子 Agent；不关闭有活跃请求的服务器；TypeScript/Python 这类短时交替的语言可以临时保留两个，避免反复冷启动更耗电；超出全局上限时按最久未使用且无活跃请求的顺序退出；Graph 始终可用，不会为了精度偏好强制启动 LSP。
@@ -35,6 +36,7 @@
 | `CODEGRAPH_QUERY_WORKERS_MIN` | 缩容保留数 |
 | `CODEGRAPH_QUERY_IDLE_SHRINK_MS` | 空闲缩容时间（`0` 关闭缩容） |
 | `CODEGRAPH_RESOLVE_WORKERS` | 全量解析 worker 数（显式值完全覆盖档位） |
+| `CODEGRAPH_STORE_WINDOW_MB` | 存储写入线程未确认 bundle 的字节预算（钳制在 16–4096MB） |
 | `CODEGRAPH_LSP_PER_PROJECT_MAX` | 每项目 LSP 软上限 |
 | `CODEGRAPH_LSP_GLOBAL_MAX` | 跨 daemon 全局 LSP 上限 |
 | `CODEGRAPH_LSP_IDLE_TIMEOUT_MS` | LSP 空闲退出（`0` 从不退出） |
@@ -44,6 +46,19 @@
 优先级：**显式环境变量 > `.codegraph/lsp.json` 里的同名字段 > 档位默认值**。注意这继承自既有的 `loadLspConfig`（先读文件、再套环境变量覆盖），因此 `CODEGRAPH_LSP_IDLE_TIMEOUT_MS` 会覆盖 `lsp.json` 的 `idleTimeoutMs`，而不是相反；本轮只把第三档「档位默认值」接上，没有翻转既有优先级。
 
 关闭开关的边界：显式把空闲退出设为 `0`（`CODEGRAPH_LSP_IDLE_TIMEOUT_MS=0` 或 `lsp.json` 的 `idleTimeoutMs: 0`）表示「语言服务器常驻不退」，此时全局预算的自动协作回收也不会启动（手动调用仍然可用）——这是显式配置优先于自动回收的取舍。
+
+## 存储窗口的字节预算
+
+批量索引把每个文件的提取结果发给 store 写入线程，未确认的 bundle 原来只按条数限制（`STORE_WRITER_WINDOW = 64`）。条数限住队列长度但限不住体积：输入侧每个文件已由读取上限压到 1 MiB（`MAX_SOURCE_FILE_SIZE_BYTES`），可是密集源码提取出的节点/边数组可以远超源码本身，64 个这样的 bundle 同时在窗口里就是与文件大小无关的尖峰。
+
+现在叠加一个字节窗口（`StoreWriter.waitBelowBytes`），两个条件是「与」的关系：条数窗口不变，字节预算只在新条件更紧时才起作用。
+
+- **计量方式**：kernel 路径（默认）就是五个表缓冲的 `byteLength` 之和，精确且免费；没有 `dist` 写入线程时的对象回退路径按数组长度 × 常量粗估，够用——它的目的是发现「一个文件产出远超其源码」这种量级差异，不是逐字节记账。
+- **只在真正需要时生效**：字节预算只有在未确认 bundle 的平均体积超过 `storeWindowMb × 1024 / 64` 时才比条数窗口先满足。balanced 档是 1.5 MiB；普通仓库平均 bundle 是几十 KB，64 个加起来远低于 96 MiB，`waitBelowBytes` 立即返回，调度与之前完全一致。
+- **不按字节约束读取批次**：单文件已被 1 MiB 上限压住，10 个一批上限 10 MiB，风险在结果不在输入；限制读取只会增加抖动而不改善界。
+- **回退开关**：`CODEGRAPH_RESOURCE_GOVERNANCE=0` 时字节预算为 `Infinity`，等价于治理前的纯条数行为。
+
+记账逻辑（FIFO 结算、两个窗口互不干扰、单个超预算 bundle 不死锁、失败时释放等待者）由 `StoreWindow` 承载并在 `__tests__/store-window.test.ts` 里直接测。**限制**：真实的 `StoreWriter` 路径只在构建产物（`dist/extraction/store-worker.js`）存在时启用，本机源码态测试覆盖不到活窗口；那部分由 CI 的发布构建验证，到目前为止没有实测的内存曲线。
 
 ## 查询池的空闲缩容
 

@@ -39,6 +39,7 @@ import { declaredDependencies } from '../resolution/frameworks/package-deps';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 import type { IndexTaskLevel } from '../resource-profile';
+import { resolveResourceProfile } from '../resource-profile';
 import { MAX_SOURCE_FILE_SIZE_BYTES, oversizeStamp, readBoundedSource, readBoundedSourceSync } from '../file-limits';
 export { oversizeStamp };
 
@@ -47,6 +48,16 @@ export { oversizeStamp };
  * File reads are I/O-bound; batching overlaps I/O wait with CPU parse work.
  */
 const FILE_IO_BATCH_SIZE = 10;
+
+/**
+ * Byte budget for the store writer's outstanding bundles, from the resource
+ * profile. `Infinity` when resource governance is off — that is the behavior
+ * before the byte window existed, and it doubles as the rollback switch.
+ */
+function storeWindowBytesLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const profile = resolveResourceProfile(env);
+  return profile.governanceEnabled ? profile.storeWindowMb * 1024 * 1024 : Infinity;
+}
 
 /**
  * How many files the `sync()` reconcile processes between cooperative yields to
@@ -1938,6 +1949,14 @@ export class ExtractionOrchestrator {
    */
   private buildDetectionContext(files: string[]): ResolutionContext {
     const rootDir = this.rootDir;
+    // Detectors re-read the same manifests over and over (each detect() probes
+    // the root package.json, workspace members, framework config paths), so the
+    // three filesystem probes below are memoized. Lifetime is this context
+    // object, which ensureDetectedFrameworks() builds once and caches — there is
+    // no window in which the answers could go stale.
+    const readMemos = new Map<string, string | null>();
+    const existsMemos = new Map<string, boolean>();
+    const directoryMemos = new Map<string, readonly string[]>();
     return {
       getNodesInFile: () => [],
       getNodesByName: () => [],
@@ -1946,44 +1965,70 @@ export class ExtractionOrchestrator {
       getNodesByLowerName: () => [],
       getImportMappings: () => [],
       getAllFiles: () => files,
+      // getAllFileLanguages is deliberately absent: this context runs before
+      // extraction, so the languages here would have to be guessed from
+      // extensions, and detectLanguage() decides `.h` (C/C++/ObjC), `.inc`
+      // (PHP/Pascal) and Flow-annotated `.js` by file CONTENT. A wrong guess
+      // silently skips a detector, so every detector runs. The resolver's own
+      // context answers this from the `files.language` column, where the
+      // answer was already computed with the content in hand.
       getProjectRoot: () => rootDir,
       fileExists: (relativePath: string) => {
+        const memo = existsMemos.get(relativePath);
+        if (memo !== undefined) return memo;
         const full = validatePathWithinRoot(rootDir, relativePath);
-        if (!full) return false;
-        try {
-          return fs.existsSync(full);
-        } catch {
-          return false;
+        let exists = false;
+        if (full) {
+          try {
+            exists = fs.existsSync(full);
+          } catch {
+            exists = false;
+          }
         }
+        existsMemos.set(relativePath, exists);
+        return exists;
       },
       readFile: (relativePath: string) => {
+        const memo = readMemos.get(relativePath);
+        if (memo !== undefined) return memo;
+        let content: string | null = null;
         const full = validatePathWithinRoot(rootDir, relativePath);
-        if (!full) return null;
-        try {
-          // Framework detectors scan source by name; a file over the size
-          // limit was never indexed and must not be decoded here either (#1910).
-          return readBoundedSourceSync(full).bytes?.toString('utf8') ?? null;
-        } catch {
-          return null;
+        if (full) {
+          try {
+            // Framework detectors scan source by name; a file over the size
+            // limit was never indexed and must not be decoded here either (#1910).
+            content = readBoundedSourceSync(full).bytes?.toString('utf8') ?? null;
+          } catch {
+            content = null;
+          }
         }
+        readMemos.set(relativePath, content);
+        return content;
       },
       // Monorepo support — needed by framework detect()s that probe
       // subpackage manifests (e.g. fabric-view looking at
       // packages/<sub>/package.json when the root manifest is just a
       // workspace declaration). Matches the resolver-context shape.
       listDirectories: (relativePath: string) => {
+        const memo = directoryMemos.get(relativePath);
+        if (memo !== undefined) return memo;
         const target =
           relativePath === '.' || relativePath === ''
             ? rootDir
             : path.join(rootDir, relativePath);
+        let names: string[];
         try {
-          return fs
+          names = fs
             .readdirSync(target, { withFileTypes: true })
             .filter((entry) => entry.isDirectory())
             .map((entry) => entry.name);
         } catch {
-          return [];
+          names = [];
         }
+        // Frozen so a detector cannot push into the shared answer; callers only
+        // iterate it.
+        directoryMemos.set(relativePath, Object.freeze(names));
+        return names;
       },
     };
   }
@@ -2255,6 +2300,14 @@ export class ExtractionOrchestrator {
     }
     /** Queue-depth bound for un-acked bundles (bundles hold whole node/edge arrays). */
     const STORE_WRITER_WINDOW = 64;
+    /**
+     * The same window measured in bytes. The item count bounds the queue but not
+     * its size: every extracted bundle comes from a file the read cap already
+     * limited to 1 MiB, yet the node/edge arrays a dense source produces can be
+     * far larger than the source, and the kernel's table buffers scale with the
+     * graph rather than with the file. See StoreWriter.waitBelowBytes.
+     */
+    const STORE_WRITER_WINDOW_BYTES = storeWindowBytesLimit();
 
     /**
      * Parse one file: on the pool when available (the promise REJECTS on a worker
@@ -2327,7 +2380,10 @@ export class ExtractionOrchestrator {
         } else {
           storeWriter.send(this.buildFreshStoreBundle(filePath, content, language, stats, result));
         }
-        await storeWriter.waitBelow(STORE_WRITER_WINDOW);
+        await Promise.all([
+          storeWriter.waitBelow(STORE_WRITER_WINDOW),
+          storeWriter.waitBelowBytes(STORE_WRITER_WINDOW_BYTES),
+        ]);
       } else {
         const materialized = materializeKernelResult(result, filePath, language);
         await this.storeExtractionResult(filePath, content, language, stats, materialized, commitYield, forceExtraction);

@@ -86,7 +86,24 @@ const impactRules = [
   [/^__tests__\/fixtures\/fake-lsp-server\.js$/, /^__tests__\/(?:lsp|edit-lsp)-.*\.test\.ts$/],
   // The architecture report reads project config and adds a query of its own; the direct-import
   // graph does not connect either file to the report's test.
-  [/^src\/(?:project-config|db\/queries)\.ts$/, /^__tests__\/(?:architecture|project-config).*\.test\.ts$/],
+  [/^src\/(?:project-config|db\/queries)\.ts$/, /^__tests__\/(?:architecture|project-config|query-cache).*\.test\.ts$/],
+  // The hotspot report is assembled in `index.ts` out of the decision tables and the tree cache;
+  // `__tests__/hotspots-report.test.ts` imports `src/index.ts`, not those, so the import graph alone
+  // would miss a change to the counting or the cache.
+  [/^src\/graph\/(?:hotspots|tree-cache)\.ts$/, /^__tests__\/(?:hotspots|mcp-tools-hotspots)\.test\.ts$/],
+  // The CLI prints the report and the MCP tool shapes it into text; both are surfaces over the same
+  // assembly, and neither is a relative import of the tests that pin them.
+  [/^src\/(?:bin\/codegraph|mcp\/tools)\.ts$/, /^__tests__\/mcp-tools-hotspots\.test\.ts$/],
+  // The read memos and the detector language gate span the resolver, the extractor and the query
+  // layer; only `db/queries` is a direct relative import of query-cache.test.ts, so the files that
+  // own the caches it describes have to be named here.
+  [/^src\/(?:extraction\/index|resolution\/index|resolution\/import-resolver|resolution\/frameworks\/[^/]+)\.ts$/, /^__tests__\/query-cache\.test\.ts$/],
+  // The store window's accounting lives next to the writer that uses it, and the budget comes from
+  // the resource profile; neither file is imported by the test that pins the semantics.
+  [/^src\/(?:extraction\/(?:store-writer|index)|resource-profile)\.ts$/, /^__tests__\/(?:store-window|resource-profile)\.test\.ts$/],
+  // The Cargo manifest reader is shared by the resolver and the rust build context; the node render
+  // test covers the seam that puts the context into output.
+  [/^src\/(?:cargo-manifest|graph\/rust-context)\.ts$/, /^__tests__\/(?:rust-context|cli-node-command|node-file-view)\.test\.ts$/],
   // The end-to-end baseline pins what extraction, resolution and persistence actually wrote. None
   // of the three is a direct relative import of the test, so the import graph cannot reach it —
   // and this is precisely the test a parser, resolver or schema change should run.

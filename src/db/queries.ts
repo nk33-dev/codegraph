@@ -271,6 +271,16 @@ export class QueryBuilder {
     | { stamp: string; value: { filePath: string; edgeCount: number; nextEdgeCount: number } | null }
     | undefined;
 
+  // Whole-table read results, shared until something writes to the database.
+  // The file list alone is walked by every framework detector and by both
+  // resolution passes, and each walk re-ran `SELECT path FROM files` first —
+  // pure overhead on a table that only changes when the index does. Same
+  // change-stamp rule as getDominantFile, so no write path has to invalidate.
+  // The arrays are frozen because they are now handed to many callers.
+  private filePathsMemo: { stamp: string; value: readonly string[] } | undefined;
+  private nodeNamesMemo: { stamp: string; value: readonly string[] } | undefined;
+  private fileLanguagesMemo: { stamp: string; value: ReadonlySet<string> } | undefined;
+
   // Prepared statements (lazily initialized)
   private stmts: {
     insertNode?: SqliteStatement;
@@ -406,9 +416,12 @@ export class QueryBuilder {
     this.batchStmts.clear();
     this.edgeKindStmts.clear();
     // The change stamp is per connection, and fresh connections to two
-    // different databases report the same one — the memo goes with the old
+    // different databases report the same one — the memos go with the old
     // connection, or a worker following a rebuilt index keeps its answer (#1864).
     this.dominantFileMemo = undefined;
+    this.filePathsMemo = undefined;
+    this.nodeNamesMemo = undefined;
+    this.fileLanguagesMemo = undefined;
   }
 
   private edgeKindStmt(sql: string): SqliteStatement {
@@ -1182,6 +1195,27 @@ export class QueryBuilder {
     return `${row.changes}:${row.version}`;
   }
 
+  /**
+   * A whole-table read memoized against the change stamp.
+   *
+   * Callers get the same value back until something writes to the database —
+   * which is what makes the memo worth having, since these results are read
+   * many times per resolution pass. Nothing is kept inside a transaction:
+   * `total_changes()` counts writes a later ROLLBACK undoes, so a value read
+   * there could outlive the rollback under an unchanged stamp (same reasoning
+   * as getDominantFile).
+   */
+  private memoized<T>(
+    slot: { stamp: string; value: T } | undefined,
+    compute: () => T
+  ): { slot: { stamp: string; value: T } | undefined; value: T } {
+    if (this.db.inTransaction !== false) return { slot: undefined, value: compute() };
+    const stamp = this.getChangeStamp();
+    if (slot?.stamp === stamp) return { slot, value: slot.value };
+    const value = compute();
+    return { slot: { stamp, value }, value };
+  }
+
   private computeDominantFile(): { filePath: string; edgeCount: number; nextEdgeCount: number } | null {
     if (!this.stmts.getDominantFile) {
       // Pull top 20 candidates; we then filter out test/generated files
@@ -1417,10 +1451,17 @@ export class QueryBuilder {
    * lets the dynamic-edge synthesizers skip passes for languages the project
    * doesn't contain at all (a Kotlin pass has no work on a pure-C repo), so
    * their cost is zero rather than a full-graph scan that finds nothing (#1212).
+   *
+   * Memoized (previously it re-prepared the statement on every call) and
+   * shared, so callers must only read from the returned set.
    */
-  getDistinctFileLanguages(): Set<string> {
-    const rows = this.db.prepare('SELECT DISTINCT language FROM files').all() as Array<{ language: string }>;
-    return new Set(rows.map((r) => r.language));
+  getDistinctFileLanguages(): ReadonlySet<string> {
+    const { slot, value } = this.memoized(this.fileLanguagesMemo, () => {
+      const rows = this.db.prepare('SELECT DISTINCT language FROM files').all() as Array<{ language: string }>;
+      return new Set(rows.map((r) => r.language));
+    });
+    this.fileLanguagesMemo = slot;
+    return value;
   }
 
   /**
@@ -1711,10 +1752,11 @@ export class QueryBuilder {
     const lowered = text.toLowerCase();
     const maxDist = lowered.length <= 4 ? 1 : 2;
 
-    // Pull the distinct name list once. The set is cached on QueryBuilder
-    // by getAllNodeNames(); even on a 200k-node project the distinct
-    // name set is typically O(10k) because most names repeat. The
-    // candidate-cap below bounds memory regardless.
+    // Pull the distinct name list once. getAllNodeNames() memoizes it until
+    // the database changes, so a fuzzy search doesn't re-run the aggregate;
+    // even on a 200k-node project the distinct name set is typically O(10k)
+    // because most names repeat. The candidate-cap below bounds memory
+    // regardless.
     const allNames = this.getAllNodeNames();
     const candidates: Array<{ name: string; dist: number }> = [];
     for (const name of allNames) {
@@ -3655,25 +3697,37 @@ export class QueryBuilder {
   }
 
   /**
-   * Get all tracked file paths (lightweight — no full FileRecord objects)
+   * Get all tracked file paths (lightweight — no full FileRecord objects).
+   *
+   * Memoized: the array is shared between calls while the database is
+   * unchanged, so callers must treat it as read-only (it is frozen).
    */
-  getAllFilePaths(): string[] {
-    if (!this.stmts.getAllFilePaths) {
-      this.stmts.getAllFilePaths = this.db.prepare('SELECT path FROM files ORDER BY path');
-    }
-    const rows = this.stmts.getAllFilePaths.all() as Array<{ path: string }>;
-    return rows.map((r) => r.path);
+  getAllFilePaths(): readonly string[] {
+    const { slot, value } = this.memoized(this.filePathsMemo, () => {
+      if (!this.stmts.getAllFilePaths) {
+        this.stmts.getAllFilePaths = this.db.prepare('SELECT path FROM files ORDER BY path');
+      }
+      const rows = this.stmts.getAllFilePaths.all() as Array<{ path: string }>;
+      return Object.freeze(rows.map((r) => r.path));
+    });
+    this.filePathsMemo = slot;
+    return value;
   }
 
   /**
-   * Get all distinct node names (lightweight — just name strings for pre-filtering)
+   * Get all distinct node names (lightweight — just name strings for
+   * pre-filtering). Memoized like {@link getAllFilePaths}.
    */
-  getAllNodeNames(): string[] {
-    if (!this.stmts.getAllNodeNames) {
-      this.stmts.getAllNodeNames = this.db.prepare('SELECT DISTINCT name FROM nodes');
-    }
-    const rows = this.stmts.getAllNodeNames.all() as Array<{ name: string }>;
-    return rows.map((r) => r.name);
+  getAllNodeNames(): readonly string[] {
+    const { slot, value } = this.memoized(this.nodeNamesMemo, () => {
+      if (!this.stmts.getAllNodeNames) {
+        this.stmts.getAllNodeNames = this.db.prepare('SELECT DISTINCT name FROM nodes');
+      }
+      const rows = this.stmts.getAllNodeNames.all() as Array<{ name: string }>;
+      return Object.freeze(rows.map((r) => r.name));
+    });
+    this.nodeNamesMemo = slot;
+    return value;
   }
 
   /**
