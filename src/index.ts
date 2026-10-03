@@ -11,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mayHaveGitRepository } from './extraction/git-presence';
 import { withGitConfigSnapshot } from './extraction/git-config';
-import { getFileTextChanges, refreshFileTextIndex, searchFileText, type TextHit, type TextIndexChanges } from './db/file-text';
+import { getFileTextChanges, getIndexedFileText, refreshFileTextIndex, searchFileText, type TextHit, type TextIndexChanges } from './db/file-text';
 import {
   queryCode,
   summarizeCodeQuery,
@@ -102,7 +102,7 @@ import {
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
-import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError, planRefresh, watchDisabledPolicy, type RefreshPlan, type WatchPolicy } from './sync';
+import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError, planRefresh, watchDisabledPolicy, type RefreshPlan, type RefreshSources, type RefreshSymbol, type WatchPolicy } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
 import { planIndexUpgrade, type IndexUpgradeAssessment } from './sync/upgrade-index';
 import { IndexRelationSnapshot, type IndexRelationChanges } from './graph/index-relation-delta';
@@ -742,7 +742,7 @@ export class CodeGraph {
       this.queries.setMetadata('index_failure_reason', '');
       this.queries.setMetadata('index_started_at', String(Date.now()));
       this.queries.setMetadata('index_pending_files', String(paths?.length ?? 0));
-    } catch { /* 状态元数据是辅助信息，不阻断索引 */ }
+    } catch { /* status metadata is auxiliary; it never blocks indexing */ }
     return taskId;
   }
 
@@ -1194,13 +1194,29 @@ export class CodeGraph {
     if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error('refresh file must stay within the project root');
     }
-    const plan = planRefresh(this.projectRoot, relative);
+    const plan = planRefresh(this.projectRoot, relative, this.refreshSources());
     const normalized = plan.filePath.replace(/\\/g, '/');
-    const result = await this.sync({
-      paths: plan.scope === 'file' ? [normalized] : undefined,
-      taskLevel: plan.taskLevel,
-    });
+    const paths = plan.scope === 'file'
+      ? [normalized]
+      : plan.scope === 'related' ? plan.files : undefined;
+    const result = await this.sync({ paths, taskLevel: plan.taskLevel });
     return { ...result, plan, version: this.getIndexVersion() };
+  }
+
+  /** The index-side inputs planRefresh compares a change against (see {@link RefreshSources}). */
+  private refreshSources(): RefreshSources {
+    const symbol = (node: Node): RefreshSymbol => ({
+      qualifiedName: node.qualifiedName,
+      kind: node.kind,
+      isExported: node.isExported === true,
+      startLine: node.startLine,
+    });
+    return {
+      indexedText: (file) => getIndexedFileText(this.db.getDb(), file),
+      indexedSymbols: (file) => this.getNodesInFile(file).map(symbol),
+      extractSymbols: (file, source) => this.extractFromSource(file, source).nodes.map(symbol),
+      dependents: (file) => this.getFileDependents(file).map((dependent) => dependent.replace(/\\/g, '/')),
+    };
   }
 
   /**
@@ -1253,7 +1269,7 @@ export class CodeGraph {
     if (recoveringPartialIndex) {
       try {
         this.queries.setMetadata('index_state', 'indexing');
-      } catch { /* 状态元数据是辅助信息，不阻断同步 */ }
+      } catch { /* status metadata is auxiliary; it never blocks a sync */ }
     }
     if (result.durationMs > 0) {
       try { this.queries.setMetadata('index_commit', this.currentGitCommit() ?? ''); } catch { /* best effort */ }

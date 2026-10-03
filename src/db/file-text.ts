@@ -60,6 +60,12 @@ export function getFileTextChanges(db: SqliteDatabase, root: string): TextIndexC
   return changes;
 }
 
+/** The text the index last stored for one file, or null when it is not in the text index. */
+export function getIndexedFileText(db: SqliteDatabase, filePath: string): string | null {
+  const row = db.prepare('SELECT content FROM file_text WHERE path = ?').get(filePath) as { content: string } | undefined;
+  return row?.content ?? null;
+}
+
 export interface TextHit {
   filePath: string;
   lines: Array<{ line: number; text: string }>;

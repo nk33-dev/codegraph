@@ -49,7 +49,12 @@ describe('索引状态、局部刷新与任务等级', () => {
   });
 
   it('refresh plan recognizes project configuration', () => {
-    const plan = planRefresh('C:/project', 'package.json');
+    const plan = planRefresh('C:/project', 'package.json', {
+      indexedText: () => null,
+      indexedSymbols: () => [],
+      extractSymbols: () => [],
+      dependents: () => [],
+    });
     expect(plan).toMatchObject({ scope: 'project', taskLevel: 'global' });
   });
 
