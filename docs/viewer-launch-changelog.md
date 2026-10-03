@@ -5,7 +5,7 @@ These describe `codegraph ui` and its screens. They were taken out of `## [Unrel
 ## Highlights, as written for the viewer launch
 
 - **`codegraph ui` — your graph in a browser.** A local, read-only viewer for the project you already indexed: your code with its callers and callees in the margin, a map of the whole repository, and a strip that shows how one symbol reaches another.
-- **See your app the way its users meet it.** A Screens tab draws every screen and the navigation between them, for Expo Router, React Router, Next.js, TanStack Router, Vue Router / Nuxt and SvelteKit apps.
+- **See your app the way its users meet it.** A Screens tab draws every screen and the navigation between them, for Expo Router, React Router, Next.js, TanStack Router, Vue Router / Nuxt, SvelteKit and Angular apps.
 - **See what happens from a screen or an endpoint.** A Steps tab draws what one action sets in motion — the handlers it fires, the state it writes, the calls that leave your code, and every way it can answer — with the condition on each arrow.
 - **APIs too, and across tiers.** Endpoints in Express, NestJS, Fastify, Koa, Hono, FastAPI, Flask, Django, Spring, ASP.NET, Vapor and Gin, with a page's `fetch` following through to the route that serves it, a queued job to its consumer, an event to its handler.
 - **Read a handler in the order its code runs.** The same picture laid out by when things happen rather than by distance, so a reply sits below the token it carries. Where the code chooses, the condition is said once and each arrow answers it.
@@ -14,6 +14,10 @@ These describe `codegraph ui` and its screens. They were taken out of `## [Unrel
 - **Upgrading:** re-index your projects after this release — several of the new readings rest on edges that are written while indexing.
 
 ## New Features
+
+- **The Steps tab draws what an Angular screen does.** Each handler a template binds is drawn with the event that fires it, like `submitForm` on the form's `(ngSubmit)` or `toggleFavorite` on a button's `(click)`, followed by the requests it sends and the screen it opens. That includes handlers in child components the screen renders. Re-index Angular projects after upgrading.
+
+- **The Screens tab draws Angular apps.** Every screen in an Angular app's routes, with the navigation between them: `router.navigate(…)`, a guard's redirect and each template's `routerLink`, under the condition the code checks first. A button in a child component, like an article's favorite button, is drawn from the screen that renders it. A layout's tabs and buttons are drawn from every screen inside that layout. Re-index Angular projects after upgrading.
 
 - **A big screen's picture stops wrapping into a column.** How wide a screen's lines run before they wrap was worked out with a formula, and the formula was wrong for the way these pictures are actually drawn: a part of a screen spends lines on its own structure — a step that fires things gets a line to itself, and what it fires starts another — so estimating the lines from the boxes alone badly undercounted them, and one screen's 98 boxes wrapped into a 4,356px column. Laying a picture out is cheap and exact, so the widths are now simply tried and the one that comes out closest to the shape of a window is kept. Across one app's 51 screens the tallest picture went from 4,356px to 3,796px, total height fell 8%, and — because a shorter picture is also a picture whose lines have less far to go — lines running over other boxes fell by a third and lines crossing each other went from 13 to 5.
 
@@ -121,6 +125,8 @@ These describe `codegraph ui` and its screens. They were taken out of `## [Unrel
 
 ## Fixes — Screens, links and navigation
 
+- **Routes served by a component are listed.** Entry points and the Steps picker listed a route only when a function, method or class served it. A Vue Router, Nuxt, Svelte or Astro screen is served by a component, so those apps' routes weren't listed at all. They are now, each with the component that serves it.
+
 - **Where the app goes after login is a fork, not two always-es.** A navigation whose destination comes back from a helper — `router.replace(await resolvePostLoginRoute())` over `return (await hasSeenWelcome(…)) ? '/home/' : '/welcome/'` — drew both screens with no condition, reading as if the welcome screen always shows. The two arms share a line, and only a column can tell them apart; each synthesized edge now carries its literal's own position, so the guard reader says which arm it is: `WHEN await hasSeenWelcome(…)` → home, and its negation → welcome. And the scan starts at the helper's body, so a literal-union return type — `Promise<'/welcome/' | '/home/'>`, whose routes are string literals too, written first — no longer stands in for the navigation itself. Re-index after upgrading to pick the positions up.
 
 - **A screen that talks to native code keeps its own navigations.** In a React Native or Expo app, a `router.push` written inside a listener for a native event was credited to whichever screen had *started* that round trip, not to the screen the push is written on. In one app that moved seven transitions off the capture screen and onto the review screen it opens — leaving the review screen looking as though nothing in the app could reach it, stranded in the "no transition reaches this" band at the bottom of the Screens tab, and printing Swift conditions like `Thread.isMainThread` on a JavaScript navigation. A navigation now belongs to the screen whose file it is written in; an event arriving from native code, from an HTTP call or off a queue is no longer read backwards as if it were a caller.
@@ -136,6 +142,14 @@ These describe `codegraph ui` and its screens. They were taken out of `## [Unrel
 - **A server action written through a wrapper starts its transition on the right page.** `export const signIn = validatedAction(schema, async (data) => { … redirect('/dashboard') })` — the arrow inside is no symbol of its own — now belongs to `signIn` on the Screens tab, and `signIn` is attributed to the page whose component hands it to `useActionState(signIn, …)`, read from the source when the graph holds no such edge.
 
 ## Fixes — Steps — what a call does, and when
+
+- **A Steps picture with nothing past its anchor says why.** Starting Steps from a helper that only computes drew one box and no explanation. The panel now says that nothing it sets in motion is a step the picture draws, explains that calls between plain functions fold into the lines, and links to the symbol's callers and callees.
+
+- **Steps no longer goes blank on a function full of checks.** Reading a function in its code's order doubled the ways forward at every `if` with no `else`. A body with dozens of checks that draw nothing, like jsoup's `parse`, never finished, and the page died with a stack overflow. Ways that arrive at the same place are now one way, carrying only the conditions they all share.
+
+- **A Swift app's Steps picture labels what a call leaves for correctly.** `rawValue.data(using: .utf8)` was drawn as a network call, Foundation's `Timer` as telemetry, `Calendar` and a SiriKit `intent` as device calls, and `viewModel.votes.firstIndex(of:)` as a database read. Now only a session's `data`, `upload` and `download` are network, `Timer`, `Calendar` and `intent` are no effect at all, a view model is not a table, and a keychain is storage. A call through a type the app declares itself, like IceCubes' `Notifications` endpoint enum, is no longer read as the library of the same name.
+
+- **A server-rendered endpoint's Steps picture shows how it answers.** A Spring MVC handler answers by what it returns: a view name, a constant holding one, `"redirect:/owners/" + id`, a `ModelAndView` or a `RedirectView`. Each is now a reply, a render (`200`) or a redirect (`302`), under the condition it's returned in. petclinic's `POST /owners/new` draws the form re-rendered `WHEN result.hasErrors()` and the redirect otherwise. A Laravel controller's `view(…)`, `redirect(…)`, `redirect()->back()`, `back()`, `to_route(…)` and `response()->json(…)` are replies too, so BookStack's book page draws the page it renders beside its `404` and its old-slug redirect. PHP's own programming-error exceptions (`InvalidArgumentException`, `LogicException`, …) thrown deep in a helper are no longer drawn as one of the endpoint's answers.
 
 - **A handler called from under a binding says what it passes.** A press that runs `tryCatchSync(onClosePress)` drew a box for the wrapper and stopped — leaving the one thing a reader asks ("what is being wrapped?") unsaid, even though every other call-shaped site already prints its arguments. The panel and tooltip now say `tryCatchSync(onClosePress)` — the argument is the answer.
 
@@ -160,6 +174,22 @@ These describe `codegraph ui` and its screens. They were taken out of `## [Unrel
 - **Every call now says when it happens.** In `codegraph ui`, a symbol's callee and caller rails and the Flow strip's connectors carry the branch conditions the call site sits under — `when !isUploading && isCollected` — and `codegraph_explore`'s Flow section prints the same on each hop (`↓ calls (when isCollected)`). The conditions come from the `if` / `else` / ternary / `switch` / `&&` branches around the call, the early returns before it (`if (busy) return` reads as `!busy`), and Swift's `guard`; an inline callback inherits the conditions of the place it is defined. Read from the source as it is now, never stored: nothing about your index changes. TypeScript, JavaScript and Swift today.
 
 ## Fixes — Symbols, tests and the viewer
+
+- **One slow file can no longer freeze the viewer.** Code is highlighted with the same grammars the index uses. The COBOL grammar never finishes a line like `    .`, which free-format COBOL paragraphs end with, so opening a Flow through cobolcraft froze `codegraph ui`, and every page after it waited forever. Highlighting now runs where it can be stopped: a piece of code that takes too long is shown unhighlighted, and everything else keeps working.
+
+- **The Map opens on a picture, not a single box.** A project whose code sits in one flat folder, like Express's `lib/`, an R package's `R/`, an Erlang app's `src/` or fmt's `include/fmt/`, opened as one box with nothing to say. It now opens on the whole repository when that draws more. Files at the repository's top level also count when the Map picks where the program lives: git's hundreds of top-level `.c` files had made `builtin/` look like most of the code.
+
+- **A Flow between two symbols finds names of any shape.** A Flow opened from a Steps link, an entry point or the search box names its two ends by the symbols' own names, and names that don't look like plain identifiers were dropped: an Objective-C selector like `initWithFrame:`, a Ruby method like `save!` or `valid?`, and any name shorter than three letters, like `ok`. The strip then said the other end "names nothing in this index", even though it was there. Both ends are now looked up exactly as written.
+
+- **Entry points and the Symbol view no longer go blank.** The Symbol view of every Vue, Svelte and Astro component stayed on "Loading…", because its member list held the component's script symbols twice, along with the component and its file. Entry points went blank on apps with inline route handlers like `app.get('/x', async (c) => { … })`, which came back once per call in the handler, each call listed as if it were the handler. Each member is now listed once, and each route is one row: the handler it is bound to, or "inline handler" when the handler is written at the registration.
+
+- **Entry points' most-depended-on list shows your code, not a vendored bundle's.** A minified library or bundled docs script (`n`, `t`, `Buffer` with thousands of callers, all from inside the bundle) could top the list. Symbols in generated files are now left out of it, like test files.
+
+- **Stopping `codegraph ui` stops the server.** Killing the command by its process id, as a process manager, an editor task or `kill` does, left the server running on its port with no way to reach it, until the machine restarted. The server now notices it has been left behind and shuts down, closing the index first. Ctrl+C was never affected.
+
+- **A SwiftUI view with a preview is no longer listed as a file that runs something.** A `#Preview { … }` sits at the top level of a view's file, so every view with one showed up under entry points as if it ran code. A preview is Xcode's canvas, not code the app runs: its calls no longer count, and a file whose only top-level code is previews leaves the list.
+
+- **The Map opens a Maven or Gradle project on its packages.** A Java project keeps every file under `src/main/java/org/<company>/<app>/`, and those folders hold nothing but the next one, so the Map drew the whole program as one `src/main/java/org` box and no grouping option reached further. A folder with one subfolder and no files of its own no longer counts as a level: petclinic opens on `owner`, `vet`, `model` and `system`, each labelled `src/main/java/…/petclinic/owner`, with the full path on hover.
 
 - In `codegraph ui`, routes whose handlers live in more than 60 different files are all linked to their handler, instead of the later ones showing "not in the index". (#1975)
 

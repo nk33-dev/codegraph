@@ -1,5 +1,7 @@
 # CodeGraph maintenance workflow
 
+当前待验证同步目标为官方 `v1.6.2`（`6560052a`）；个人同步分支为 `codex/sync-1.6.2`，合并完成后再回合 `personal`。
+
 This document describes the sync, verification, data recovery and release boundaries of the personal fork. For implementation details see the [development reference](../development.md), and for personal features see the [navigation](README.md).
 
 ## 1. Branches and sync preparation

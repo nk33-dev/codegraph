@@ -39,6 +39,9 @@ export default defineConfig({
     // it stays "typecheck + affected tests": there, dist-dependent suites are listed and
     // skipped instead of triggering an engine + viewer rebuild (maintenance.md §4).
     globalSetup: process.env.CODEGRAPH_SKIP_TEST_BUILD ? [] : ['./__tests__/global-setup-dist.ts'],
+    // A throwaway home dir (and git global config) per test file, so nothing
+    // the suite runs can write to the developer's real one (#2275).
+    setupFiles: ['./__tests__/setup-home-sandbox.ts'],
     /**
      * Several MCP integration tests (mcp-daemon, mcp-initialize, mcp-ppid-watchdog,
      * mcp-roots) spawn `dist/bin/codegraph.js serve --mcp` with `process.execPath`

@@ -18,6 +18,7 @@ import { ToolHandler } from './tools';
 import { WslSharedIndexError } from '../db/wsl-shared-index';
 import { assertNoRebuild, releaseWriterLock, tryAcquireWriterLock, writerLockHeldMessage } from './writer-lock';
 import { QueryPool } from './query-pool';
+import { endFreshnessMeasurements } from './index-freshness';
 import { acquireProject, ProjectLease } from './project-lifecycle';
 import { describeResourceProfile, resolveQueryPoolSizing, resolveResourceProfile } from '../resource-profile';
 import { resourceMetrics, writeResourceMetricsSnapshot } from '../resource-metrics';
@@ -219,6 +220,11 @@ export class MCPEngine {
     this.toolHandler.setDefaultProjectHint(projectPath);
   }
 
+  /** Whether this engine only reads: no watcher, no sync, no writer slot. */
+  isReadOnly(): boolean {
+    return this.opts.readOnly;
+  }
+
   /** Project root that the engine resolved on first init (null if none). */
   getProjectPath(): string | null {
     return this.projectPath;
@@ -320,11 +326,14 @@ export class MCPEngine {
 
     // Detach + terminate the worker pool first so no tool call routes to a
     // worker mid-teardown; outstanding pool calls resolve with graceful guidance.
+    // Stopping waits for the workers to end — the pool's, and any
+    // `codegraph_status` change count still measuring: the daemon exits right
+    // after, and exiting while a worker is still starting up can crash the
+    // process.
     this.toolHandler.setQueryPool(null);
-    if (this.queryPool) {
-      void this.queryPool.destroy();
-      this.queryPool = null;
-    }
+    const poolDown = this.queryPool ? this.queryPool.destroy() : Promise.resolve();
+    this.queryPool = null;
+    const measurementsDown = endFreshnessMeasurements();
     // 停机前写最后一次快照，让 status 看到的是退出时的实际状态。
     this.writeMetricsSnapshot();
     if (this.metricsTimer) {
@@ -332,7 +341,7 @@ export class MCPEngine {
       this.metricsTimer = null;
     }
     const drained = this.toolHandler.closeAll();
-    this.stopPromise = drained.then(async () => {
+    this.stopPromise = Promise.all([drained, poolDown, measurementsDown]).then(async () => {
       if (this.initPromise) await this.initPromise;
       if (this.defaultLease) {
         await this.defaultLease.release();

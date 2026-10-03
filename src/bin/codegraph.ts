@@ -63,7 +63,7 @@ import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { getCodeGraphDir, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, isTaskNotification, extractCodeTokens, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
+import { getCodeGraphDir, isInitialized, hasSchemalessDb, hasForeignDbFile, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, isTaskNotification, isAgentMessage, extractCodeTokens, capPromptHookInjection, codeGraphDirName, DEFAULT_CODEGRAPH_DIR } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
@@ -72,7 +72,7 @@ import { ansiColorsEnabled } from '../ui/color';
 import { buildNode25BlockBanner, buildNodeTooOldBanner, MIN_NODE_MAJOR } from './node-version-check';
 import { installFatalHandlers } from './fatal-handler';
 import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime-flags';
-import { installCommandSupervision } from './command-supervision';
+import { installCommandSupervision, watchParent } from './command-supervision';
 import { EXTRACTION_VERSION } from '../extraction/extraction-version';
 import { getTelemetry, TELEMETRY_DOCS, recordIndexEvent } from '../telemetry';
 import { writeApiCorrelationConfig } from '../project-config';
@@ -2055,7 +2055,10 @@ program
       const prompt = typeof input.prompt === 'string' ? input.prompt : '';
       // System-injected task notifications are not user prompts: exit before
       // any project lookup or explore work (#1832).
-      if (isTaskNotification(prompt)) return;
+      // System-injected task notifications and subagent hand-backs are not
+      // user prompts: exit before any project lookup or explore work (#1832,
+      // #2184).
+      if (isTaskNotification(prompt) || isAgentMessage(prompt)) return;
 
       // Gate telemetry: how often each tier fires vs. no-ops — counter names
       // only, NEVER prompt content (see TELEMETRY.md). This is the data that
@@ -2713,6 +2716,10 @@ ${BROWSER_ENV}=none to never open one.
     };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
+    // Killing the command the user started (its pid, not Ctrl+C's process
+    // group) leaves this re-exec'd server with no parent to forward the
+    // signal: shut down the same way instead of serving the port forever.
+    watchParent(shutdown);
   });
 
 /**
@@ -3508,6 +3515,7 @@ program
         run: up.defaultRun,
         capture: up.defaultCapture,
         hasCommand: up.hasCommand,
+        wirePromptHook: up.defaultWirePromptHook,
         log: (m: string) => console.log(m),
         warn: (m: string) => warn(m),
         error: (m: string) => error(m),

@@ -17,12 +17,12 @@ import {
   FileRecord,
   ExtractionResult,
   ExtractionError,
-  Node,
   Edge,
+  Node,
   UnresolvedReference,
   ReferenceKind,
 } from '../types';
-import { QueryBuilder } from '../db/queries';
+import { QueryBuilder, NodeIdentity } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
 import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
 import { StoreWriter, StoreBundle, finalizeStoreBundle } from './store-writer';
@@ -34,7 +34,8 @@ import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
 import ignore, { Ignore } from 'ignore';
-import { detectFrameworks } from '../resolution/frameworks';
+import { detectFrameworks, getFrameworkResolver } from '../resolution/frameworks';
+import { declaredDependencies } from '../resolution/frameworks/package-deps';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 import type { IndexTaskLevel } from '../resource-profile';
@@ -804,10 +805,21 @@ export function preloadLanguagesForFiles(
   overrides?: Record<string, Language>
 ): Language[] {
   const languages = [...new Set(files.map((f) => detectLanguage(f, undefined, overrides)))];
+  // A Flow-typed `.js` is read with the TSX grammar (see detectLanguage).
+  if ((languages.includes('javascript') || languages.includes('jsx')) && !languages.includes('tsx')) languages.push('tsx');
   if (languages.includes('c')) {
     for (const ambiguous of ['cpp', 'objc'] as const) {
       if (!languages.includes(ambiguous)) languages.push(ambiguous);
     }
+  }
+  // An `.inc` path-detects as PHP but may read as Pascal (#2279) — unless
+  // codegraph.json maps `.inc` explicitly, which detectLanguage never overrides.
+  if (
+    !languages.includes('pascal') &&
+    !(overrides && overrides['.inc']) &&
+    files.some((f) => f.toLowerCase().endsWith('.inc'))
+  ) {
+    languages.push('pascal');
   }
   return languages;
 }
@@ -1790,6 +1802,71 @@ function resurrectRefFromDroppedEdge(
 }
 
 /**
+ * What tells a file's nodes apart across a re-index, coarsest first. (kind,
+ * name) is the #899 key and settles every name a file defines once; a name it
+ * defines more than once — the same method on two classes, a method's
+ * overloads — is split further by qualified name, then by signature (#2276).
+ */
+const REINDEX_IDENTITY_TIERS: ReadonlyArray<(n: NodeIdentity) => string> = [
+  (n) => `${n.kind}\0${n.name}`,
+  (n) => n.qualifiedName,
+  (n) => n.signature ?? '',
+];
+
+function groupNodeIdentities(
+  nodes: readonly NodeIdentity[],
+  key: (n: NodeIdentity) => string
+): Map<string, NodeIdentity[]> {
+  const groups = new Map<string, NodeIdentity[]>();
+  for (const n of nodes) {
+    const k = key(n);
+    const group = groups.get(k);
+    if (group) group.push(n);
+    else groups.set(k, [n]);
+  }
+  return groups;
+}
+
+/**
+ * Pair each node a file had before a re-index with the node that replaces it,
+ * old id → new id. Ids embed the start line, so they can't be compared across
+ * an edit. Each tier of {@link REINDEX_IDENTITY_TIERS} splits the groups the
+ * one before left ambiguous, and a group down to one node on each side is a
+ * pair. Nodes still identical after every tier (overloads in a language that
+ * records no signature) pair by position, but only when both sides have the
+ * same number of them. Anything else stays unpaired: the caller re-resolves
+ * its edges from their original reference instead of handing them all to
+ * whichever same-named node happens to come last (#2276).
+ */
+function pairReindexedNodes(
+  prior: readonly NodeIdentity[],
+  next: readonly NodeIdentity[]
+): Map<string, string> {
+  const pairs = new Map<string, string>();
+  const byPosition = (a: NodeIdentity, b: NodeIdentity) =>
+    a.startLine - b.startLine || a.startColumn - b.startColumn;
+  const pairGroups = (before: readonly NodeIdentity[], after: readonly NodeIdentity[], tier: number): void => {
+    const key = REINDEX_IDENTITY_TIERS[tier]!;
+    const afterGroups = groupNodeIdentities(after, key);
+    for (const [k, group] of groupNodeIdentities(before, key)) {
+      const match = afterGroups.get(k);
+      if (!match) continue;
+      if (group.length === 1 && match.length === 1) {
+        pairs.set(group[0]!.id, match[0]!.id);
+      } else if (tier + 1 < REINDEX_IDENTITY_TIERS.length) {
+        pairGroups(group, match, tier + 1);
+      } else if (group.length === match.length) {
+        const a = [...group].sort(byPosition);
+        const b = [...match].sort(byPosition);
+        for (let i = 0; i < a.length; i++) pairs.set(a[i]!.id, b[i]!.id);
+      }
+    }
+  };
+  pairGroups(prior, next, 0);
+  return pairs;
+}
+
+/**
  * Extraction orchestrator
  */
 export class ExtractionOrchestrator {
@@ -1921,7 +1998,76 @@ export class ExtractionOrchestrator {
     const fileList = files ?? scanDirectory(this.rootDir);
     const context = this.buildDetectionContext(fileList);
     this.detectedFrameworkNames = detectFrameworks(context).map((r) => r.name);
+    const declared = declaredDependencies(context);
+    this.gatedFrameworks = new Map();
+    for (const name of this.detectedFrameworkNames) {
+      const deps = getFrameworkResolver(name)?.appDependencies;
+      // Gated only when some manifest names the framework: otherwise detection
+      // found it by other evidence and every file is its app's.
+      if (deps && deps.some((d) => declared.has(d))) this.gatedFrameworks.set(name, deps);
+    }
+    this.appFrameworkMemo.clear();
+    this.manifestDependencies.clear();
     return this.detectedFrameworkNames;
+  }
+
+  /** Detected frameworks whose extractors run only inside their own apps, with the packages that mark one. */
+  private gatedFrameworks = new Map<string, readonly string[]>();
+  /** `<dir>|<framework>` → does the package.json at or above `dir` declare the framework. */
+  private appFrameworkMemo = new Map<string, boolean>();
+  /** Directory → the dependency names its package.json declares, null without one. */
+  private manifestDependencies = new Map<string, Set<string> | null>();
+
+  /**
+   * The detected frameworks whose extractors apply to `filePath`: all of them,
+   * except one with `appDependencies` when neither the file's package.json nor
+   * an enclosing one declares any of them.
+   */
+  private frameworksForFile(filePath: string, names: string[]): string[] {
+    if (this.gatedFrameworks.size === 0) return names;
+    const slash = filePath.lastIndexOf('/');
+    const dir = slash < 0 ? '' : filePath.slice(0, slash);
+    const kept = names.filter((name) => this.frameworkAppliesIn(dir, name));
+    return kept.length === names.length ? names : kept;
+  }
+
+  private frameworkAppliesIn(dir: string, name: string): boolean {
+    const deps = this.gatedFrameworks.get(name);
+    if (!deps) return true;
+    const key = `${dir}|${name}`;
+    const memo = this.appFrameworkMemo.get(key);
+    if (memo !== undefined) return memo;
+    // The nearest manifest that names ANY gated framework decides: true-sheet's
+    // root package.json declares expo-router for its example app, and its
+    // `docs/` Next.js app — whose own package.json declares `next` — is not
+    // an Expo app for it.
+    let applies = false;
+    for (let d: string | null = dir; d !== null; d = d === '' ? null : d.includes('/') ? d.slice(0, d.lastIndexOf('/')) : '') {
+      const declared = this.dependenciesDeclaredIn(d);
+      if (!declared) continue;
+      if (deps.some((dep) => declared.has(dep))) {
+        applies = true;
+        break;
+      }
+      if ([...this.gatedFrameworks].some(([other, otherDeps]) => other !== name && otherDeps.some((dep) => declared.has(dep)))) break;
+    }
+    this.appFrameworkMemo.set(key, applies);
+    return applies;
+  }
+
+  private dependenciesDeclaredIn(dir: string): Set<string> | null {
+    if (this.manifestDependencies.has(dir)) return this.manifestDependencies.get(dir)!;
+    let declared: Set<string> | null = null;
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(this.rootDir, dir, 'package.json'), 'utf8')) as Record<string, unknown>;
+      declared = new Set();
+      for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
+        const group = pkg[field];
+        if (group && typeof group === 'object') for (const name of Object.keys(group)) declared.add(name);
+      }
+    } catch { /* no or unreadable manifest */ }
+    this.manifestDependencies.set(dir, declared);
+    return declared;
   }
 
   /**
@@ -2118,8 +2264,9 @@ export class ExtractionOrchestrator {
      */
     const parseFile = (filePath: string, content: string): Promise<ExtractionResult> => {
       const language = detectLanguage(filePath, content, overrides);
-      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames));
-      return pool.requestParse({ filePath, content, language, frameworkNames });
+      const names = this.frameworksForFile(filePath, frameworkNames);
+      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, names));
+      return pool.requestParse({ filePath, content, language, frameworkNames: names });
     };
 
     // --- Bounded rolling-window dispatch, ordered commit ---
@@ -2175,6 +2322,7 @@ export class ExtractionOrchestrator {
             language,
             buffers: result.kernelBuffers,
             file: this.buildFileRecord(filePath, content, language, stats, nodeCount, result.errors),
+            ...(result.unresolvedReferences.length > 0 ? { extraRefs: result.unresolvedReferences } : {}),
           });
         } else {
           storeWriter.send(this.buildFreshStoreBundle(filePath, content, language, stats, result));
@@ -2749,7 +2897,7 @@ export class ExtractionOrchestrator {
     // Extract from source. Use cached framework names if indexAll has run,
     // otherwise detect on the spot so single-file re-index paths still emit
     // route nodes / middleware / etc.
-    const frameworkNames = this.ensureDetectedFrameworks();
+    const frameworkNames = this.frameworksForFile(relativePath, this.ensureDetectedFrameworks());
     const result = extractFromSource(relativePath, content, language, frameworkNames);
 
     // Store in database
@@ -2807,9 +2955,9 @@ export class ExtractionOrchestrator {
     // Bulk inserts run in bounded sub-transactions with a yield between, so a
     // giant generated file (tens of thousands of symbols) can't block the
     // event loop — and the #850 watchdog heartbeat — for the whole store.
-    // The file was NEVER one atomic transaction (each insert call has its
-    // own), and the files-table record still lands last, so crash recovery
-    // is unchanged: a partially-stored file has no record and re-indexes.
+    // That chunked path is not one atomic transaction (each insert call has
+    // its own), and the files-table record still lands last, so a
+    // partially-stored file has no record and re-indexes.
     const STORE_CHUNK = 2000;
     const contentHash = hashContent(content);
 
@@ -2843,10 +2991,21 @@ export class ExtractionOrchestrator {
     // `references` edges from callers that import it via module-attribute
     // access (`pkg.mod.fn(...)`).
     //
-    // Stamped edges become durable pending refs before deletion and resolve
-    // against the new graph. Unstamped edges can only follow an unambiguous
-    // (kind, qualifiedName) target; a bare method name may belong to another class.
-    const crossFileIncomingEdges = this.queries.getCrossFileIncomingEdgesWithTarget(filePath);
+    // We snapshot the edges plus the identity of every node the file had, so
+    // each edge can follow its old target to the re-indexed node that replaces
+    // it. Node ids are `sha256(filePath:kind:name:line)`, so any line shift in
+    // the callee file (e.g. a docstring-only edit above the symbol) changes
+    // every target id and a naive re-insert by old id would silently drop
+    // every edge. Pairing by (kind, name) — then qualified name, signature and
+    // position when the file defines a name more than once (#2276) — is stable
+    // across line shifts; if the symbol was renamed/removed, no pair is found
+    // and the edge is re-resolved from its original reference (see below).
+    const crossFileIncomingEdges = existingFile
+      ? this.queries.getCrossFileIncomingEdgesWithTarget(filePath)
+      : [];
+    const priorNodes = crossFileIncomingEdges.length > 0
+      ? this.queries.getNodeIdentitiesByFile(filePath)
+      : [];
 
     // Filter out nodes with missing required fields before insertion.
     // This prevents FK violations when edges reference nodes that would
@@ -2871,36 +3030,50 @@ export class ExtractionOrchestrator {
     this.queries.deleteFile(filePath, incomingRefs);
 
     // Fast path for the common case (everything fits one chunk): the whole
-    // file — nodes, edges, refs, file record — lands in ONE transaction with
-    // no event-loop yields in between. Giant generated files keep the chunked
-    // + yielding path below so the #850 watchdog heartbeat stays serviced.
+    // re-store — deleting the old rows, the new nodes, edges, refs and file
+    // record, and the re-attached incoming edges — lands in ONE transaction
+    // with no event-loop yields in between. Committed separately, a crash
+    // after the delete left the file looking new (no snapshot next time) and
+    // a crash before the re-attach left it looking current: either way other
+    // files' edges into it were lost for good. Giant generated files keep the
+    // chunked + yielding path below so the #850 watchdog heartbeat stays
+    // serviced.
     const fitsOneChunk =
       validNodes.length <= STORE_CHUNK &&
       validEdges.length <= STORE_CHUNK &&
       validRefs.length <= STORE_CHUNK;
     if (fitsOneChunk) {
-      // Snapshot/re-resolution of cross-file incoming edges (below) still runs
-      // for the sync path; on a fresh bulk index crossFileIncomingEdges is [].
-      this.queries.storeFileBundle({
-        nodes: validNodes,
-        edges: validEdges,
-        refs: validRefs,
-        file: {
-          path: filePath,
-          contentHash,
-          language,
-          size: stats.size,
-          modifiedAt: stats.mtimeMs,
-          indexedAt: Date.now(),
-          nodeCount: result.nodes.length,
-          errors: result.errors.length > 0 ? result.errors : undefined,
-          generated,
-        },
+      this.queries.runInTransaction(() => {
+        if (existingFile) {
+          this.queries.deleteFile(filePath);
+        }
+        this.queries.storeFileBundle({
+          nodes: validNodes,
+          edges: validEdges,
+          refs: validRefs,
+          file: {
+            path: filePath,
+            contentHash,
+            language,
+            size: stats.size,
+            modifiedAt: stats.mtimeMs,
+            indexedAt: Date.now(),
+            nodeCount: result.nodes.length,
+            errors: result.errors.length > 0 ? result.errors : undefined,
+            generated,
+          },
+        });
+        // On a fresh bulk index crossFileIncomingEdges is [].
+        if (crossFileIncomingEdges.length > 0) {
+          this.reattachCrossFileEdges(crossFileIncomingEdges, priorNodes, validNodes);
+        }
       });
-      if (crossFileIncomingEdges.length > 0) {
-        this.reattachCrossFileEdges(crossFileIncomingEdges, validNodes);
-      }
       return;
+    }
+
+    // Delete existing data for this file
+    if (existingFile) {
+      this.queries.deleteFile(filePath);
     }
 
     // Insert nodes (chunked — see STORE_CHUNK above)
@@ -2917,10 +3090,29 @@ export class ExtractionOrchestrator {
       }
     }
 
-    // Reattach only unstamped edges here; stamped callers survive in pending refs.
-    // The resolver retains the original receiver/qualifier when their target moved.
+    // Re-insert cross-file incoming edges snapshotted before the delete,
+    // moving each edge's target to the re-indexed node that replaces it (see
+    // pairReindexedNodes). Node ids include the source line, so any line
+    // shift in the callee file (e.g. a docstring-only edit above the symbol)
+    // changes every target id and a naive re-insert by old id would drop them
+    // all. `insertEdges` still filters to endpoints that exist. This closes
+    // the #899 edge-drop on `sync`.
+    //
+    // Edges whose callee (target) was renamed/removed during the re-index, or
+    // can't be told apart from a same-named sibling (#2276), are not silently
+    // dropped or guessed at: each is resurrected as its ORIGINAL unresolved
+    // ref (stamped on the edge as metadata.refName/refKind at creation) so
+    // the same sync's resolution sweep can rebind it to the right definition
+    // here or an alternative one elsewhere, or park it as status='failed' to
+    // be retried when the symbol reappears — the removal-side counterpart of
+    // #1240. Edges without refName (built before the stamp existed, or
+    // synthesized) still drop silently: reconstructing a ref from the
+    // target's plain name would strip receiver/qualifier context and risk a
+    // rebind a full re-index would never make.
+    // Reinsert incoming edges after the replacement nodes exist. Unpaired
+    // stamped edges are resurrected as unresolved references for the sweep.
     if (crossFileIncomingEdges.length > 0) {
-      this.reattachCrossFileEdges(crossFileIncomingEdges, validNodes);
+      this.reattachCrossFileEdges(crossFileIncomingEdges, priorNodes, validNodes);
     }
 
     // Insert unresolved references in batch with denormalized filePath/language
@@ -2991,32 +3183,34 @@ export class ExtractionOrchestrator {
 
   /**
    * Re-attach cross-file incoming edges snapshotted before a re-index delete
-   * (#899). Stamped callers are already pending; unstamped edges follow only
-   * one matching (kind, qualifiedName) target after IDs change.
+   * (#899): move each edge's target to the re-indexed node that replaces it
+   * ({@link pairReindexedNodes}). Targets that vanished, or that can't be
+   * told apart from a same-named sibling (#2276), are resurrected as their
+   * original unresolved ref (#1240's removal-side counterpart) when the edge
+   * carries its refName stamp, so resolution picks the target afresh.
    */
   private reattachCrossFileEdges(
-    crossFileIncomingEdges: Array<Edge & { targetKind: string; targetName: string; targetQualifiedName: string; sourceFilePath: string; sourceLanguage: Language }>,
-    validNodes: Node[]
+    crossFileIncomingEdges: Array<Edge & { sourceFilePath: string; sourceLanguage: Language }>,
+    priorNodes: readonly NodeIdentity[],
+    validNodes: readonly NodeIdentity[]
   ): void {
-    const newNodesByKindName = new Map<string, string[]>();
-    for (const n of validNodes) {
-      const key = `${n.kind}\0${n.qualifiedName}`;
-      const ids = newNodesByKindName.get(key) ?? [];
-      ids.push(n.id);
-      newNodesByKindName.set(key, ids);
-    }
+   const replacementOf = pairReindexedNodes(priorNodes, validNodes);
     const reinserted: Edge[] = [];
+    const resurrected: UnresolvedReference[] = [];
     for (const e of crossFileIncomingEdges) {
-      // Stamped edges already have durable pending refs; resolve their receiver again.
-      if (resurrectRefFromDroppedEdge(e)) continue;
-      const targets = newNodesByKindName.get(`${e.targetKind}\0${e.targetQualifiedName}`);
-      const newTargetId = targets?.length === 1 ? targets[0] : undefined;
+      const newTargetId = replacementOf.get(e.target);
       if (newTargetId) {
         reinserted.push({ source: e.source, target: newTargetId, kind: e.kind, metadata: e.metadata, line: e.line, column: e.column, provenance: e.provenance });
+      } else {
+        const ref = resurrectRefFromDroppedEdge(e);
+        if (ref) resurrected.push(ref);
       }
     }
     if (reinserted.length > 0) {
       this.queries.insertEdges(reinserted);
+    }
+    if (resurrected.length > 0) {
+      this.queries.insertUnresolvedRefsBatch(resurrected);
     }
   }
 
