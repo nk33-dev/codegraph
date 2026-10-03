@@ -4,7 +4,7 @@ This phase wires real language servers into the existing `codegraph_explore`, co
 
 ## Python（2026-09-16 新增，未发布）
 
-自动探测优先使用 `pyright-langserver --stdio`，其次使用 `pylsp`。可自行安装 `npm install -g pyright`，或在 `.codegraph/lsp.json` 的 `servers.python` 中指定 `{ "command": "pyright-langserver", "args": ["--stdio"] }`。环境变量为 `CODEGRAPH_LSP_PYTHON_COMMAND` 和 `CODEGRAPH_LSP_PYTHON_ARGS`。虚拟环境、额外导入路径等按 Pyright 的 `pyrightconfig.json` 配置。
+自动探测优先使用 `pyright-langserver --stdio`，其次使用 `pylsp`。可自行安装 `npm install -g pyright`，或在 `.codegraph/lsp.json` 的 `servers.python` 中指定 `{ "command": "pyright-langserver", "args": ["--stdio"] }`。环境变量为 `CODEGRAPH_LSP_PYTHON_COMMAND` 和 `CODEGRAPH_LSP_PYTHON_ARGS`。虚拟环境、额外导入路径和分析选项放在 `.codegraph/lsp.json` 的 `settings.python`（见下），经 `workspace/configuration` 交给服务器，不再要求写 `pyrightconfig.json`。
 
 Python 支持现有定义、引用、文件符号、诊断、auto/both 路由和 LSP 重命名。Windows / Node 24.16.0 / Pyright 1.1.414 已实测四种查询和跨文件重命名、重命名后再次查询；`pylsp` 仅登记发现与启动命令，本轮未实测。
 
@@ -50,6 +50,10 @@ Commands come from only two places; a missing command means `unavailable`, and n
   "requestTimeoutMs": 20000,
   "warmupTimeoutMs": 15000,
   "disabled": [],
+  "settings": {
+    "python": { "pythonPath": "/path/to/venv/bin/python", "analysis": { "extraPaths": ["src"] } },
+    "rust-analyzer.check": { "command": "clippy" }
+  },
   "servers": {
     "cpp": { "command": "/path/to/clangd", "args": ["--background-index"] },
     "typescript": { "command": "typescript-language-server", "args": ["--stdio"] },
@@ -63,6 +67,8 @@ Commands come from only two places; a missing command means `unavailable`, and n
   }
 }
 ```
+
+`settings` is answered to a server's `workspace/configuration` request. Keys are the configuration sections the server asks for; values are passed through unchanged, because the shape is defined by each server (pyright's `python.analysis.extraPaths`, rust-analyzer's `rust-analyzer.check`, ...). A literal dotted key (`"rust-analyzer.check"`) wins over nested traversal (`"rust-analyzer": { "check": ... }`); both layouts answer the same section. An item scoped to another workspace folder (`scopeUri` outside this project) answers `null`, so two projects sharing one daemon never see each other's settings. With no `settings` key every item answers `null`, which is what the client did before the key existed.
 
 2. Environment variable overrides: `CODEGRAPH_LSP_<FAMILY>_COMMAND`, `CODEGRAPH_LSP_<FAMILY>_ARGS` (JSON array), `CODEGRAPH_LSP_DISABLED`, `CODEGRAPH_LSP_IDLE_TIMEOUT_MS`, `CODEGRAPH_LSP_INIT_TIMEOUT_MS`, `CODEGRAPH_LSP_REQUEST_TIMEOUT_MS`, `CODEGRAPH_LSP_DIAGNOSTICS_TIMEOUT_MS`, `CODEGRAPH_LSP_WARMUP_TIMEOUT_MS`. Family values are `CPP` (c+cpp), `TYPESCRIPT` (ts/tsx/js/jsx), `RUST`, `GO`, `JAVA` and `PYTHON`.
 
@@ -95,7 +101,7 @@ An **additive** extension of the phase 1 contract; the graph result fields are u
 | Transient errors | `ContentModified(-32801)`/`ServerCancelled(-32802)` are retried automatically (at most 2 times) |
 | Crash | a single failed request reports `error`; after 3 crashes within 60 seconds, restarts are paused and `unavailable` is returned (with the stderr tail and the remedy) |
 | Process cleanup | if `shutdown`/`exit` does not get through, kill; the process exit hook kills all child processes as a fallback; stdin EOF lets the server exit on its own |
-| Reverse requests | `workspace/configuration` (returning a null array matching the items length), `workspace/workspaceFolders`, `client/registerCapability` and `window/workDoneProgress/create` must be answered, otherwise many servers wait forever |
+| Reverse requests | `workspace/configuration` (one answer per item, resolved from `settings`; items scoped outside this project answer `null`), `workspace/workspaceFolders`, `client/registerCapability` and `window/workDoneProgress/create` must be answered, otherwise many servers wait forever |
 
 ## Code ownership
 
@@ -103,7 +109,7 @@ An **additive** extension of the phase 1 contract; the graph result fields are u
 | --- | --- |
 | `src/lsp/protocol.ts` | stdio framing and JSON-RPC: `Content-Length` parsing, id correlation, timeouts, reverse request responses, rejecting in-flight requests on exit |
 | `src/lsp/servers.ts` | language family registry, `languageId`, executable discovery (on Windows only `.exe/.com/.cmd/.bat` are recognized and `.ps1` is skipped), cross-platform launch plan |
-| `src/lsp/config.ts` | `.codegraph/lsp.json` + environment variables, mtime cache, degraded on malformed input |
+| `src/lsp/config.ts` | `.codegraph/lsp.json` (servers, timeouts, disabled, `settings`) + environment variables, mtime cache, degraded on malformed input; `resolveWorkspaceSection` answers one `workspace/configuration` section |
 | `src/lsp/manager.ts` | one manager per project: lazy startup, reuse, document sync, diagnostics cache (pull/push), idle cleanup, crash suppression, status snapshot; phase 4 adds `rename` (`textDocument/rename`, refusing a server without `renameProvider`) and `normalizeWorkspaceEdit` |
 | `src/lsp/code-query-lsp.ts` | unified contract adaptation: name→position (graph index + UTF-8→UTF-16 column conversion, landing on the symbol name), result mapping, pagination and warnings |
 | `src/graph/code-query.ts` | contract and shared validation/status blocks (`buildIndexBlock`, `validateCodeQueryRequest`, `assertBackendFields`), shared by the graph and lsp paths |

@@ -61,6 +61,7 @@ export {
   clearLspConfigCache,
   getLspConfigPath,
   loadLspConfig,
+  resolveWorkspaceSection,
   type LspProjectConfig,
   type LspServerConfig,
 } from './config';

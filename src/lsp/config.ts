@@ -49,6 +49,14 @@ export interface LspServerConfig {
 
 export interface LspProjectConfig {
   servers: Partial<Record<LspFamily, LspServerConfig>>;
+  /**
+   * Answers for `workspace/configuration`, keyed by configuration section.
+   *
+   * Values are passed to the server unchanged: section names and shapes are defined by each
+   * language server (pyright's `python.analysis.extraPaths`, rust-analyzer's `rust-analyzer.check`,
+   * ...), so validating them here would mean hard-coding one schema per server.
+   */
+  settings: Record<string, unknown>;
   disabled: LspFamily[];
   idleTimeoutMs: number;
   initTimeoutMs: number;
@@ -138,6 +146,42 @@ function parseServers(raw: unknown, file: string): Partial<Record<LspFamily, Lsp
     out[family] = parsed;
   }
   return out;
+}
+
+/**
+ * Parse the `settings` map answered to `workspace/configuration`.
+ *
+ * Only the container is validated; an entry that is not an object is warned about and skipped,
+ * matching the degradation contract this file shares with `project-config.ts`.
+ */
+function parseSettings(raw: unknown, file: string): Record<string, unknown> {
+  if (raw === undefined) return {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    logWarn(`Ignoring "settings" in ${LSP_CONFIG_FILENAME}: must be an object keyed by configuration section`, { file });
+    return {};
+  }
+  return { ...(raw as Record<string, unknown>) };
+}
+
+/**
+ * Resolve one `workspace/configuration` section against the settings map.
+ *
+ * A literal key wins over dotted traversal so both common layouts answer the same section without
+ * language-specific code: `{"python.analysis": {...}}` and `{"python": {"analysis": {...}}}` both
+ * answer `python.analysis`. A missing section returns the whole map, which is what a server asking
+ * for a section-less item expects.
+ */
+export function resolveWorkspaceSection(settings: Record<string, unknown>, section: string | undefined): unknown {
+  if (!section) return settings;
+  if (Object.prototype.hasOwnProperty.call(settings, section)) return settings[section] ?? null;
+
+  let current: unknown = settings;
+  for (const part of section.split('.')) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return null;
+    if (!Object.prototype.hasOwnProperty.call(current, part)) return null;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current ?? null;
 }
 
 function parseDisabled(raw: unknown, file: string): LspFamily[] {
@@ -233,6 +277,7 @@ function defaultIdleTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
 function defaultConfig(env: NodeJS.ProcessEnv = process.env): LspProjectConfig {
   return {
     servers: {},
+    settings: {},
     disabled: [],
     idleTimeoutMs: defaultIdleTimeoutMs(env),
     initTimeoutMs: DEFAULT_INIT_TIMEOUT_MS,
@@ -268,6 +313,7 @@ function parseConfig(file: string): LspProjectConfig {
   const object = parsed as Record<string, unknown>;
   const config = defaultConfig();
   config.servers = parseServers(object.servers, file);
+  config.settings = parseSettings(object.settings, file);
   config.disabled = parseDisabled(object.disabled, file);
   config.idleTimeoutMs = parseTimeoutField(object, file, 'idleTimeoutMs') ?? config.idleTimeoutMs;
   config.initTimeoutMs = parseTimeoutField(object, file, 'initTimeoutMs') ?? config.initTimeoutMs;

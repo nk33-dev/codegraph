@@ -27,6 +27,7 @@ import { resourceMetrics } from '../resource-metrics';
 import {
   loadLspConfig,
   getLspConfigPath,
+  resolveWorkspaceSection,
   type LspProjectConfig,
   type LspServerConfig,
 } from './config';
@@ -51,7 +52,7 @@ import {
   type LspLeaseRecord,
 } from './lease-registry';
 import { LspConnection, LspError } from './protocol';
-import { pathToUri, uriKey } from './uri';
+import { pathToUri, uriKey, uriToNormalizedPath } from './uri';
 import type { EditFilePreview } from '../edits/contract';
 
 /** LSP position: line and character are both 0-based (the character unit is determined by positionEncoding). */
@@ -1505,7 +1506,7 @@ export class LspManager {
       capabilities: {
         workspace: {
           workspaceFolders: true,
-          configuration: false,
+          configuration: true,
           didChangeConfiguration: { dynamicRegistration: false },
           fileOperations: {
             dynamicRegistration: false,
@@ -1644,12 +1645,23 @@ export class LspManager {
     lspDebug(`${entry.family}: unhandled notification ${method}`);
   }
 
-  /** Answers to server-initiated requests; `workspace/configuration` must return an array as long as items. */
+  /**
+   * Answers to server-initiated requests; `workspace/configuration` must return an array as long as items.
+   *
+   * Settings come from this project's `.codegraph/lsp.json` (`settings`), so two projects managed in
+   * one daemon cannot see each other's values; an item scoped to another workspace folder answers
+   * `null` rather than this project's section.
+   */
   private handleServerRequest(entry: ServerEntry, method: string, params: unknown): unknown {
     switch (method) {
       case 'workspace/configuration': {
         const items = isRecord(params) && Array.isArray(params.items) ? params.items : [];
-        return items.map(() => null);
+        return items.map((item) => {
+          if (!isRecord(item)) return null;
+          if (typeof item.scopeUri === 'string' && !this.isScopeInProject(item.scopeUri)) return null;
+          const section = typeof item.section === 'string' && item.section.trim() ? item.section : undefined;
+          return resolveWorkspaceSection(this.config.settings, section);
+        });
       }
       case 'workspace/workspaceFolders':
         return [{ uri: pathToUri(this.projectRoot), name: path.basename(this.projectRoot) }];
@@ -1661,6 +1673,14 @@ export class LspManager {
         lspDebug(`${entry.family}: unhandled server request ${method}`);
         return null;
     }
+  }
+
+  /** Whether an item's `scopeUri` belongs to this project; an unscoped item applies to the whole session. */
+  private isScopeInProject(scopeUri: string): boolean {
+    const scopePath = uriToNormalizedPath(scopeUri);
+    if (scopePath === null) return false;
+    const relative = path.relative(path.resolve(this.projectRoot), path.resolve(scopePath));
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
   }
 
   private storeDiagnostics(entry: ServerEntry, key: string, items: LspDiagnostic[]): void {

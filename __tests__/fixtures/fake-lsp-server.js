@@ -21,6 +21,9 @@
  *   --probe-server-requests    send server->client requests workspace/configuration /
  *                              workspace/workspaceFolders / window/workDoneProgress/create
  *                              and log the client's answers (the client MUST answer them)
+ *   --probe-config-sections    send one workspace/configuration request for an existing section,
+ *                              a nested section, a missing section, and a section scoped to
+ *                              another workspace folder; log the raw reply
  *   --stderr <text>            write one line to stderr at startup
  *   --semantic-tools           declare and answer the semantic query/code-action capabilities
  *   --code-action-command-only return a command-only action (the edit layer must refuse it)
@@ -57,6 +60,7 @@ const crashAfterInit = flag('--crash-after-init');
 const noDocumentSymbol = flag('--no-document-symbol');
 const mixedDiagnostics = flag('--mixed-diagnostics');
 const probeRequests = flag('--probe-server-requests');
+const probeConfig = flag('--probe-config-sections');
 const stderrText = opt('--stderr', null);
 const renameNull = flag('--rename-null');
 const renameDocumentChanges = flag('--rename-document-changes');
@@ -226,6 +230,22 @@ function probeServerRequests() {
   check('window/workDoneProgress/create', { token: 'fake-progress' }, (value) => value === null);
 }
 
+function probeConfigSections() {
+  const id = probeNextId++;
+  serverRequestVerifiers.set(id, (value) => {
+    log({ event: 'configSections', value });
+  });
+  request(id, 'workspace/configuration', {
+    items: [
+      { section: 'python' },
+      { section: 'python.analysis.extraPaths' },
+      { section: 'missing' },
+      // Scoped to another workspace folder: must not answer this project's settings.
+      { section: 'python', scopeUri: 'file:///definitely/elsewhere' },
+    ],
+  });
+}
+
 function handle(message) {
   if (message.id !== undefined && message.method === undefined) {
     const verify = serverRequestVerifiers.get(message.id);
@@ -294,6 +314,7 @@ function handle(message) {
     }
     case 'initialized':
       if (probeRequests) probeServerRequests();
+      if (probeConfig) probeConfigSections();
       if (crashAfterInit) {
         log({ event: 'crash', method: 'initialized' });
         setTimeout(() => process.exit(1), 10);

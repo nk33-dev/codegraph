@@ -151,6 +151,25 @@ describe('LSP manager: lifecycle', () => {
     expect(probe!.replies['workspace/configuration']).toEqual({ ok: true, value: [null, null] });
   });
 
+  it('workspace/configuration answers this project settings and refuses other scopes', async () => {
+    const project = makeProject({ 'a.ts': FILE_CONTENT }, {
+      serverArgs: ['--probe-config-sections'],
+      config: { settings: { python: { pythonPath: '/venv/bin/python', analysis: { extraPaths: ['src'] } } } },
+    });
+    const manager = makeManager(project);
+
+    await manager.documentSymbols(filePath(project), 'typescript');
+    const entries = await project.waitForLog((log) => log.some((entry) => entry.event === 'configSections'));
+    const probe = entries.find((entry) => entry.event === 'configSections');
+    expect(probe).toBeTruthy();
+    expect(probe!.value).toEqual([
+      { pythonPath: '/venv/bin/python', analysis: { extraPaths: ['src'] } },
+      ['src'],
+      null,
+      null,
+    ]);
+  });
+
   it('a config file change rebuilds the server', async () => {
     const project = makeProject();
     const manager = makeManager(project);

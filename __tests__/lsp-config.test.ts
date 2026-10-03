@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { clearLspConfigCache, getLspConfigPath, loadLspConfig } from '../src/lsp/config';
+import { clearLspConfigCache, getLspConfigPath, loadLspConfig, resolveWorkspaceSection } from '../src/lsp/config';
 
 let root: string;
 
@@ -47,6 +47,34 @@ describe('LSP project config', () => {
     process.env.CODEGRAPH_LSP_PYTHON_ARGS = '["--stdio"]';
     expect(loadLspConfig(root).servers.python).toMatchObject({ command: 'pyright-langserver', args: ['--stdio'] });
   });
+  it('parses the workspace settings map and answers sections from it', () => {
+    writeConfig({
+      settings: {
+        python: { pythonPath: '/opt/venv/bin/python', analysis: { extraPaths: ['src'] } },
+        'rust-analyzer.check': { command: 'clippy' },
+      },
+    });
+
+    const config = loadLspConfig(root);
+    expect(config.settings.python).toMatchObject({ pythonPath: '/opt/venv/bin/python' });
+
+    // Dotted traversal answers a nested section.
+    expect(resolveWorkspaceSection(config.settings, 'python.analysis.extraPaths')).toEqual(['src']);
+    // A literal dotted key wins over traversal.
+    expect(resolveWorkspaceSection(config.settings, 'rust-analyzer.check')).toEqual({ command: 'clippy' });
+    // An absent section answers null; a section-less item gets the whole map.
+    expect(resolveWorkspaceSection(config.settings, 'go')).toBeNull();
+    expect(resolveWorkspaceSection(config.settings, undefined)).toEqual(config.settings);
+  });
+
+  it('a non-object settings value is dropped without touching the rest of the file', () => {
+    writeConfig({ settings: ['not', 'an', 'object'], servers: { rust: { command: 'rust-analyzer' } } });
+
+    const config = loadLspConfig(root);
+    expect(config.settings).toEqual({});
+    expect(config.servers.rust).toMatchObject({ command: 'rust-analyzer' });
+  });
+
   it('with no config file, defaults apply and the path lives under .codegraph', () => {
     expect(getLspConfigPath(root)).toBe(path.join(root, '.codegraph', 'lsp.json'));
     const config = loadLspConfig(root);
