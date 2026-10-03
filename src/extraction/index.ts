@@ -39,6 +39,7 @@ import { declaredDependencies } from '../resolution/frameworks/package-deps';
 import type { ResolutionContext } from '../resolution/types';
 import { createYielder, type MaybeYield } from '../resolution/cooperative-yield';
 import type { IndexTaskLevel } from '../resource-profile';
+import { resolveResourceProfile } from '../resource-profile';
 import { MAX_SOURCE_FILE_SIZE_BYTES, oversizeStamp, readBoundedSource, readBoundedSourceSync } from '../file-limits';
 export { oversizeStamp };
 
@@ -47,6 +48,16 @@ export { oversizeStamp };
  * File reads are I/O-bound; batching overlaps I/O wait with CPU parse work.
  */
 const FILE_IO_BATCH_SIZE = 10;
+
+/**
+ * Byte budget for the store writer's outstanding bundles, from the resource
+ * profile. `Infinity` when resource governance is off — that is the behavior
+ * before the byte window existed, and it doubles as the rollback switch.
+ */
+function storeWindowBytesLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const profile = resolveResourceProfile(env);
+  return profile.governanceEnabled ? profile.storeWindowMb * 1024 * 1024 : Infinity;
+}
 
 /**
  * How many files the `sync()` reconcile processes between cooperative yields to
@@ -2289,6 +2300,14 @@ export class ExtractionOrchestrator {
     }
     /** Queue-depth bound for un-acked bundles (bundles hold whole node/edge arrays). */
     const STORE_WRITER_WINDOW = 64;
+    /**
+     * The same window measured in bytes. The item count bounds the queue but not
+     * its size: every extracted bundle comes from a file the read cap already
+     * limited to 1 MiB, yet the node/edge arrays a dense source produces can be
+     * far larger than the source, and the kernel's table buffers scale with the
+     * graph rather than with the file. See StoreWriter.waitBelowBytes.
+     */
+    const STORE_WRITER_WINDOW_BYTES = storeWindowBytesLimit();
 
     /**
      * Parse one file: on the pool when available (the promise REJECTS on a worker
@@ -2361,7 +2380,10 @@ export class ExtractionOrchestrator {
         } else {
           storeWriter.send(this.buildFreshStoreBundle(filePath, content, language, stats, result));
         }
-        await storeWriter.waitBelow(STORE_WRITER_WINDOW);
+        await Promise.all([
+          storeWriter.waitBelow(STORE_WRITER_WINDOW),
+          storeWriter.waitBelowBytes(STORE_WRITER_WINDOW_BYTES),
+        ]);
       } else {
         const materialized = materializeKernelResult(result, filePath, language);
         await this.storeExtractionResult(filePath, content, language, stats, materialized, commitYield, forceExtraction);

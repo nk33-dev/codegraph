@@ -35,6 +35,7 @@ describe('resolveResourceProfile：档位默认值', () => {
     expect(p.lspGlobalMax).toBe(3);
     expect(p.lspIdleTimeoutMs).toBe(300_000);
     expect(p.sessionCacheMb).toBe(128);
+    expect(p.storeWindowMb).toBe(96);
     expect(p.deepDualIndex).toBe('onDemand');
     expect(p.governanceEnabled).toBe(true);
   });
@@ -49,6 +50,7 @@ describe('resolveResourceProfile：档位默认值', () => {
     expect(p.lspGlobalMax).toBe(2);
     expect(p.lspIdleTimeoutMs).toBe(90_000);
     expect(p.sessionCacheMb).toBe(64);
+    expect(p.storeWindowMb).toBe(48);
     expect(p.deepDualIndex).toBe('explicit');
   });
 
@@ -63,6 +65,7 @@ describe('resolveResourceProfile：档位默认值', () => {
     expect(p.lspGlobalMax).toBe(6);
     expect(p.lspIdleTimeoutMs).toBe(600_000);
     expect(p.sessionCacheMb).toBe(256);
+    expect(p.storeWindowMb).toBe(192);
     expect(p.deepDualIndex).toBe('prewarm');
   });
 
@@ -87,10 +90,19 @@ describe('resolveResourceProfile：环境变量覆盖档位', () => {
       CODEGRAPH_QUERY_POOL_SIZE: 'abc',
       CODEGRAPH_LSP_GLOBAL_MAX: '-3',
       CODEGRAPH_LSP_IDLE_TIMEOUT_MS: '1.5',
+      CODEGRAPH_STORE_WINDOW_MB: '-1',
     } as NodeJS.ProcessEnv);
     expect(p.queryWorkersMax).toBe(4);
     expect(p.lspGlobalMax).toBe(3);
     expect(p.lspIdleTimeoutMs).toBe(300_000);
+    expect(p.storeWindowMb).toBe(96);
+  });
+
+  it('存储窗口字节预算可以单独覆盖并钳制', () => {
+    expect(resolveResourceProfile({ CODEGRAPH_STORE_WINDOW_MB: '256' } as NodeJS.ProcessEnv).storeWindowMb).toBe(256);
+    // 低于下限抬到 16 MB，高于上限钳到 4096 MB。
+    expect(resolveResourceProfile({ CODEGRAPH_STORE_WINDOW_MB: '1' } as NodeJS.ProcessEnv).storeWindowMb).toBe(16);
+    expect(resolveResourceProfile({ CODEGRAPH_STORE_WINDOW_MB: '999999' } as NodeJS.ProcessEnv).storeWindowMb).toBe(4_096);
   });
 
   it('LSP 数量与空闲退出可以单独覆盖', () => {
@@ -165,6 +177,7 @@ describe('describeResourceProfile', () => {
     expect(text).toContain('profile=battery');
     expect(text).toContain('queryWorkers=1..2');
     expect(text).toContain('resolveWorkers<=2');
+    expect(text).toContain('storeWindow=48MB');
     expect(text).toContain('lsp=1/project, 2/global');
   });
 

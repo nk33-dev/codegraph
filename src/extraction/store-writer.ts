@@ -1,4 +1,33 @@
 /**
+ * Coarse per-item sizes for the object path's byte estimate. The kernel path —
+ * the default — measures exactly (see below), so these only bound the fallback.
+ */
+const ESTIMATED_NODE_BYTES = 512;
+const ESTIMATED_EDGE_BYTES = 192;
+const ESTIMATED_REF_BYTES = 128;
+
+/**
+ * Bytes a bundle adds to the outstanding window.
+ *
+ * The kernel path is exact and free: its five table buffers already exist, and
+ * `byteLength` is what the main thread is holding until the worker acks. The
+ * object path (no `dist` store worker) is estimated from array lengths, which is
+ * enough to bound it — the point is to notice one file whose extraction produced
+ * orders of magnitude more than its source, not to account for every byte.
+ */
+export function estimateStoreBundleBytes(bundle: StoreBundle | KernelStoreBundle): number {
+  if ('kernel' in bundle) {
+    const { meta, nodes, edges, refs, arena } = bundle.buffers;
+    return meta.byteLength + nodes.byteLength + edges.byteLength + refs.byteLength + arena.byteLength;
+  }
+  return (
+    bundle.nodes.length * ESTIMATED_NODE_BYTES +
+    bundle.edges.length * ESTIMATED_EDGE_BYTES +
+    bundle.refs.length * ESTIMATED_REF_BYTES
+  );
+}
+
+/**
  * StoreWriter — main-thread client for the store worker (see store-worker.ts).
  *
  * Used ONLY on the fresh-DB bulk path: bundles are posted in file order and the
@@ -65,6 +94,93 @@ export function finalizeStoreBundle(
   return { nodes: validNodes, edges: validEdges, refs: validRefs, file };
 }
 
+/**
+ * The un-acked bundle window: a queue-depth bound and a byte bound, both with
+ * waiters.
+ *
+ * Separate from the worker plumbing so the accounting — which is the part that
+ * is easy to get subtly wrong — can be tested without a worker thread. The byte
+ * entries are FIFO because the store worker acks in arrival order (an `error`
+ * reply is the failed bundle's ack), so the oldest entry is always the one that
+ * settled.
+ */
+export class StoreWindow {
+  private count = 0;
+  private bytes = 0;
+  private sizes: number[] = [];
+  private waiters: Array<{ ready: () => boolean; resolve: () => void }> = [];
+
+  get outstanding(): number {
+    return this.count;
+  }
+
+  get outstandingBytes(): number {
+    return this.bytes;
+  }
+
+  /** Whether any waiter is still pending — the exit handler's protocol check. */
+  hasWaiters(): boolean {
+    return this.waiters.length > 0;
+  }
+
+  /** Record a posted bundle of `byteSize` bytes. */
+  add(byteSize: number): void {
+    this.count++;
+    this.sizes.push(byteSize);
+    this.bytes += byteSize;
+  }
+
+  /** Record one bundle's ack, then release every waiter whose bound now holds. */
+  settle(): void {
+    const settled = this.sizes.shift();
+    this.bytes = settled === undefined ? 0 : this.bytes - settled;
+    if (this.count > 0) this.count--;
+    if (this.bytes < 0) this.bytes = 0; // sizes and count can only drift together
+    if (this.waiters.length === 0) return;
+    const still: typeof this.waiters = [];
+    for (const waiter of this.waiters) {
+      if (waiter.ready()) waiter.resolve();
+      else still.push(waiter);
+    }
+    this.waiters = still;
+  }
+
+  /**
+   * Drop all accounting and release waiters — the writer failed or exited, and
+   * the caller's next `send()` surfaces the reason.
+   */
+  reset(): void {
+    this.count = 0;
+    this.bytes = 0;
+    this.sizes = [];
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const waiter of waiters) waiter.resolve();
+  }
+
+  /** Resolves once fewer than `limit` bundles are un-acked. */
+  waitBelow(limit: number): Promise<void> {
+    return this.waitUntil(() => this.count < limit);
+  }
+
+  /**
+   * Resolves once the un-acked bundles hold fewer than `limitBytes` bytes.
+   *
+   * A single bundle larger than the whole budget does not deadlock: once its
+   * ack arrives the total drops to 0 and the waiter resolves.
+   */
+  waitBelowBytes(limitBytes: number): Promise<void> {
+    return this.waitUntil(() => this.bytes < limitBytes);
+  }
+
+  private waitUntil(ready: () => boolean): Promise<void> {
+    if (ready()) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.waiters.push({ ready, resolve });
+    });
+  }
+}
+
 export class StoreWriter {
   private worker: Worker;
   /** Settles on the worker's first message or its end — see worker-teardown.ts. */
@@ -74,9 +190,8 @@ export class StoreWriter {
   private drainWaiters = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
   private nextDrainId = 0;
   private exited = false;
-  /** Bundles posted but not yet acked — the queue-depth backpressure signal. */
-  private outstanding = 0;
-  private belowWaiters: Array<{ limit: number; resolve: () => void }> = [];
+  /** Bundles posted but not yet acked, by count and by bytes — see StoreWindow. */
+  private window = new StoreWindow();
 
   constructor(workerScriptPath: string, dbPath: string, fastInit: boolean) {
     this.worker = new Worker(workerScriptPath);
@@ -113,7 +228,7 @@ export class StoreWriter {
       if (code !== 0) {
         this.failAll(new Error(`store worker exited with code ${code}`));
         readyReject(this.firstError!);
-      } else if (this.drainWaiters.size > 0 || this.belowWaiters.length > 0) {
+      } else if (this.drainWaiters.size > 0 || this.window.hasWaiters()) {
         // A clean exit with waiters pending is a protocol violation (only
         // close() should end the worker) — settle the waiters instead of
         // hanging the index forever.
@@ -130,21 +245,11 @@ export class StoreWriter {
     if (!this.firstError) this.firstError = err;
     for (const [, waiter] of this.drainWaiters) waiter.reject(this.firstError);
     this.drainWaiters.clear();
-    this.outstanding = 0;
-    const waiters = this.belowWaiters;
-    this.belowWaiters = [];
-    for (const w of waiters) w.resolve(); // send() will surface firstError
+    this.window.reset(); // send() will surface firstError
   }
 
   private settleOne(): void {
-    if (this.outstanding > 0) this.outstanding--;
-    if (this.belowWaiters.length === 0) return;
-    const still: typeof this.belowWaiters = [];
-    for (const w of this.belowWaiters) {
-      if (this.outstanding < w.limit) w.resolve();
-      else still.push(w);
-    }
-    this.belowWaiters = still;
+    this.window.settle();
   }
 
   ready(): Promise<void> {
@@ -155,16 +260,24 @@ export class StoreWriter {
   send(bundle: StoreBundle | KernelStoreBundle): void {
     if (this.firstError) throw this.firstError;
     if (this.exited) throw new Error('store worker already exited');
-    this.outstanding++;
+    this.window.add(estimateStoreBundleBytes(bundle));
     this.worker.postMessage({ type: 'bundle', bundle });
   }
 
   /** Backpressure: resolves once fewer than `limit` bundles are un-acked. */
   waitBelow(limit: number): Promise<void> {
-    if (this.firstError || this.exited || this.outstanding < limit) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      this.belowWaiters.push({ limit, resolve });
-    });
+    if (this.firstError || this.exited) return Promise.resolve();
+    return this.window.waitBelow(limit);
+  }
+
+  /**
+   * Backpressure on volume rather than count: resolves once the un-acked
+   * bundles hold fewer than `limitBytes` bytes. A single bundle larger than the
+   * whole budget does not deadlock — its ack drops the total to 0.
+   */
+  waitBelowBytes(limitBytes: number): Promise<void> {
+    if (this.firstError || this.exited) return Promise.resolve();
+    return this.window.waitBelowBytes(limitBytes);
   }
 
   /** Resolves when every bundle posted before this call has been applied. */

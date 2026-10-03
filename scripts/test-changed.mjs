@@ -91,6 +91,9 @@ const impactRules = [
   // layer; only `db/queries` is a direct relative import of query-cache.test.ts, so the files that
   // own the caches it describes have to be named here.
   [/^src\/(?:extraction\/index|resolution\/index|resolution\/import-resolver|resolution\/frameworks\/[^/]+)\.ts$/, /^__tests__\/query-cache\.test\.ts$/],
+  // The store window's accounting lives next to the writer that uses it, and the budget comes from
+  // the resource profile; neither file is imported by the test that pins the semantics.
+  [/^src\/(?:extraction\/(?:store-writer|index)|resource-profile)\.ts$/, /^__tests__\/(?:store-window|resource-profile)\.test\.ts$/],
   // The end-to-end baseline pins what extraction, resolution and persistence actually wrote. None
   // of the three is a direct relative import of the test, so the import graph cannot reach it —
   // and this is precisely the test a parser, resolver or schema change should run.

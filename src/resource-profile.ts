@@ -45,6 +45,15 @@ export interface ResourceProfileSettings {
   lspIdleTimeoutMs: number;
   /** 每项目会话缓存预算（MB）；由 ExploreSessionState 按 UTF-8 字节执行。 */
   sessionCacheMb: number;
+  /**
+   * 存储写入线程「已发出未确认」bundle 的字节预算（MB）。
+   *
+   * 条数窗口（STORE_WRITER_WINDOW）限住队列长度，限不住体积：单个文件已由
+   * 读取上限压到 1 MiB，但密集源码提取出的节点/边数组可以远超源码本身。两个
+   * 窗口叠加生效，字节预算只在平均 bundle 超过 `storeWindowMb * 1024 / 64`
+   * 时才真正起作用。
+   */
+  storeWindowMb: number;
   /** 深度双索引策略。 */
   deepDualIndex: DeepDualIndexPolicy;
   /** 各任务等级允许使用的解析 worker 上限；普通保存不会默认打满机器。 */
@@ -69,6 +78,7 @@ const PROFILE_TABLE: Record<ResourceProfileName, Omit<ResourceProfileSettings, '
     lspGlobalMax: 2,
     lspIdleTimeoutMs: 90_000,
     sessionCacheMb: 64,
+    storeWindowMb: 48,
     deepDualIndex: 'explicit',
     indexWorkers: { ordinary: 1, interface: 2, global: 2 },
   },
@@ -83,6 +93,7 @@ const PROFILE_TABLE: Record<ResourceProfileName, Omit<ResourceProfileSettings, '
     lspGlobalMax: 3,
     lspIdleTimeoutMs: 300_000,
     sessionCacheMb: 128,
+    storeWindowMb: 96,
     deepDualIndex: 'onDemand',
     indexWorkers: { ordinary: 1, interface: 3, global: 5 },
   },
@@ -96,6 +107,7 @@ const PROFILE_TABLE: Record<ResourceProfileName, Omit<ResourceProfileSettings, '
     lspGlobalMax: 6,
     lspIdleTimeoutMs: 600_000,
     sessionCacheMb: 256,
+    storeWindowMb: 192,
     deepDualIndex: 'prewarm',
     indexWorkers: { ordinary: 2, interface: 5, global: 8 },
   },
@@ -183,6 +195,7 @@ export function resolveResourceProfile(env: NodeJS.ProcessEnv = process.env): Re
   settings.lspPerProjectSoftMax = readInt(env.CODEGRAPH_LSP_PER_PROJECT_MAX, settings.lspPerProjectSoftMax, 1, 8);
   settings.lspGlobalMax = readInt(env.CODEGRAPH_LSP_GLOBAL_MAX, settings.lspGlobalMax, 1, 16);
   settings.lspIdleTimeoutMs = readInt(env.CODEGRAPH_LSP_IDLE_TIMEOUT_MS, settings.lspIdleTimeoutMs, 1_000, 3_600_000, true);
+  settings.storeWindowMb = readInt(env.CODEGRAPH_STORE_WINDOW_MB, settings.storeWindowMb, 16, 4_096);
 
   // 最小/初始都必须落在 [1, max] 内，否则缩容或预热会与上限自相矛盾。
   const max = Math.max(1, settings.queryWorkersMax);
@@ -204,6 +217,7 @@ export function describeResourceProfile(settings: ResourceProfileSettings): stri
     `profile=${settings.name}`,
     `queryWorkers=${settings.queryWorkersInitial}..${settings.queryWorkersMax} (idle shrink ${shrink})`,
     `resolveWorkers<=${settings.resolveWorkersMax}`,
+    `storeWindow=${settings.storeWindowMb}MB`,
     `lsp=${settings.lspPerProjectSoftMax}/project, ${settings.lspGlobalMax}/global (idle exit ${Math.round(settings.lspIdleTimeoutMs / 1000)}s)`,
   ].join(', ');
 }
