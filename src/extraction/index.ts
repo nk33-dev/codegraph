@@ -3117,8 +3117,6 @@ export class ExtractionOrchestrator {
     this.rememberDefinitionDelta(filePath, validNodes);
     const incomingRefs = crossFileIncomingEdges.map(resurrectRefFromDroppedEdge)
       .filter((ref): ref is UnresolvedReference => ref !== null);
-    // An interrupted chunked store may have nodes without a committed file record.
-    this.queries.deleteFile(filePath, incomingRefs);
 
     // Fast path for the common case (everything fits one chunk): the whole
     // re-store — deleting the old rows, the new nodes, edges, refs and file
@@ -3135,9 +3133,12 @@ export class ExtractionOrchestrator {
       validRefs.length <= STORE_CHUNK;
     if (fitsOneChunk) {
       this.queries.runInTransaction(() => {
-        if (existingFile) {
-          this.queries.deleteFile(filePath);
-        }
+        // The delete belongs to the same transaction as the store below. Run before it,
+        // a failure inside the store committed the delete on its own and left the file's
+        // old rows — and every caller's edge into them — gone (#2276). Running it
+        // unconditionally is also the repair for an interrupted chunked store, which can
+        // leave nodes with no committed file record.
+        this.queries.deleteFile(filePath, incomingRefs);
         this.queries.storeFileBundle({
           nodes: validNodes,
           edges: validEdges,
