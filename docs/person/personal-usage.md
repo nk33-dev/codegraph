@@ -1,8 +1,8 @@
 # 个人使用与安装
 
-本轮面向个人开发和使用，不复制官方的多平台 npm 发行流程。当前已发布的个人版是 `v1.6.0-personal.13` GitHub prerelease，交付 `.tgz`，不会发布到上游 npm scope，也不会自动替换这台机器上的全局 CodeGraph。
+本轮面向个人开发和使用，不复制官方的多平台 npm 发行流程。当前已发布的个人版是 `v1.6.2-personal.1` GitHub prerelease（标签指向 `700d31d9`，同提交三平台 CI `37178187510` 与 Personal Release `37178636930` 均成功），交付 `.tgz`，不会发布到上游 npm scope，也不会自动替换这台机器上的全局 CodeGraph。
 
-`v1.6.2-personal.1` 已进入发布准备（上游 v1.6.2 同步之后的第一个个人版本）：功能提交、版本元数据与发行说明都已推送到 `personal`，但本轮不触发 `Personal Release`，因此没有对应标签与 `.tgz` 资产。安装地址仍以 `.13` 为当前有效版本；要发布时在同一提交的三平台 CI 成功后手动触发工作流。详见[个人版导航的验证与发布](README.md#验证与发布)。
+升级自 `v1.6.0-personal.13`：schema 与提取版本相同，无需升级索引。
 
 ## 开发时使用哪个入口
 
@@ -49,15 +49,15 @@ codegraph sync --upgrade-index --yes    # 非交互运行（agent/CI/git hook）
 安装机器使用 Node 20 至 24，推荐 Node 24。发布后可直接安装固定 Release 资产：
 
 ```powershell
-npm install -g "https://github.com/nk33-dev/codegraph/releases/download/v1.6.0-personal.13/colbymchenry-codegraph-1.6.0-personal.13.tgz"
+npm install -g "https://github.com/nk33-dev/codegraph/releases/download/v1.6.2-personal.1/colbymchenry-codegraph-1.6.2-personal.1.tgz"
 codegraph doctor --json
 ```
 
 需要从 Git 标签自行打包时，推荐分两步执行：
 
 ```powershell
-npm pack "github:nk33-dev/codegraph#v1.6.0-personal.13"
-npm install -g ".\colbymchenry-codegraph-1.6.0-personal.13.tgz"
+npm pack "github:nk33-dev/codegraph#v1.6.2-personal.1"
+npm install -g ".\colbymchenry-codegraph-1.6.2-personal.1.tgz"
 codegraph doctor --json
 ```
 
