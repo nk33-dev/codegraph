@@ -2206,7 +2206,14 @@ function bareCallReceiver(ref: UnresolvedRef, context: ResolutionContext): { rec
   if (ref.referenceKind !== 'calls' || !/^[A-Za-z_$][\w$]*$/.test(ref.referenceName)) return null;
   const lines = context.getFileLines?.(ref.filePath) ?? context.readFile(ref.filePath)?.split(/\r?\n/);
   if (!lines) return null;
-  const text = lines.slice(ref.line - 1, ref.line + 7).join('\n').slice(Math.max(0, ref.column));
+  const column = Math.max(0, ref.column);
+  // The anchor is the whole call expression upstream, but the member identifier in this
+  // fork's extractors (the kernel/wasm parity port) — `self.get_ip(x)` anchors on `get_ip`,
+  // leaving the receiver in front of the column. Prepending that run makes the scan below
+  // see `receiver.name` either way; without it every such call reads as receiver-less.
+  const prefix = (lines[ref.line - 1] ?? '').slice(0, column);
+  const anchored = lines.slice(ref.line - 1, ref.line + 7).join('\n').slice(column);
+  const text = /\.\s*$/.test(prefix) ? prefix + anchored : anchored;
   const name = ref.referenceName.replace(/\$/g, '\\$');
   const at = new RegExp(`(?<![\\w$])${name}\\s*(?:<[^<>()]*>|\\[(?:[^\\[\\]]|\\[[^\\[\\]]*\\])*\\])?\\s*[({]`).exec(text);
   if (!at) return null;
@@ -2405,7 +2412,13 @@ function pythonCallShape(ref: UnresolvedRef, context: ResolutionContext): Python
   if (!/^[A-Za-z_]\w*$/.test(name)) return null;
   const line = context.getFileLines?.(ref.filePath)?.[ref.line - 1] ?? context.readFile(ref.filePath)?.split('\n')[ref.line - 1];
   if (line === undefined) return null;
-  const text = line.slice(ref.column);
+  // This fork's extractors anchor a `calls` ref at the MEMBER identifier (`get_ip` in
+  // `self.get_ip(x)`), upstream's at the whole call expression. The shape test below reads
+  // the text from the call's start, so the receiver in front of the anchor is put back —
+  // without it every `self.x()` reads as a bare call and can no longer mean a method.
+  const prefix = line.slice(0, Math.max(0, ref.column));
+  const tail = /(?:^|[^\w$.)\]])((?:[A-Za-z_$][\w$]*|\)|\])(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*)*)\s*\.\s*$/.exec(prefix);
+  const text = tail ? `${tail[1]!}.${line.slice(Math.max(0, ref.column))}` : line.slice(ref.column);
   if (text.startsWith(name) && /^\s*\(/.test(text.slice(name.length))) return { kind: 'bare' };
   if (new RegExp(String.raw`^(?:self|cls)\s*\.\s*${name}\s*\(`).test(text)) return null;
   // The call starts at its receiver, so everything up to `.name(` is the receiver chain.

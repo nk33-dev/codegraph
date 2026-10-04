@@ -11221,7 +11221,14 @@ import foo.cfm;
       const calls = result.unresolvedReferences.filter((r) => r.referenceKind === 'calls');
       expect(calls.map((r) => r.referenceName).sort()).toEqual(['a', 'b.c', 'count', 'd', 'e', 'last', 'other.fetch', 'sum']);
       for (const r of calls) {
-        expect(lines[r.line - 1]!.slice(r.column).startsWith(r.referenceName)).toBe(true);
+        // This fork anchors a `calls` ref at the MEMBER it names — `other.fetch` points at
+        // `fetch`, `b.c` at `c` — where the whole callee expression anchors upstream (the
+        // kernel/wasm coordinate port; see docs/person/maintenance.md). The name's last
+        // segment is therefore what starts at the column.
+        const member = r.referenceName.slice(r.referenceName.lastIndexOf('.') + 1);
+        expect(lines[r.line - 1]!.slice(r.column).startsWith(member)).toBe(true);
+        // The line is the call's own line either way.
+        expect(lines[r.line - 1]).toContain(r.referenceName.split('.')[0]!);
       }
     });
 

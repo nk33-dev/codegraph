@@ -70,6 +70,13 @@ Check according to the impact scope of this change, and do not assume that not-y
 
 For persistent format changes, first verify upgrade, repeated startup, interrupted migration and failure recovery on a copy, using a consistent database backup. Do not clear the user directory to bypass migration, and do not experiment on the only copy of the data. A Git rollback is not the same as a data downgrade; record whether the old version can read the new format and the backup-restore or forward-fix approach.
 
+### 引用坐标：上游测试与个人约定的冲突
+
+个人 fork 把 `calls` 引用的坐标锚点从「整个被调表达式」改成「它命名的成员标识符」（内核/wasm 坐标对齐，见个人 CHANGELOG 的 b39fade 条目），上游代码和测试里仍有按旧锚点读源码的地方。同步后出现这类失败时按两条路处理，并把结论记进 CHANGELOG：
+
+- **读坐标的上游逻辑**（按 `ref.column` 回读调用点文本判断接收者、链名）：改成两种锚点都认——上游锚点在调用表达式上，个人锚点在成员标识符上，成员标识符前的同一行前缀就是接收者（`bareCallReceiver`、`pythonCallShape`）。不要为迁就一条断言把锚点改回去。
+- **断言旧锚点的上游测试**：按个人约定改断言（`__tests__/extraction.test.ts` 的 CFML `#2091` 用例），断言名字的最后一段落在列上，而不是把整个 `receiver.member` 落在列上。
+
 ## 4. Verification and merging back
 
 - 日常开发先运行 `npm run check:quick`；它执行 `tsc --noEmit`，并按变更文件选择直接依赖测试和对应领域测试。缺少 `dist/bin/codegraph.js` 时，依赖构建产物的测试会被列出并跳过，不算通过，留给 CI 或本地构建后单独运行。需要手动收窄时使用 `npm run test:focused -- <test files>`。两者只运行 engine/ui；严格计时单独使用 `npm run test:perf`，不在日常检查重复运行。

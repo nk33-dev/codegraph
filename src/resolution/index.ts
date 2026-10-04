@@ -1113,11 +1113,20 @@ export class ReferenceResolver {
     if (composable) return composable;
 
     if (isUnresolvedJsMemberChain(ref)) {
-      // React Native bridges have explicit module identity; other unknown chains skip import, framework, and fuzzy guesses.
-      if (!/^NativeModules\.[A-Z][\w$]*\.[\w$]+$/.test(ref.referenceName)) return null;
-      const bridge = this.frameworks.find((framework) => framework.name === 'react-native-bridge');
-      const resolved = bridge?.resolve(ref, this.context);
-      return resolved && resolved.confidence >= 0.9 ? resolved : null;
+      // A chain rooted at a namespace import is typed by the module path it names
+      // (`z.core.safeParse()` after `import * as z`, where the barrel re-exports the
+      // namespace), so it must reach the namespace branch below instead of dying here.
+      const root = ref.referenceName.slice(0, ref.referenceName.indexOf('.'));
+      const namespaceRoot = this.context
+        .getImportMappings(ref.filePath, ref.language)
+        .some((mapping) => mapping.isNamespace && mapping.localName === root);
+      if (!namespaceRoot) {
+        // React Native bridges have explicit module identity; other unknown chains skip import, framework, and fuzzy guesses.
+        if (!/^NativeModules\.[A-Z][\w$]*\.[\w$]+$/.test(ref.referenceName)) return null;
+        const bridge = this.frameworks.find((framework) => framework.name === 'react-native-bridge');
+        const resolved = bridge?.resolve(ref, this.context);
+        return resolved && resolved.confidence >= 0.9 ? resolved : null;
+      }
     }
 
     // A local C++ object construction (`T obj(args)`, ref `ns::T::T/1`)
