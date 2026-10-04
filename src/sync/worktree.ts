@@ -174,7 +174,12 @@ export function nestedRepositoryBelow(startPath: string, indexRoot: string): Nes
   if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return null;
 
   const repoCommon = gitCommonDir(repoRoot);
-  if (!repoCommon || repoCommon === gitCommonDir(realpath(indexRoot))) return null;
+  const indexCommon = gitCommonDir(realpath(indexRoot));
+  // Directory identity, not spelling: Git for Windows expands an 8.3 short path on one
+  // side (cwd spelled `…\RUNNER~1\…`) and keeps it on the other, so the same repository's
+  // common dir arrives as two different strings and a linked worktree looked like an
+  // embedded clone — refused as "isn't indexed" instead of served with the #155 notice.
+  if (!repoCommon || !indexCommon || sameDirectory(repoCommon, indexCommon)) return null;
   return { root: repoRoot, relPath: rel.split(path.sep).join('/') };
 }
 
