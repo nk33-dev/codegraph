@@ -49,6 +49,7 @@ async function discover(
   const child = spawn(process.execPath, [...WASM_RUNTIME_FLAGS, ...recorder.args, BIN, 'serve', '--mcp', '--no-watch'], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
     env: { ...process.env, ...recorder.env, CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS: '1000', ...env },
   }) as ChildProcessWithoutNullStreams;
   children.push(child);

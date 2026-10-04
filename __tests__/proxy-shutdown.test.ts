@@ -73,6 +73,7 @@ function startProxy(script: string, env: Record<string, string> = {}): Proxy {
       ...env,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
   let stdout = '', stderr = '';
   child.stdout!.on('data', (d) => { stdout += d; });
@@ -131,7 +132,7 @@ describe('local proxy shutdown (#2311)', () => {
     const sock = process.platform === 'win32'
       ? `\\\\.\\pipe\\cg-proxy-stop-${process.pid}-${Date.now()}`
       : path.join(dir, 'd.sock');
-    const host = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const host = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
     const hostGone = new Promise<void>((resolve) => host.once('exit', () => resolve()));
     const proxy = startProxy(`
       const conns = [];

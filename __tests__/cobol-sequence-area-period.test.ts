@@ -43,6 +43,7 @@ function runChild(script: string, args: string[]) {
   return spawnSync(process.execPath, [...WASM_RUNTIME_FLAGS, '-e', script, DIST, ...args], {
     encoding: 'utf8',
     timeout: DEADLINE_MS,
+    windowsHide: true,
     env: { ...process.env, CODEGRAPH_TELEMETRY: '0' },
   });
 }
