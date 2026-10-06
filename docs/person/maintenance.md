@@ -1,6 +1,6 @@
 # CodeGraph maintenance workflow
 
-当前待验证同步基线为官方 `d2fb323e`（上游 `main`，包含 v1.6.2 后的最新提交）；本轮同步完成后由 `personal` 的同一提交触发 CI 验证。
+当前待验证同步基线为官方 `837a1866`（上游 `main`，包含 v1.6.2 后的最新提交）；本轮同步完成后由 `personal` 的同一提交触发 CI 验证。
 
 This document describes the sync, verification, data recovery and release boundaries of the personal fork. For implementation details see the [development reference](../development.md), and for personal features see the [navigation](README.md).
 
