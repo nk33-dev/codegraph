@@ -1,5 +1,15 @@
 # 个人版开发验证记录
 
+## 2026-10-07：个人版 daemon 跨安装切换回归
+
+上一轮个人分支 CI `37511217327` 在 `daemon-older-version.test.ts` 暴露三类跨平台问题：版本构建指纹日志拆开后无法被重复探测断言识别；旧 daemon 高负载时身份探测短暂失败，阻塞新 daemon 接管；旧会话在断线时同时回放大量相同状态查询，Windows 上超过测试等待窗口。
+
+- 代理日志保留 `version (<old>) differs from ours (<current>)` 的稳定片段，并把构建指纹差异单独说明。
+- 首次探测已经收到旧 daemon hello 时，交接路径复用同一份 pid、版本、socket 身份证明；没有这份证明时仍做有界重试，身份无法确认就不发送信号。
+- 旧 daemon 断线回放相同的 `codegraph_status` 请求时只执行一次本地查询，再按原请求 ID 回写结果；编辑请求仍拒绝重放。
+
+Windows 本机验证：`npm run typecheck` 通过；`daemon-older-version.test.ts` 29/29 通过；`proxy-connect.test.ts`、`proxy-edit-replay.test.ts`、`proxy-shutdown.test.ts`、`daemon-version-switch.test.ts` 共 10 项通过、3 项按平台条件跳过。三平台 CI 与 Personal Release 仍需在本次提交推送后确认。
+
 ## 2026-10-01：Git 配置复用与 Windows CI 分片
 
 接续本地提交 `5513cf8`，本轮仍只提交到 `personal`，不推送。当前方案见[测试性能](test-performance.md)。

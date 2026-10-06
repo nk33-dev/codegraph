@@ -22,10 +22,11 @@ import * as net from 'net';
 import { spawn, StdioOptions } from 'child_process';
 import { getCodeGraphDir } from '../directory';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
+import type { DaemonHello } from './daemon';
 import { getDaemonPidPath, getDaemonSocketCandidates, decodeLockInfo } from './daemon-paths';
 import { retireStaleDaemon, stopOlderDaemon } from './daemon-registry';
 import { connectWithHello } from './proxy';
-import { CodeGraphPackageVersion } from './version';
+import { CodeGraphPackageVersion, isOlderDaemonVersion } from './version';
 import { PERSONAL_DISTRIBUTION } from '../runtime-info';
 import { releaseWriterLock } from './writer-lock';
 
@@ -98,6 +99,8 @@ export interface WaitForDaemonSocketOptions {
   attempts?: number;
   /** 每次轮询间隔，默认 25ms。 */
   delayMs?: number;
+  /** Observe a hello so an older daemon can reuse the proof during handover. */
+  onHello?: (hello: DaemonHello) => void;
 }
 
 /**
@@ -114,7 +117,7 @@ export async function waitForDaemonSocket(
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (delayMs > 0) await sleep(delayMs);
     for (const candidate of candidates) {
-      const socket = await connectWithHello(candidate);
+      const socket = await connectWithHello(candidate, undefined, undefined, options.onHello);
       // 版本不一致是确定的结论（有 daemon，但版本不同），不要继续轮询。
       if (typeof socket === 'string') return socket;
       if (socket) return socket;
@@ -125,7 +128,14 @@ export async function waitForDaemonSocket(
 
 /** Connect or start a daemon, holding the writer slot across an older-release replacement. */
 export async function connectSharedDaemon(root: string): Promise<net.Socket | null> {
-  const probe = await waitForDaemonSocket(root, { attempts: 1, delayMs: 0 });
+  let observedOlderHello: DaemonHello | null = null;
+  const probe = await waitForDaemonSocket(root, {
+    attempts: 1,
+    delayMs: 0,
+    onHello: (hello) => {
+      if (isOlderDaemonVersion(hello.codegraph, CodeGraphPackageVersion)) observedOlderHello = hello;
+    },
+  });
   if (probe && typeof probe !== 'string') return probe;
   if (probe === 'version-mismatch') {
     // Personal artifacts can differ even with the same release number.
@@ -134,7 +144,10 @@ export async function connectSharedDaemon(root: string): Promise<net.Socket | nu
     return restarted.outcome === 'switched' ? restarted.socket : null;
   }
 
-  const stopped = await stopOlderDaemon(root, CodeGraphPackageVersion, { shutdownGraceMs: 5_000 });
+  const stopped = await stopOlderDaemon(root, CodeGraphPackageVersion, {
+    shutdownGraceMs: 5_000,
+    verifiedHello: observedOlderHello,
+  });
   if (stopped?.outcome === 'unverified' || stopped?.outcome === 'still-running') {
     process.stderr.write(`[CodeGraph MCP] Older daemon could not be replaced (${stopped.outcome}); serving this session in-process.\n`);
     return null;
@@ -142,7 +155,10 @@ export async function connectSharedDaemon(root: string): Promise<net.Socket | nu
   const handover = stopped?.outcome === 'term' || stopped?.outcome === 'kill';
   try {
     if (handover) {
-      process.stderr.write(`[CodeGraph MCP] Stopped the CodeGraph ${stopped.version} daemon (pid ${stopped.pid}); starting ${CodeGraphPackageVersion}.\n`);
+      process.stderr.write(
+        `[CodeGraph MCP] Stopped the CodeGraph ${stopped.version} daemon (pid ${stopped.pid}) ` +
+        `serving this project; starting one from this install (${CodeGraphPackageVersion}).\n`
+      );
     }
     spawnDetachedDaemon(root, handover ? process.pid : null);
     const socket = await waitForDaemonSocket(root);

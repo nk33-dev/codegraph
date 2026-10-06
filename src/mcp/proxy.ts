@@ -160,6 +160,7 @@ export async function connectWithHello(
   socketPath: string,
   expectedVersion: string = CodeGraphPackageVersion,
   expectedBuildId: string | undefined = CodeGraphBuildId,
+  onHello?: (hello: DaemonHello) => void,
 ): Promise<net.Socket | 'older-version' | 'version-mismatch' | null> {
   if (process.platform !== 'win32' && !fs.existsSync(socketPath)) return null;
   const socket = net.createConnection(socketPath);
@@ -179,6 +180,7 @@ export async function connectWithHello(
     socket.destroy();
     return null; // no daemon yet — caller should keep polling
   }
+  try { onHello?.(hello); } catch { /* observation must not affect the handshake */ }
   if (hello.codegraph !== expectedVersion || hello.buildId !== expectedBuildId) {
     // A daemon IS up but it's the wrong version — definitive, not a "not yet".
     socket.destroy();
@@ -187,7 +189,8 @@ export async function connectWithHello(
     // Any other: don't poll; the caller serves in-process so we never run stale-vs-new.
     process.stderr.write(
       `[CodeGraph MCP] Found a daemon on ${socketPath} but version (${hello.codegraph}) ` +
-      `or build (${hello.buildId ?? 'upstream'}) differs from ours (${expectedVersion}, ${expectedBuildId ?? 'upstream'}); this client will not share it.\n`
+      `differs from ours (${expectedVersion}) or build (${hello.buildId ?? 'upstream'}) ` +
+      `differs from ours (${expectedBuildId ?? 'upstream'}); this client will not share it.\n`
     );
     return 'version-mismatch';
   }
@@ -349,27 +352,63 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
     call.then(done, done);
     return call;
   };
-  const serveLocally = async (line: string): Promise<void> => {
-    let msg: JsonRpc; try { msg = JSON.parse(line) as JsonRpc; } catch { return; }
+  const serveLocallyResult = async (line: string): Promise<JsonRpc | null> => {
+    let msg: JsonRpc; try { msg = JSON.parse(line) as JsonRpc; } catch { return null; }
     const id = msg.id;
     if (msg.method === 'tools/call' && id !== undefined) {
       try {
         const local = await ensureEngine();
         const params = (msg.params || {}) as { name: string; arguments?: Record<string, unknown> };
         const result = await local.getToolHandler().execute(params.name, params.arguments || {}, exploreSession);
-        writeClient({ jsonrpc: '2.0', id, result });
         getTelemetry().recordUsage('mcp_tool', params.name, !result.isError, telemetryClient);
+        return { jsonrpc: '2.0', id, result };
       } catch (err) {
-        writeClient({ jsonrpc: '2.0', id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } });
+        return { jsonrpc: '2.0', id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } };
       }
     } else if (msg.method === 'ping' && id !== undefined) {
-      writeClient({ jsonrpc: '2.0', id, result: {} });
+      return { jsonrpc: '2.0', id, result: {} };
     } else if (id !== undefined && msg.method !== 'initialize') {
       // A request we can't serve in-process (and the daemon is gone) — answer
       // with an error rather than let the host hang on a reply that won't come.
-      writeClient({ jsonrpc: '2.0', id, error: { code: -32603, message: 'CodeGraph daemon unavailable' } });
+      return { jsonrpc: '2.0', id, error: { code: -32603, message: 'CodeGraph daemon unavailable' } };
     }
     // initialize already answered locally; notifications (initialized) need no reply.
+    return null;
+  };
+  const serveLocally = async (line: string): Promise<void> => {
+    const response = await serveLocallyResult(line);
+    if (response) writeClient(response);
+  };
+  // A daemon can disconnect while a burst of identical read requests is in
+  // flight. Reusing one local status result for that burst keeps recovery
+  // bounded while every request still receives its own JSON-RPC id.
+  const localReplayResults = new Map<string, Promise<JsonRpc | null>>();
+  const handleLocallyWithReplay = (line: string): Promise<void> => {
+    let msg: JsonRpc;
+    try { msg = JSON.parse(line) as JsonRpc; } catch { return handleLocally(line); }
+    const params = msg.params as { name?: unknown } | undefined;
+    if (msg.method !== 'tools/call' || msg.id === undefined || params?.name !== 'codegraph_status') {
+      return handleLocally(line);
+    }
+    let key: string;
+    try { key = JSON.stringify({ method: msg.method, params: msg.params }); } catch { return handleLocally(line); }
+    let result = localReplayResults.get(key);
+    if (!result) {
+      result = serveLocallyResult(line);
+      localReplayResults.set(key, result);
+      void result.then(
+        () => { if (localReplayResults.get(key) === result) localReplayResults.delete(key); },
+        () => { if (localReplayResults.get(key) === result) localReplayResults.delete(key); },
+      );
+    }
+    const id = msg.id;
+    const call = result.then((response) => {
+      if (response) writeClient({ ...response, id });
+    });
+    localCalls.add(call);
+    const done = (): void => { localCalls.delete(call); };
+    call.then(done, done);
+    return call;
   };
   const routeToDaemon = (line: string): void => {
     if (daemonStatus === 'ready' && daemonSocket) {
@@ -549,7 +588,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
             message: 'CodeGraph edit outcome is uncertain: the daemon disconnected before confirming. Inspect the files before retrying; the edit was not replayed.',
           } });
         } else {
-          void handleLocally(line);
+          void handleLocallyWithReplay(line);
         }
       }
       // A link that stayed up past the longest wait starts the backoff over; one

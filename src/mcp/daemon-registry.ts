@@ -251,6 +251,16 @@ export async function clearStaleDaemonArtifacts(root: string): Promise<boolean> 
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** A busy daemon may delay its hello behind queued work; retry identity before
+ * treating a live, versioned lock as unverified and giving up the handover. */
+async function probeDaemonIdentityForReplacement(info: DaemonLockInfo): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (await probeDaemonIdentity(info, 2_000)) return true;
+    if (attempt < 2) await sleep(50);
+  }
+  return false;
+}
+
 /** How long `stopDaemonAt` gives a daemon to exit on SIGTERM before looking closer. */
 const DAEMON_TERM_WAIT_MS = 3_000;
 
@@ -426,7 +436,11 @@ async function stopVerifiedDaemon(
 export async function stopOlderDaemon(
   root: string,
   version: string,
-  options: { shutdownGraceMs?: number } = {},
+  options: {
+    shutdownGraceMs?: number;
+    /** A hello already observed on the launcher's probe socket. */
+    verifiedHello?: { pid: number; codegraph: string; socketPath?: string; protocol?: number } | null;
+  } = {},
 ): Promise<StopResult | null> {
   let lockContents: string;
   try {
@@ -441,7 +455,13 @@ export async function stopOlderDaemon(
   const { pid } = identity;
   if (!isProcessAlive(pid)) return { root, pid, outcome: 'not-running', version: identity.version };
   // The hello must name this pid and version (#1553): a reused pid is no daemon.
-  if (!canProbeDaemonIdentity(identity) || !await probeDaemonIdentity(identity)) {
+  const observed = options.verifiedHello;
+  const observedMatches = observed?.protocol === 1 &&
+    observed.pid === identity.pid &&
+    observed.codegraph === identity.version &&
+    (!observed.socketPath || observed.socketPath === identity.socketPath);
+  const verified = observedMatches || (canProbeDaemonIdentity(identity) && await probeDaemonIdentityForReplacement(identity));
+  if (!verified) {
     return { root, pid, outcome: 'unverified', version: identity.version };
   }
   const slot = takeWriterSlotFrom(root, pid);
