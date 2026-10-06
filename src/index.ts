@@ -57,6 +57,7 @@ import {
   BuildContextOptions,
   FindRelevantContextOptions,
   UnresolvedReference,
+  IndexHealth,
 } from './types';
 import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve, resolveWalValveMb } from './db/wal-valve';
@@ -75,6 +76,7 @@ import {
   extractFromSource,
   initGrammars,
 } from './extraction';
+import { hasGrammarLoadFailure, isFileLevelOnlyLanguage } from './extraction/grammars';
 import {
   ReferenceResolver,
   createResolver,
@@ -100,6 +102,7 @@ import {
   type ModuleCycleReport,
 } from './graph/architecture';
 import { GraphTraverser, GraphQueryManager } from './graph';
+import { findNamedCopybooks, type NamedCopybook } from './graph/cobol-copybooks';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError, planRefresh, watchDisabledPolicy, type RefreshPlan, type RefreshSources, type RefreshSymbol, type WatchPolicy } from './sync';
@@ -893,6 +896,7 @@ export class CodeGraph {
 
   private async runIndexAll(options: IndexOptions = {}, writerHeld = false): Promise<IndexResult> {
     const run = async () => {
+      const startedAt = Date.now();
       try {
         if (!writerHeld) this.fileLock.acquire();
       } catch {
@@ -1164,6 +1168,10 @@ export class CodeGraph {
           }
         } catch { /* metadata is advisory — never fail an index over it */ }
 
+        // The time covers the whole run, like the totals above. The
+        // orchestrator's covers extraction alone, and the summary printed it
+        // as the run's, leaving out resolution and linking (#2334).
+        result.durationMs = Date.now() - startedAt;
         return result;
       } finally {
         // Restore the auto-checkpoint interval AFTER the fold-up above so the
@@ -1373,6 +1381,7 @@ export class CodeGraph {
 
   private async runSync(options: IndexOptions = {}, writerHeld = false): Promise<SyncResult> {
     const run = async () => {
+      const startedAt = Date.now();
       try {
         if (!writerHeld) this.fileLock.acquire();
       } catch (err) {
@@ -1722,6 +1731,8 @@ export class CodeGraph {
         }
 
         if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
+        // The whole sync, as for indexAll: resolution and linking included (#2334).
+        result.durationMs = Date.now() - startedAt;
         return result;
       } finally {
         // Mirror indexAll's teardown: stop the valve, then restore the
@@ -2738,6 +2749,15 @@ export class CodeGraph {
   }
 
   /**
+   * The COBOL copybooks a query names (`CVACT01Y`, `MYCOPYBOOK`): each
+   * member's indexed copybook file(s) and every `COPY` / `EXEC SQL INCLUDE`
+   * statement that includes it. Empty for a query that names none.
+   */
+  findNamedCopybooks(query: string): NamedCopybook[] {
+    return findNamedCopybooks(this.queries, query);
+  }
+
+  /**
    * Graph-derived prompt matching for the front-load hook's MEDIUM tier:
    * which indexed symbols do these prose words name? "state machine des
    * commandes" → `OrderStateMachine`, in any human language whose technical
@@ -3017,6 +3037,34 @@ export class CodeGraph {
   /** How many indexed files are flagged tool-generated. Reported by `status`. */
   getGeneratedFileCount(): number {
     return this.queries.countGeneratedFiles();
+  }
+
+  /**
+   * Indexed files whose symbols are missing although their content is current
+   * — rows a content-hash comparison calls up to date (#2336). Reported by
+   * `status`; `sync` repairs the `needsReindex` group.
+   */
+  getIndexHealth(): IndexHealth {
+    const needsReindex: string[] = [];
+    const parseErrors: string[] = [];
+    for (const file of this.queries.getFilesWithoutNodesOrWithErrors()) {
+      const errors = file.errors ?? [];
+      if (hasGrammarLoadFailure(errors)) {
+        // Stored without being parsed — its grammar could not load (#2335).
+        needsReindex.push(file.path);
+      } else if (file.nodeCount === 0) {
+        // Every parse stores at least the file node, so zero nodes means a
+        // wiped row (#1541) or a recorded failure — except file-level-only
+        // languages and files over the size limit, which are empty on purpose.
+        if (isFileLevelOnlyLanguage(file.language)) continue;
+        if (errors.length === 0) needsReindex.push(file.path);
+        else if (errors.some((e) => e.severity === 'error' || e.code === 'parse_error')) parseErrors.push(file.path);
+      } else if (errors.some((e) => e.code === 'parse_error')) {
+        // Parsed, but the tree had errors and no symbols survived.
+        parseErrors.push(file.path);
+      }
+    }
+    return { needsReindex, parseErrors };
   }
 
   // ===========================================================================

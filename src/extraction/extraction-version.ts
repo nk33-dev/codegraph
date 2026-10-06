@@ -26,7 +26,7 @@
  * only when every crossed extraction change has a compatible recorded scope.
  */
 import type { Language } from '../types';
-export const EXTRACTION_VERSION = 29;
+export const EXTRACTION_VERSION = 30;
 
 /**
  * Extraction scope affected by each version increment.
@@ -45,7 +45,7 @@ export interface ExtractionUpgradeScope {
 }
 
 /**
- * Tracking starts at the increment immediately before {@link EXTRACTION_VERSION}.
+ * Tracking starts at extraction version 27.
  * Earlier increments have no recorded scope, so upgrading an older index conservatively
  * requires a full rebuild instead of claiming compatibility without evidence.
  */
@@ -73,8 +73,13 @@ export const EXTRACTION_UPGRADES: readonly ExtractionUpgradeScope[] = [
   },
   {
     version: 29,
+    scope: ['csharp', 'vbnet'],
+    summary: 'Bridge the upstream v28 C# and VB.NET extraction changes for personal indexes that already crossed v29',
+  },
+  {
+    version: 30,
     scope: 'all',
-    summary: 'Recover cross-file relationships after incremental edits and synthesize Vue/React composable, router, props and emits bindings',
+    summary: 'Re-extract for upstream language fixes, recover cross-file relationships and synthesize Vue/React composable, router, props and emits bindings',
   },
 ];
 

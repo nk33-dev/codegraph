@@ -23,9 +23,11 @@ import { spawn, StdioOptions } from 'child_process';
 import { getCodeGraphDir } from '../directory';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
 import { getDaemonPidPath, getDaemonSocketCandidates, decodeLockInfo } from './daemon-paths';
-import { retireStaleDaemon } from './daemon-registry';
+import { retireStaleDaemon, stopOlderDaemon } from './daemon-registry';
 import { connectWithHello } from './proxy';
 import { CodeGraphPackageVersion } from './version';
+import { PERSONAL_DISTRIBUTION } from '../runtime-info';
+import { releaseWriterLock } from './writer-lock';
 
 /**
  * 标记“本进程就是分离 daemon 自身”的环境变量（由 {@link spawnDetachedDaemon} 重新调用
@@ -33,6 +35,8 @@ import { CodeGraphPackageVersion } from './version';
  * 就是 daemon，必须绝不再拉起第二个（否则无限 spawn）。
  */
 export const DAEMON_INTERNAL_ENV = 'CODEGRAPH_DAEMON_INTERNAL';
+/** Launcher pid held in the writer lock while replacing an older daemon. */
+export const DAEMON_HANDOVER_ENV = 'CODEGRAPH_DAEMON_HANDOVER';
 
 /** 与 src/mcp/index.ts 的启动器保持一致：240 × 25ms ≈ 6s 的冷启动预算。 */
 const DAEMON_CONNECT_MAX_RETRIES = 240;
@@ -47,7 +51,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * 忠实重新调用同一个 CLI。被拉起的进程自行竞争 O_EXCL 锁，因此并发的启动器各自
  * 都可能拉起一个 —— 失败者退出，所有启动器最终都经过唯一的赢家。
  */
-export function spawnDetachedDaemon(root: string): void {
+export function spawnDetachedDaemon(root: string, handoverFrom: number | null = null): void {
   const scriptPath = process.argv[1];
   if (!scriptPath) {
     // 无法解析可重新调用的 CLI 入口 —— 让调用方退回 direct 模式，而不是启动一个坏的进程。
@@ -67,11 +71,19 @@ export function spawnDetachedDaemon(root: string): void {
     // daemon 拉起的任何进程），否则一个早已退出的会话 pid 会触发莫名的关闭。
     const env: NodeJS.ProcessEnv = { ...process.env, [DAEMON_INTERNAL_ENV]: '1' };
     delete env[HOST_PPID_ENV];
+    if (handoverFrom !== null && Number.isInteger(handoverFrom) && handoverFrom > 0) {
+      env[DAEMON_HANDOVER_ENV] = String(handoverFrom);
+    } else {
+      delete env[DAEMON_HANDOVER_ENV];
+    }
     const child = spawn(
       process.execPath,
       [...process.execArgv, scriptPath, 'serve', '--mcp', '--path', root],
       { detached: true, stdio, windowsHide: true, env },
     );
+    child.on('error', (error) => {
+      process.stderr.write(`[CodeGraph daemon] Could not start the shared daemon: ${error.message}.\n`);
+    });
     child.unref();
   } finally {
     // 子进程已经持有自己的日志 fd 副本；启动器不再需要它。
@@ -95,7 +107,7 @@ export interface WaitForDaemonSocketOptions {
 export async function waitForDaemonSocket(
   root: string,
   options: WaitForDaemonSocketOptions = {},
-): Promise<net.Socket | 'version-mismatch' | null> {
+): Promise<net.Socket | 'older-version' | 'version-mismatch' | null> {
   const attempts = options.attempts ?? DAEMON_CONNECT_MAX_RETRIES;
   const delayMs = options.delayMs ?? DAEMON_CONNECT_RETRY_DELAY_MS;
   const candidates = getDaemonSocketCandidates(root);
@@ -104,11 +116,40 @@ export async function waitForDaemonSocket(
     for (const candidate of candidates) {
       const socket = await connectWithHello(candidate);
       // 版本不一致是确定的结论（有 daemon，但版本不同），不要继续轮询。
-      if (socket === 'version-mismatch') return socket;
+      if (typeof socket === 'string') return socket;
       if (socket) return socket;
     }
   }
   return null;
+}
+
+/** Connect or start a daemon, holding the writer slot across an older-release replacement. */
+export async function connectSharedDaemon(root: string): Promise<net.Socket | null> {
+  const probe = await waitForDaemonSocket(root, { attempts: 1, delayMs: 0 });
+  if (probe && typeof probe !== 'string') return probe;
+  if (probe === 'version-mismatch') {
+    // Personal artifacts can differ even with the same release number.
+    if (!PERSONAL_DISTRIBUTION || readDaemonLock(root)?.version !== CodeGraphPackageVersion) return null;
+    const restarted = await restartSharedDaemon(root);
+    return restarted.outcome === 'switched' ? restarted.socket : null;
+  }
+
+  const stopped = await stopOlderDaemon(root, CodeGraphPackageVersion, { shutdownGraceMs: 5_000 });
+  if (stopped?.outcome === 'unverified' || stopped?.outcome === 'still-running') {
+    process.stderr.write(`[CodeGraph MCP] Older daemon could not be replaced (${stopped.outcome}); serving this session in-process.\n`);
+    return null;
+  }
+  const handover = stopped?.outcome === 'term' || stopped?.outcome === 'kill';
+  try {
+    if (handover) {
+      process.stderr.write(`[CodeGraph MCP] Stopped the CodeGraph ${stopped.version} daemon (pid ${stopped.pid}); starting ${CodeGraphPackageVersion}.\n`);
+    }
+    spawnDetachedDaemon(root, handover ? process.pid : null);
+    const socket = await waitForDaemonSocket(root);
+    return socket && typeof socket !== 'string' ? socket : null;
+  } finally {
+    if (handover) releaseWriterLock(root);
+  }
 }
 
 export interface RestartSharedDaemonResult {
@@ -166,7 +207,7 @@ export async function restartSharedDaemon(root: string): Promise<RestartSharedDa
 
   spawnDetachedDaemon(root);
   const socket = await waitForDaemonSocket(root);
-  if (!socket || socket === 'version-mismatch') {
+  if (!socket || typeof socket === 'string') {
     // 'version-mismatch' 时 connectWithHello 已经关掉了那条连接；这里没有别的资源要收拾。
     return {
       outcome: 'unavailable',

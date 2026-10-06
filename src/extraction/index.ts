@@ -28,7 +28,7 @@ import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './
 import { StoreWriter, StoreBundle, finalizeStoreBundle } from './store-writer';
 import { materializeKernelResult } from './kernel';
 import { detectGeneratedFile } from './generated-detection';
-import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, readGrammarWasmBytes, isMpegTransportStream, hasMpegTsExtension, MPEG_TS_SNIFF_BYTES } from './grammars';
+import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, readGrammarWasmBytes, isMpegTransportStream, hasMpegTsExtension, MPEG_TS_SNIFF_BYTES, hasGrammarLoadFailure } from './grammars';
 import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadIncludePatterns, PROJECT_CONFIG_FILENAME } from '../project-config';
 import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
@@ -129,6 +129,12 @@ export interface IndexResult {
   nodesCreated: number;
   edgesCreated: number;
   errors: ExtractionError[];
+  /**
+   * Wall time in milliseconds. `CodeGraph.indexAll` reports the whole run —
+   * scanning, parsing and storing, then resolving references and linking —
+   * as it does the node and edge totals; the orchestrator's own result
+   * covers only the files' extraction.
+   */
   durationMs: number;
 }
 
@@ -147,6 +153,11 @@ export interface SyncResult {
   filesModified: number;
   filesRemoved: number;
   nodesUpdated: number;
+  /**
+   * Wall time in milliseconds. `CodeGraph.sync` reports the whole sync,
+   * resolution and linking included; the orchestrator's own result covers
+   * only reconciling and re-extracting the files.
+   */
   durationMs: number;
   /** 源文件虽已增量同步，但索引仍由旧提取版本构建，需要完整重建。 */
   reindexRecommended?: boolean;
@@ -2396,11 +2407,17 @@ export class ExtractionOrchestrator {
       const nodeCount = result.kernelCounts?.nodes ?? result.nodes.length;
       const edgeCount = result.kernelCounts?.edges ?? result.edges.length;
 
+      // A file whose grammar failed to load was never parsed (#2335).
+      const grammarUnavailable = hasGrammarLoadFailure(result.errors);
+
       // Store: on the writer thread when active (fresh DB — bundles applied
       // in the same file order this chain dispatches them), else on the main
       // thread (SQLite connections are per-thread).
       const language = detectLanguage(filePath, content, overrides);
-      if (storeWriter) {
+      if (grammarUnavailable) {
+        // Store nothing: a row from an earlier run keeps its data, and with no
+        // row (or an older hash) the next sync or index retries the file.
+      } else if (storeWriter) {
         if (result.kernelBuffers) {
           // Buffers go to the writer as-is; the worker decodes + finalizes.
           // The main thread's only per-file work stays O(1) + the content hash.
@@ -2431,7 +2448,9 @@ export class ExtractionOrchestrator {
         errors.push(...result.errors);
       }
 
-      if (nodeCount > 0) {
+      if (grammarUnavailable) {
+        filesErrored++;
+      } else if (nodeCount > 0) {
         filesIndexed++;
         totalNodes += nodeCount;
         totalEdges += edgeCount;
@@ -2852,7 +2871,9 @@ export class ExtractionOrchestrator {
         errors.push(...result.errors);
       }
 
-      if (result.nodes.length > 0) {
+      if (hasGrammarLoadFailure(result.errors)) {
+        filesErrored++; // nothing was stored (#2335)
+      } else if (result.nodes.length > 0) {
         filesIndexed++;
         totalNodes += result.nodes.length;
         totalEdges += result.edges.length;
@@ -3037,6 +3058,12 @@ export class ExtractionOrchestrator {
     onYield?: MaybeYield,
     forceExtraction = false
   ): Promise<void> {
+    // The file was never parsed: its grammar failed to load (#2335). Storing
+    // this would replace the file's symbols with an empty row under the new
+    // content hash, which no hash-based sync revisits. Keep whatever the index
+    // has; the stale (or missing) row makes the next sync retry the file.
+    if (hasGrammarLoadFailure(result.errors)) return;
+
     // A kernel result can arrive as an undecoded buffer transport (empty
     // node/edge arrays, tables riding in kernelBuffers). Decode it before
     // storing — persisting the transport as-is records the file as having no
@@ -3063,7 +3090,10 @@ export class ExtractionOrchestrator {
       const existingIsMarker =
         existingFile.nodeCount === 0 && (existingFile.errors?.length ?? 0) > 0;
       const incomingHasContent = result.nodes.length > 0;
-      if (!existingIsMarker || !incomingHasContent) {
+      // A row an older engine stored while the grammar could not load
+      // (#2335) records no parse at all: any real result replaces it.
+      const existingNeverParsed = hasGrammarLoadFailure(existingFile.errors);
+      if (!existingNeverParsed && (!existingIsMarker || !incomingHasContent)) {
         return; // No changes
       }
     }
@@ -3539,13 +3569,18 @@ export class ExtractionOrchestrator {
       }
       const fullPath = path.join(this.rootDir, filePath);
       const tracked = trackedMap.get(filePath);
+      // A row an older engine stored while the file's grammar could not load
+      // (#2335) holds no parse of these bytes: re-index it even though its
+      // size, mtime and hash all match. Rows with a real parse error are
+      // deterministic and are not retried.
+      const neverParsed = tracked !== undefined && hasGrammarLoadFailure(tracked.errors);
 
       // Cheap pre-filter: an already-indexed file whose size AND mtime both match
       // the DB is unchanged — skip it without reading or hashing. (A content
       // change that preserves both exactly is the blind spot every mtime-based
       // incremental tool accepts; `index --force` is the escape hatch. Git bumps
       // mtime on every file it writes during checkout/merge, so pulls are caught.)
-      if (tracked) {
+      if (tracked && !neverParsed) {
         try {
           const stat = fs.statSync(fullPath);
           if (stat.size === tracked.size && Math.floor(stat.mtimeMs) === Math.floor(tracked.modifiedAt)) {
@@ -3581,7 +3616,7 @@ export class ExtractionOrchestrator {
         filesToIndex.push(filePath);
         changedFilePaths.push(filePath);
         filesAdded++;
-      } else if (tracked.contentHash !== contentHash) {
+      } else if (tracked.contentHash !== contentHash || neverParsed) {
         onFileChange?.(filePath, content);
         filesToIndex.push(filePath);
         changedFilePaths.push(filePath);
@@ -3629,7 +3664,7 @@ export class ExtractionOrchestrator {
 
       const result = await this.indexFile(filePath);
       if (result.errors.some(e => e.severity === 'error')) failedFilePaths.push(filePath);
-      nodesUpdated += result.nodes.length;
+      if (!hasGrammarLoadFailure(result.errors)) nodesUpdated += result.nodes.length; // else nothing was stored (#2335)
 
       const pause = backpressure?.();
       if (pause) await pause;

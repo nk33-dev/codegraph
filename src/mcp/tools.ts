@@ -72,6 +72,7 @@ import { isSourceFile } from '../extraction/grammars';
 import { guardLabel, guardsForFileSync, siteKey, supportsBranchGuards, warmBranchGuardGrammars } from '../graph/branch-guards';
 import { findDynamicBoundaries, type BoundarySite, type NodeBoundary } from '../graph/dynamic-boundary-report';
 import { countImplementers } from '../graph/type-hierarchy';
+import { isCopybookInclude, MAX_COPYBOOK_INCLUDES, type NamedCopybook } from '../graph/cobol-copybooks';
 import {
   buildFlowEvidenceReport,
   DEFAULT_FLOW_EVIDENCE_BUDGET,
@@ -5077,6 +5078,46 @@ export class ToolHandler {
   }
 
   /**
+   * The COBOL copybooks an explore query named (#2342): where each one's source
+   * lives, and every `COPY` / `EXEC SQL INCLUDE` statement that pulls it in —
+   * locations only, one per line. The source section can afford a few include
+   * windows; this list is what answers "what includes X / what does changing X
+   * touch" without a grep for `COPY X`. A member whose source is not indexed
+   * says so, so nobody goes hunting for a copybook file that is not here.
+   */
+  private buildCopybookSection(copybooks: NamedCopybook[]): string {
+    const MAX_LISTED_SITES = 25;
+    const blocks: string[] = [];
+    for (const copybook of copybooks) {
+      // Spelled as the code spells it — an include's member, else the file's
+      // stem — not as the query happened to type it.
+      const name = copybook.includes[0]?.name
+        ?? copybook.files[0]?.name.replace(/\.[^.]*$/, '')
+        ?? copybook.member;
+      const source = copybook.files.length > 0
+        ? `source ${copybook.files.map((f) => `\`${f.filePath}\``).join(', ')}`
+        : 'no indexed source (typically a DB2 DCLGEN member, a compiler-supplied copybook such as SQLCA, or one kept outside this project)';
+      const count = copybook.includes.length;
+      if (count === 0) {
+        blocks.push(`**COBOL copybook \`${name}\`** — ${source}; nothing indexed includes it (no \`COPY\` or \`EXEC SQL INCLUDE\` of it).`, '');
+        continue;
+      }
+      const sites = `${count}${count >= MAX_COPYBOOK_INCLUDES ? '+' : ''} site${count === 1 ? '' : 's'}`;
+      blocks.push(`**COBOL copybook \`${name}\`** — ${source}; included at ${sites}:`, '');
+      for (const include of copybook.includes.slice(0, MAX_LISTED_SITES)) {
+        const statement = /^\s*EXEC\b/i.test(include.signature ?? '') ? 'EXEC SQL INCLUDE' : 'COPY';
+        blocks.push(`- \`${include.filePath}:${include.startLine}\` — ${statement}`);
+      }
+      if (count > MAX_LISTED_SITES) {
+        const files = new Set(copybook.includes.slice(MAX_LISTED_SITES).map((n) => n.filePath)).size;
+        blocks.push(`- … +${count - MAX_LISTED_SITES} more site${count - MAX_LISTED_SITES === 1 ? '' : 's'} in ${files} file${files === 1 ? '' : 's'}`);
+      }
+      blocks.push('');
+    }
+    return blocks.join('\n');
+  }
+
+  /**
    * Test-coverage note for a blast-radius entry whose production dependents
    * include no test file. A helper called only by production code can still be
    * exercised by tests further up the caller chain (#1475: 40% of
@@ -5350,6 +5391,22 @@ export class ToolHandler {
           matchQuery = normalizeQuerySpelling(extraction.strippedQuery);
         }
       } catch { /* path pinning must never fail an explore call */ }
+    }
+    // A COBOL copybook the query names (`CVACT01Y`) names its FILE as surely as
+    // `app/cpy/CVACT01Y.cpy` would (#2342), so it is pinned the same way: the
+    // copybook's own source is admitted, ranked first and funded first. Looked
+    // up on the path-stripped query — a query that already pinned the file by
+    // path gets exactly the answer it got before. The include sites are listed
+    // in their own section below.
+    let namedCopybooks: NamedCopybook[] = [];
+    try {
+      namedCopybooks = cg.findNamedCopybooks(matchQuery);
+    } catch { /* copybook pinning must never fail an explore call */ }
+    for (const copybook of namedCopybooks) {
+      for (const file of copybook.files) {
+        if (pinnedFiles.length >= maxFiles) break;
+        if (!pinnedFiles.includes(file.filePath)) pinnedFiles = [...pinnedFiles, file.filePath];
+      }
     }
 
     const startupQuestion = /(?:前端|后端|后台|服务).{0,6}(?:入口|启动|初始化)|(?:启动|运行).{0,8}(?:流程|调用链|入口)|(?:项目|应用|服务).{0,8}启动|(?:entry|main).{0,8}(?:point|file)|(?:application|frontend|backend).{0,8}entry|\b(?:startup|boot(?:strap)?|entry point)\s+(?:flow|process|path)\b/i.test(rawQuery);
@@ -6198,9 +6255,20 @@ export class ToolHandler {
       }
     }
 
+    // Import/export nodes add noise without information — except a COBOL
+    // include the query named (#2342). `COPY CVACT01Y` is where the copybook is
+    // pulled in, half of what a question about the copybook asks, so it is
+    // grouped, rendered (a window around the statement) and listed like any
+    // symbol. The context builder makes one an entry point only when the query
+    // names its member, so no other import ever passes this test.
+    const namedIncludeIds = new Set(subgraph.roots.filter((id) => {
+      const root = subgraph.nodes.get(id);
+      return root !== undefined && isCopybookInclude(root);
+    }));
+    const isListedSymbol = (n: Node): boolean =>
+      n.kind !== 'export' && (n.kind !== 'import' || namedIncludeIds.has(n.id));
     for (const node of subgraph.nodes.values()) {
-      // Skip import/export nodes — they add noise without information
-      if (node.kind === 'import' || node.kind === 'export') continue;
+      if (!isListedSymbol(node)) continue;
       // SECURITY (#383): never render the on-disk source of a config-leaf
       // (Spring application.{yml,properties} key) — its line is `key = <secret>`,
       // so whole-file/cluster rendering here would push secrets into context
@@ -6807,6 +6875,12 @@ export class ToolHandler {
     const changeContextText = visibleChangeContext ? formatChangeContext(visibleChangeContext) : '';
     if (changeContextText) lines.push(changeContextText, '');
 
+    // A named COBOL copybook's include sites, ALL of them (#2342) — the source
+    // below has room for a few include windows, and "what includes X" is the
+    // question a copybook name asks.
+    const copybookSection = this.buildCopybookSection(namedCopybooks);
+    if (copybookSection) lines.push(copybookSection);
+
     // Blast radius (always-on, compact): for the entry symbols, who depends on
     // them + which tests cover them — relation locations, no source bodies — so the agent
     // knows what to update/verify before editing without a separate call.
@@ -7209,7 +7283,7 @@ export class ToolHandler {
       const hit = overheadCache.get(filePath);
       if (hit !== undefined) return hit;
       const names = [...new Set(
-        nodes.filter((n) => n.kind !== 'import' && n.kind !== 'export')
+        nodes.filter(isListedSymbol)
           .map((n) => `${n.name}(${n.kind})`),
       )].slice(0, budget.maxSymbolsInFileHeader);
       // header + blank, then ```lang / body / ``` / blank around the source.
@@ -7762,7 +7836,7 @@ export class ToolHandler {
       // The file node is not one of them: no section delivers "the file" as a
       // symbol, and it spans trailing lines no render prints.
       const wantedFrom = (nodes: readonly Node[]): ExploreWantedSpan[] => nodes
-        .filter((n) => n.kind !== 'import' && n.kind !== 'export' && n.kind !== 'file' && n.startLine > 0)
+        .filter((n) => isListedSymbol(n) && n.kind !== 'file' && n.startLine > 0)
         .map((n) => ({
           name: n.name,
           kind: n.kind,
@@ -7799,7 +7873,7 @@ export class ToolHandler {
           && !anchorSpans.has(filePath)
           && (onSpineGodFile || (!hasSpineNode && isPolymorphicSibling(group.nodes) && !spared))) {
         const syms = group.nodes
-          .filter(n => n.kind !== 'import' && n.kind !== 'export' && n.startLine > 0)
+          .filter(n => isListedSymbol(n) && n.startLine > 0)
           .sort((a, b) => a.startLine - b.startLine);
         // Pass 1: choose which symbols get a FULL body, by priority, greedily within
         // a per-file body cap — so one huge family file can't body every named method
@@ -7942,7 +8016,7 @@ export class ToolHandler {
           }
         }
         if (skel.length > 0) {
-          const names = [...new Set(group.nodes.filter(n => n.kind !== 'import' && n.kind !== 'export').map(n => n.name))]
+          const names = [...new Set(group.nodes.filter(isListedSymbol).map(n => n.name))]
             .slice(0, budget.maxSymbolsInFileHeader).join(', ');
           // Steer the agent to codegraph_explore for an elided body — NEVER to
           // Read. The old "Read for more" / "Read for a full body" tags invited
@@ -8159,7 +8233,7 @@ export class ToolHandler {
         const wholeSection = ddWhole.parts.map((p) => p.text).join(GAP_MARKER);
         const uniqSymbols = [...new Set(
           group.nodes
-            .filter(n => n.kind !== 'import' && n.kind !== 'export')
+            .filter(isListedSymbol)
             .map(n => `${n.name}(${n.kind})`)
         )];
         const headerNames = uniqSymbols.slice(0, budget.maxSymbolsInFileHeader);
@@ -9477,7 +9551,7 @@ export class ToolHandler {
       const g = fileGroups.get(fp);
       if (!g) return sum;
       return sum + new Set(
-        g.nodes.filter((n) => n.kind !== 'import' && n.kind !== 'export').map((n) => n.id),
+        g.nodes.filter(isListedSymbol).map((n) => n.id),
       ).size;
     }, 0);
     let summaryLine = survivors.length > 0

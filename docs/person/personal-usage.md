@@ -1,8 +1,8 @@
 # 个人使用与安装
 
-本轮面向个人开发和使用，不复制官方的多平台 npm 发行流程。当前已发布的个人版是 `v1.6.2-personal.1` GitHub prerelease（标签指向 `700d31d9`，同提交三平台 CI `37178187510` 与 Personal Release `37178636930` 均成功），交付 `.tgz`，不会发布到上游 npm scope，也不会自动替换这台机器上的全局 CodeGraph。
+本轮面向个人开发和使用，不复制官方的多平台 npm 发行流程。当前已发布的个人版是 `v1.6.2-personal.1` GitHub prerelease（标签指向 `700d31d9`，同提交三平台 CI `37178187510` 与 Personal Release `37178636930` 均成功）；`v1.6.2-personal.2` 已准备发布，交付 `.tgz`，不会发布到上游 npm scope，也不会自动替换这台机器上的全局 CodeGraph。
 
-升级自 `v1.6.0-personal.13`：schema 与提取版本相同，无需升级索引。
+升级到待发布的 `v1.6.2-personal.2` 后，schema 仍为 13，提取版本升到 30；运行 `codegraph sync --upgrade-index` 更新索引，范围和边界见[索引版本契约](index-refresh-and-versioning.md#数据库与提取版本)。
 
 ## 开发时使用哪个入口
 
@@ -18,14 +18,13 @@ npm run codegraph -- explore target_value --mode definitions --backend auto
 
 ## 升级后的 daemon 版本切换
 
-安装新版后，旧版 daemon 可能仍在跑，并继续占着项目的 `.codegraph/daemon.pid` 与 socket。以前的结果是：新客户端每次都要退回进程内服务，编辑命令甚至在写路径上只报“未能确认”，必须手工 `codegraph daemon` 停掉旧进程才恢复。
+`src/mcp/daemon-spawn.ts` 是 MCP 代理与 CLI 共用的启动入口。`connectSharedDaemon()` 先核对 hello 的版本与个人构建指纹；官方普通版本及编号的 `personal.N` 版本只自动替换更旧版本，较新或未知版本留在原处。同版本的个人构建指纹不一致时，重启成当前产物。
 
-现在的行为（`src/mcp/daemon-spawn.ts` 是唯一实现，MCP 代理与 CLI 共用）：
+替换旧版本前通过 socket hello 核对 PID/版本，再取得 `handover` 写锁。启动器持锁直到新 daemon 接管或启动失败，避免旧会话退回进程内服务时抢占写锁。spawn 与等待都沿用同一模块的约 6 秒预算；失败会退回已有降级路径。显式 `codegraph daemon --restart` 仍通过 `restartSharedDaemon()` 处理。
 
-1. 客户端在 hello 握手阶段发现版本不一致（`version-mismatch`）。这一步**没有**发送任何 `tools/call`，所以后续行为是安全的、可证明的；
-2. 先请旧进程优雅退出：只对“能通过 socket hello 证明是本项目 daemon”的 pid 发信号，无法证明时返回 `unverified` 并放弃切换，绝不误杀无关进程；
-3. 以分离进程启动当前版本的 daemon，轮询候选 socket 直到 hello 与本版一致（约 6 秒预算），然后照常共享它；
-4. 只读调用会在新 daemon 上重试一次并直接返回结果；写操作（`codegraph edit`）不在本进程重放同一请求，而是在本进程执行这次编辑——因为它可证明从未送达，不存在重复写入，同时 stderr 明确写出“旧 daemon 已被停止、当前版本正在启动”。
+hello 阶段发现不兼容时尚未发出 `tools/call`。只读调用可以在新 daemon 上重试一次；写操作只在确认未发送时交回 CLI 执行，已发送但未拿到确认的操作保持 `uncertain`，避免重复写入。
+
+daemon 每 30 秒检查启动时的安装目录和包版本；安装被删除或替换便退出，旧会话在其安装已经变化时只提供只读降级服务。`CODEGRAPH_DAEMON_INSTALL_CHECK_MS=0` 可关闭检查。
 
 人工出口是 `codegraph daemon --restart`（可加 `-p <path>`、`--json`）：停止该项目的 daemon 并启动当前版本，用于“没有客户端在跑，但想把 daemon 换成新版”。失败时以非零退出码说明原因（无法证明身份 / 启动窗口内没有起来）。
 
@@ -40,7 +39,7 @@ codegraph sync --upgrade-index --yes    # 非交互运行（agent/CI/git hook）
 
 - 规划逻辑在 `src/sync/upgrade-index.ts`（只读计算，不写文件）：耗时优先取自本项目的全量索引基线（`.codegraph/resource-metrics.json`），没有基线时退化为每文件经验值，并如实标注依据；磁盘按“现有 DB + WAL × 1.5”估计峰值占用。
 - 范围来自 `EXTRACTION_UPGRADES`（`src/extraction/extraction-version.ts`）：登记为部分语言时只重新提取这些语言的文件，随后补一次 `sync` 完成引用解析与孤边清理，并在确认覆盖后才盖新的提取版本戳（`CodeGraph.stampExtractionVersion()`）。
-- **当前历史递增没有登记范围**，因此从旧索引升级一律按完整重建处理，计划里会写明“升级区间没有登记，无法证明增量迁移安全”。这是有意保守：宁可不承诺兼容，也不谎称已经迁移。
+- 升级区间缺少任何版本登记时保守完整重建；已登记范围和当前提取版本只维护在[索引版本契约](index-refresh-and-versioning.md#数据库与提取版本)。
 - 非交互运行（非 TTY、`--quiet`）且没有 `--yes` 时，命令只打印计划并以非零退出码结束，不会猜着重建。
 - 迁移结束后会再次校验 `isIndexStale()`；仍为陈旧时按失败处理，提示改用完整重建。
 

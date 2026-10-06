@@ -21,7 +21,7 @@ import * as net from 'net';
 import { pathToFileURL } from 'url';
 import { decodeLockInfo, getDaemonPidPath, probeDaemonIdentity } from './daemon-paths';
 import { connectWithHello } from './proxy';
-import { restartSharedDaemon } from './daemon-spawn';
+import { connectSharedDaemon } from './daemon-spawn';
 
 /** The wait limit for one shared query; impact analysis on a large repository can be slow. */
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -206,14 +206,14 @@ export async function callViaSharedDaemonAtMostOnce(
     return { state: 'completed', call: { result: outcome.result, daemonPid: daemon.pid } };
   }
   if (outcome.kind === 'version-mismatch') {
-    const restarted = await restartSharedDaemon(projectRoot).catch(() => null);
+    const socket = await connectSharedDaemon(projectRoot).catch(() => null);
     // 写操作交回 CLI 本进程执行，不保留仅用于确认新版已启动的连接。
-    restarted?.socket?.destroy();
+    socket?.destroy();
     return {
       state: 'version-mismatch',
       daemonPid: daemon.pid,
       daemonVersion: outcome.version,
-      switched: restarted?.outcome === 'switched',
+      switched: socket !== null,
     };
   }
   return { state: 'uncertain', daemonPid: daemon.pid };
@@ -246,10 +246,10 @@ export async function callViaSharedDaemon(
     const outcome = await callOnce(daemon, projectRoot, toolName, args, timeoutMs);
     if (outcome.kind === 'ok') return { result: outcome.result, daemonPid: daemon.pid };
     if (outcome.kind === 'version-mismatch' && attempt === 0) {
-      const restarted = await restartSharedDaemon(projectRoot).catch(() => null);
-      if (restarted?.outcome === 'switched' && restarted.socket) {
-        const result = await callOnSocket(restarted.socket, projectRoot, toolName, args, timeoutMs);
-        if (result) return { result, daemonPid: restarted.pid ?? daemon.pid };
+      const socket = await connectSharedDaemon(projectRoot).catch(() => null);
+      if (socket) {
+        const result = await callOnSocket(socket, projectRoot, toolName, args, timeoutMs);
+        if (result) return { result, daemonPid: (await findSharedDaemon(projectRoot))?.pid ?? daemon.pid };
       }
       return null;
     }
@@ -274,7 +274,7 @@ async function callOnce(
 ): Promise<SharedCallOutcome> {
   const socket = await connectWithHello(daemon.socketPath).catch(() => null);
   // 版本不一致是确定的结论（有 daemon，但协议对不上）；跨版本跑同一协议比退回本进程危险得多。
-  if (socket === 'version-mismatch') return { kind: 'version-mismatch', version: daemon.version };
+  if (typeof socket === 'string') return { kind: 'version-mismatch', version: daemon.version };
   if (!socket || socket.destroyed) {
     if (socket) socket.destroy();
     return { kind: 'unavailable' };

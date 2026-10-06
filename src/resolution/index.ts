@@ -22,12 +22,15 @@ import {
   isSelfResolvedBuiltin,
   CPP_DEFINE_SIGNATURE,
 } from './types';
-import { isUnresolvedJsMemberChain, isPythonSelfCall, matchJsStoreBindingCall, isUnresolvedJsMemberCall, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesCodeBoundary, gateLanguageMatch, dumpNameMatcherProfile, clearNameMatcherMemos, isRustNameInScope, CASE_INSENSITIVE_LANGUAGES } from './name-matcher';
+import { isUnresolvedJsMemberChain, isPythonSelfCall, matchJsStoreBindingCall, isUnresolvedJsMemberCall, matchObjectPathCall, thisScopeCaller, isVisibleAcrossFiles, matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesCodeBoundary, gateLanguageMatch, dumpNameMatcherProfile, clearNameMatcherMemos, isRustNameInScope, CASE_INSENSITIVE_LANGUAGES, isDartMemberRead, matchDartMemberRead, isDartChainLink, matchDartChainLink, isDartAnnotation, matchDartAnnotation, isStdMethodName } from './name-matcher';
 import { isVisibleCppMacro, clearCppMacroVisibility } from './cpp-macro-visibility';
 import { isCppConstructorRef, matchCppConstructor } from './cpp-constructor';
 import { gateSwiftTypeTarget, clearSwiftTypeVisibility, swiftExtendedConformances } from './swift-type-visibility';
+import { clearDartLibraryMemos } from './dart-libraries';
+import { clearVbnetReceiverMemos, isVbMemberRead, isVbPathCall, matchVbMemberRead, matchVbPathCall } from './vbnet-receivers';
 import { gateTypeParameter, clearTypeParameterMemos } from './type-parameters';
-import { resolveViaImport, resolvePhpImportedStaticCall, resolvePhpQualifiedClassRef, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isJsPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath, isExternalImport } from './import-resolver';
+import { gateDartLocal, clearDartLocalScopeMemos } from './dart-local-scope';
+import { resolveViaImport, resolvePhpImportedStaticCall, resolvePhpQualifiedClassRef, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef, isDartImportRef, isJsPathImportRef, isBoundToOutOfRepoImport, clearImportResolverMemos, resolveImportPath, isExternalImport } from './import-resolver';
 import { ResolverPool, minRefsForPool, shouldEngageAdaptively } from './resolver-pool';
 import { resolveAliasBinding } from './alias-binding';
 import { detectFrameworks } from './frameworks';
@@ -35,7 +38,7 @@ import { synthesizeCallbackEdges } from './callback-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 import { MAX_SOURCE_FILE_SIZE_BYTES } from '../file-limits';
 import { loadProjectAliases, type AliasMap } from './path-aliases';
-import { loadGoModule, type GoModule } from './go-module';
+import { findGoModuleForImport, goModulePackageDir, loadGoModule, type GoModule } from './go-module';
 import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packages';
 import { logDebug } from '../errors';
 import { lexicalPathWithinRoot } from '../utils';
@@ -317,9 +320,18 @@ export class ReferenceResolver {
   private projectAliases: AliasMap | null | undefined = undefined;
   // Per directory: the aliases of the nearest non-root tsconfig declaring `paths`.
   private dirAliases = new Map<string, AliasMap | null>();
-  // go.mod module path. Same lazy/convention as projectAliases.
-  private goModule: GoModule | null | undefined = undefined;
-  // Monorepo workspace member packages. Same lazy convention.
+  // Per project-relative directory ('' = the root): the module of the nearest
+  // go.mod at or above it, up to the project root. Same lazy/immutable
+  // convention as dirAliases.
+  private goModuleByDir = new Map<string, GoModule | null>();
+  // The project's Go modules: the root one plus every module that owns an
+  // indexed .go file. Depends on the file set, like knownFiles, so
+  // clearCaches drops it.
+  private goModules: GoModule[] | null = null;
+  // getGoPackageDir answers, keyed by import path and the importing file's
+  // module. Derived from goModules, so dropped with it.
+  private goPackageDirs = new Map<string, string | null>();
+  // Monorepo workspace member packages. Same lazy/immutable convention.
   private workspacePackages: WorkspacePackages | null | undefined = undefined;
 
   constructor(projectRoot: string, queries: QueryBuilder) {
@@ -461,11 +473,13 @@ export class ReferenceResolver {
     // other assumption of a stable filesystem is dropped too.
     this.projectAliases = undefined;
     this.dirAliases.clear();
-    this.goModule = undefined;
+    this.goModuleByDir.clear();
     this.workspacePackages = undefined;
     this.knownNames = null;
     this.knownLowerNames = null;
     this.knownFiles = null;
+    this.goModules = null;
+    this.goPackageDirs.clear();
     this.cachesWarmed = false;
     // The import-resolver's and name-matcher's per-context memos assume the
     // same stable window as the caches above — drop them together.
@@ -474,8 +488,54 @@ export class ReferenceResolver {
       clearNameMatcherMemos(this.context);
       clearCppMacroVisibility(this.context);
       clearSwiftTypeVisibility(this.context);
+      clearDartLibraryMemos(this.context);
+      clearVbnetReceiverMemos(this.context);
       clearTypeParameterMemos(this.context);
+      clearDartLocalScopeMemos(this.context);
     }
+  }
+
+  /**
+   * The module of the nearest `go.mod` at or above project-relative `dir`
+   * ('' = the root), never above the project root (#2322). Each directory
+   * is read at most once: every directory the walk passes is memoized.
+   */
+  private nearestGoModule(dir: string): GoModule | null {
+    const walked: string[] = [];
+    let found: GoModule | null | undefined;
+    for (;;) {
+      found = this.goModuleByDir.get(dir);
+      if (found !== undefined) break;
+      walked.push(dir);
+      found = loadGoModule(path.join(this.projectRoot, dir));
+      if (found || dir === '') break;
+      dir = goDirOf(dir);
+    }
+    for (const d of walked) this.goModuleByDir.set(d, found);
+    return found;
+  }
+
+  /**
+   * The project's Go modules: the root `go.mod`'s, and the nearest `go.mod`
+   * of every directory holding an indexed `.go` file — so an ignored or
+   * vendored tree, which holds no indexed file, adds none, and nothing walks
+   * the disk. The go tool ignores `testdata/` and `_`/`.`-prefixed
+   * directories, so a module there serves only its own files (#2322).
+   */
+  private getGoModules(): GoModule[] {
+    if (this.goModules) return this.goModules;
+    const dirs = new Set<string>(['']);
+    for (const file of this.knownFiles ?? this.queries.getAllFilePaths()) {
+      if (file.endsWith('.go')) dirs.add(goDirOf(file));
+    }
+    const modules = new Set<GoModule>();
+    for (const dir of dirs) {
+      const mod = this.nearestGoModule(dir);
+      const modDir = mod ? path.relative(this.projectRoot, mod.rootDir).split(path.sep).join('/') : '';
+      if (mod && !/(?:^|\/)(?:testdata|[_.][^/]*)(?:\/|$)/.test(modDir)) modules.add(mod);
+    }
+    this.goModules = [...modules];
+    return this.goModules;
   }
 
   /** `readFile` through the LRU content cache (null = read failed, also cached). */
@@ -841,11 +901,15 @@ export class ReferenceResolver {
         return found;
       },
 
-      getGoModule: () => {
-        if (this.goModule === undefined) {
-          this.goModule = loadGoModule(this.projectRoot);
-        }
-        return this.goModule;
+      getGoPackageDir: (importPath: string, fromFile?: string) => {
+        const own = fromFile === undefined ? null : this.nearestGoModule(goDirOf(fromFile));
+        const key = `${importPath}\0${own?.rootDir ?? ''}`;
+        const hit = this.goPackageDirs.get(key);
+        if (hit !== undefined) return hit;
+        const mod = findGoModuleForImport(importPath, this.getGoModules(), own);
+        const dir = mod ? goModulePackageDir(importPath, mod, this.projectRoot) : null;
+        this.goPackageDirs.set(key, dir);
+        return dir;
       },
 
       getWorkspacePackages: () => {
@@ -1074,9 +1138,14 @@ export class ReferenceResolver {
     // A Swift type reference never lands on an `extension X {}` node, nor on a
     // nested type it cannot name bare (see ./swift-type-visibility).
     // A name a declaration around the reference declares as a type parameter
-    // (`def f[A]`, `class Foo<T>`) is that parameter (see ./type-parameters).
-    const candidate = gateTypeParameter(
-      gateSwiftTypeTarget(this.gateTargetKind(this.resolveOneInner(ref), ref), ref, this.context),
+    // (`def f[A]`, `class Foo<T>`) is that parameter (see ./type-parameters),
+    // and a Dart call to a parameter or local calls that (./dart-local-scope).
+    const candidate = gateDartLocal(
+      gateTypeParameter(
+        gateSwiftTypeTarget(this.gateTargetKind(this.resolveOneInner(ref), ref), ref, this.context),
+        ref,
+        this.context,
+      ),
       ref,
       this.context,
     );
@@ -1085,6 +1154,10 @@ export class ReferenceResolver {
       scoped?.resolvedBy === 'framework' ? this.gateFrameworkLanguage(scoped, ref) : this.gateLanguage(scoped, ref),
       ref,
     );
+    // A Dart class whose field holds its own type (`class Node { Node? next; }`)
+    // names itself: a self-edge that says nothing (#2327).
+    if (resolved && ref.language === 'dart' && ref.referenceKind === 'references' &&
+        resolved.targetNodeId === ref.fromNodeId) return null;
     if (!resolved || ref.referenceKind !== 'calls') return resolved;
 
     const target = this.nodeById(resolved.targetNodeId);
@@ -1122,7 +1195,9 @@ export class ReferenceResolver {
         .some((mapping) => mapping.isNamespace && mapping.localName === root);
       if (!namespaceRoot) {
         // React Native bridges have explicit module identity; other unknown chains skip import, framework, and fuzzy guesses.
-        if (!/^NativeModules\.[A-Z][\w$]*\.[\w$]+$/.test(ref.referenceName)) return null;
+        if (!/^NativeModules\.[A-Z][\w$]*\.[\w$]+$/.test(ref.referenceName)) {
+          return this.gateLanguage(matchObjectPathCall(ref, this.context), ref);
+        }
         const bridge = this.frameworks.find((framework) => framework.name === 'react-native-bridge');
         const resolved = bridge?.resolve(ref, this.context);
         return resolved && resolved.confidence >= 0.9 ? resolved : null;
@@ -1132,6 +1207,17 @@ export class ReferenceResolver {
     // A local C++ object construction (`T obj(args)`, ref `ns::T::T/1`)
     // resolves ONLY to a constructor of the lexically nearest `T` (#1839).
     if (isCppConstructorRef(ref)) return matchCppConstructor(ref, this.context);
+
+    // A Dart member read (`x.area`) links the getter the receiver's type
+    // reaches, as a call, or nothing — never a guess by name (#2338).
+    if (isDartMemberRead(ref)) return matchDartMemberRead(ref, this.context);
+    // So does a later link of a Dart call chain (`X.autoDispose.family(…)`,
+    // `events.map(f).transform(…)`), which arrives by its bare name: a member
+    // of what the chain's head and links are declared to be, or nothing (#750).
+    if (isDartChainLink(ref, this.context)) return matchDartChainLink(ref, this.context);
+    // A Dart annotation (`@riverpod`, `@Riverpod(…)`) is a constant or a
+    // constructor call, as written — never a method or function by its name.
+    if (isDartAnnotation(ref)) return matchDartAnnotation(ref, this.context);
 
     // Skip built-in/external references
     if (this.isBuiltInOrExternal(ref)) {
@@ -1194,6 +1280,17 @@ export class ReferenceResolver {
     if (this.profileStages) this.stageAdd('preFilter', ref, preFilterPass, tPre);
     if (!preFilterPass) {
       return this.gateLanguage(matchJsStoreBindingCall(ref, this.context), ref);
+    }
+
+    // A VB.NET member read (`AppSession.SessionId`, #2305; `x.Normal`,
+    // `Me._h.Title`) means what VB.NET's scoping says its receiver is — a
+    // project type, whose member and the type itself it links, or a value,
+    // whose declared type's member it links — and no framework, import or
+    // name strategy guesses past that. Nor past a `With` block's call through
+    // a receiver path (`.Run()` in `With Me._h`).
+    if (isVbMemberRead(ref)) return this.gateLanguage(matchVbMemberRead(ref, this.context), ref);
+    if (isVbPathCall(ref)) {
+      return this.gateLanguage(matchVbPathCall(ref, this.context, (name) => isStdMethodName('vbnet', name)), ref);
     }
 
     // Function-as-value refs (#756) get a dedicated, strictly-gated path:
@@ -1283,7 +1380,8 @@ export class ReferenceResolver {
     if (isUnresolvedJsMemberCall(ref)) {
       const root = ref.referenceName.slice(0, ref.referenceName.indexOf('.'));
       const namespace = this.context.getImportMappings(ref.filePath, ref.language).some((m) => m.isNamespace && m.localName === root);
-      if (!namespace) return null;
+      // `App.utils.fmt()` through a path an object literal was hung on (#2300).
+      if (!namespace) return this.gateLanguage(matchObjectPathCall(ref, this.context), ref);
       const viaNamespace = this.gateLanguage(resolveViaImport(ref, this.context), ref);
       const target = viaNamespace ? this.nodeById(viaNamespace.targetNodeId) : null;
       return target && (target.kind === 'function' || target.kind === 'method' || target.kind === 'class' || target.kind === 'constant' || target.kind === 'variable')
@@ -1326,8 +1424,10 @@ export class ReferenceResolver {
     // bind outside its module directory), so the name-matcher's
     // qualified-name fallback would only ever add wrong cross-module edges.
     // Nix static path imports are file references for the same reason —
-    // falling through would let "./x.nix" name-match an unrelated node.
-    if (isPhpIncludePathRef(ref) || isCobolCopybookRef(ref) || isNixPathImportRef(ref) || ref.language === 'terraform') {
+    // falling through would let "./x.nix" name-match an unrelated node. So
+    // is a Dart import's URI: `package:flutter/foundation.dart` matched by
+    // its last segment went to riverpod's own foundation.dart.
+    if (isPhpIncludePathRef(ref) || isCobolCopybookRef(ref) || isNixPathImportRef(ref) || isDartImportRef(ref) || ref.language === 'terraform') {
       return candidates.length > 0
         ? candidates.reduce((best, curr) =>
             curr.confidence > best.confidence ? curr : best
@@ -2799,8 +2899,11 @@ export class ReferenceResolver {
   private resolveThisMemberFnRef(ref: UnresolvedRef): ResolvedRef | null {
     const member = ref.referenceName.slice('this.'.length);
     if (!member) return null;
-    const fromNode = this.nodeById(ref.fromNodeId);
-    if (!fromNode) return null;
+    const written = this.nodeById(ref.fromNodeId);
+    if (!written) return null;
+    // Inside an object literal: its own method's `this` is the object, an
+    // arrow member's is the method around the literal (#2300).
+    const fromNode = thisScopeCaller(written, this.context);
     // A hook declared at class-body level (Ruby `before_action :authenticate`)
     // attributes to the CLASS node itself — its qualified name IS the scope.
     // For members, strip the member segment.
@@ -2887,8 +2990,9 @@ export class ReferenceResolver {
     for (const ref of deferred) {
       await maybeYield();
       const member = ref.referenceName.slice('this.'.length);
-      const fromNode = this.nodeById(ref.fromNodeId);
-      if (!fromNode || !member) continue;
+      const written = this.nodeById(ref.fromNodeId);
+      if (!written || !member) continue;
+      const fromNode = thisScopeCaller(written, this.context);
       // Class-body-level hooks (Ruby) attribute to the CLASS node itself.
       let className: string;
       if (SUPERTYPE_BEARING_KINDS.has(fromNode.kind) || fromNode.kind === 'module') {
@@ -3170,6 +3274,12 @@ export class ReferenceResolver {
     if (tgt && ref.language && crossesCodeBoundary(tgt, ref.language)) return null;
     return result;
   }
+}
+
+/** The project-relative directory holding `p` ('' for the project root). */
+function goDirOf(p: string): string {
+  const dir = path.posix.dirname(p.replace(/\\/g, '/'));
+  return dir === '.' || dir === '/' ? '' : dir;
 }
 
 /**
