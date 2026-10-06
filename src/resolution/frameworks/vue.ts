@@ -145,9 +145,9 @@ export const vueResolver: FrameworkResolver = {
       return selfResolvedBuiltin(ref);
     }
 
-    // Pattern 2: Nuxt auto-imported composables
+    // Project declarations and local imports outrank Nuxt's auto-import fallback.
     if (NUXT_AUTO_IMPORTS.has(ref.referenceName) && dependsOn(context, 'nuxt', 'nuxt3')) {
-      return declaresNameLocally(ref, context)
+      return declaresOwnFunction(ref, context) || declaresNameLocally(ref, context)
         ? selfResolvedBuiltin(ref, AUTO_IMPORT_FALLBACK_CONFIDENCE)
         : selfResolvedBuiltin(ref);
     }
@@ -316,6 +316,13 @@ export const nuxtResolver: FrameworkResolver = {
     return { nodes, references };
   },
 };
+
+/** Does the reference's own file declare a function (or a const holding one) by that name? */
+function declaresOwnFunction(ref: UnresolvedRef, context: ResolutionContext): boolean {
+  return context
+    .getNodesInFile(ref.filePath)
+    .some((n) => n.name === ref.referenceName && (n.kind === 'function' || n.kind === 'constant' || n.kind === 'variable'));
+}
 
 /**
  * Check if string is PascalCase

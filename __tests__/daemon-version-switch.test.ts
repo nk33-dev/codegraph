@@ -15,10 +15,10 @@ import * as path from 'path';
 import { getDaemonPidPath, getDaemonSocketCandidates } from '../src/mcp/daemon-paths';
 import { retireStaleDaemon } from '../src/mcp/daemon-registry';
 
-const restartMock = vi.hoisted(() => ({ restartSharedDaemon: vi.fn() }));
+const restartMock = vi.hoisted(() => ({ connectSharedDaemon: vi.fn() }));
 vi.mock('../src/mcp/daemon-spawn', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/mcp/daemon-spawn')>(),
-  restartSharedDaemon: restartMock.restartSharedDaemon,
+  connectSharedDaemon: restartMock.connectSharedDaemon,
 }));
 
 const { callViaSharedDaemonAtMostOnce, callViaSharedDaemon } = await import('../src/mcp/daemon-client');
@@ -61,7 +61,7 @@ async function startHelloServer(socketPath: string, hello: Record<string, unknow
 
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-daemon-switch-')));
-  restartMock.restartSharedDaemon.mockReset();
+  restartMock.connectSharedDaemon.mockReset();
 });
 
 afterEach(async () => {
@@ -92,16 +92,14 @@ describe('shared daemon version mismatch', () => {
     writeLock(process.pid, '0.0.0-old', socketPath);
     const replacementSocket = new net.Socket();
     cleanups.push(() => { replacementSocket.destroy(); });
-    restartMock.restartSharedDaemon.mockResolvedValue({
-      outcome: 'switched', previousPid: process.pid, previousVersion: '0.0.0-old', pid: 4242, socket: replacementSocket,
-    });
+    restartMock.connectSharedDaemon.mockResolvedValue(replacementSocket);
 
     const result = await callViaSharedDaemonAtMostOnce(root, 'codegraph_edit', { operation: 'rename' });
 
     expect(result).toMatchObject({
       state: 'version-mismatch', daemonPid: process.pid, daemonVersion: '0.0.0-old', switched: true,
     });
-    expect(restartMock.restartSharedDaemon).toHaveBeenCalledTimes(1);
+    expect(restartMock.connectSharedDaemon).toHaveBeenCalledTimes(1);
     expect(replacementSocket.destroyed).toBe(true);
   }, 30_000);
 
@@ -109,9 +107,7 @@ describe('shared daemon version mismatch', () => {
     const socketPath = getDaemonSocketCandidates(root)[0]!;
     await startHelloServer(socketPath, { codegraph: '0.0.0-old', pid: process.pid, socketPath, protocol: 1 });
     writeLock(process.pid, '0.0.0-old', socketPath);
-    restartMock.restartSharedDaemon.mockResolvedValue({
-      outcome: 'unverified', previousPid: process.pid, previousVersion: '0.0.0-old', pid: null, socket: null,
-    });
+    restartMock.connectSharedDaemon.mockResolvedValue(null);
 
     await expect(callViaSharedDaemonAtMostOnce(root, 'codegraph_edit', { operation: 'rename' }))
       .resolves.toMatchObject({ state: 'version-mismatch', switched: false });
@@ -121,9 +117,7 @@ describe('shared daemon version mismatch', () => {
     const socketPath = getDaemonSocketCandidates(root)[0]!;
     await startHelloServer(socketPath, { codegraph: '0.0.0-old', pid: process.pid, socketPath, protocol: 1 });
     writeLock(process.pid, '0.0.0-old', socketPath);
-    restartMock.restartSharedDaemon.mockResolvedValue({
-      outcome: 'unavailable', previousPid: process.pid, previousVersion: '0.0.0-old', pid: null, socket: null,
-    });
+    restartMock.connectSharedDaemon.mockResolvedValue(null);
 
     await expect(callViaSharedDaemon(root, 'codegraph_explore', { query: 'x', mode: 'definitions' }))
       .resolves.toBeNull();

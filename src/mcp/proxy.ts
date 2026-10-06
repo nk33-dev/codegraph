@@ -26,7 +26,7 @@ import { EARLY_PPID } from './early-ppid';
 import { supervisionLostReason } from './ppid-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
 import { treatStdinFailureAsShutdown } from './stdin-teardown';
-import { CodeGraphPackageVersion, CodeGraphBuildId } from './version';
+import { CodeGraphPackageVersion, CodeGraphBuildId, isOlderDaemonVersion } from './version';
 import { SERVER_INFO, negotiateProtocolVersion, initializeInstructions } from './session';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { getStaticTools } from './tools';
@@ -149,15 +149,18 @@ export async function runProxy(
 
 /**
  * Connect to a daemon at `socketPath` and verify its hello (exact version match).
- * Returns the live socket (hello already consumed) or null if unreachable / stale
- * / version-mismatched. Unlike {@link runProxy} it does NOT pipe — the caller
- * owns the socket. Used by the local-handshake proxy's background connect.
+ * Returns the live socket (hello already consumed), null if unreachable / stale,
+ * or — for a daemon of another version — `'older-version'` when it runs an older
+ * release ({@link isOlderDaemonVersion}; the launcher replaces it, #2335) and
+ * `'version-mismatch'` for any other version, which is left alone. Unlike
+ * {@link runProxy} it does NOT pipe — the caller owns the socket. Used by the
+ * local-handshake proxy's background connect.
  */
 export async function connectWithHello(
   socketPath: string,
   expectedVersion: string = CodeGraphPackageVersion,
   expectedBuildId: string | undefined = CodeGraphBuildId,
-): Promise<net.Socket | 'version-mismatch' | null> {
+): Promise<net.Socket | 'older-version' | 'version-mismatch' | null> {
   if (process.platform !== 'win32' && !fs.existsSync(socketPath)) return null;
   const socket = net.createConnection(socketPath);
   socket.setEncoding('utf8');
@@ -178,14 +181,14 @@ export async function connectWithHello(
   }
   if (hello.codegraph !== expectedVersion || hello.buildId !== expectedBuildId) {
     // A daemon IS up but it's the wrong version — definitive, not a "not yet".
-    // Don't poll; the caller serves in-process so we never run stale-vs-new.
-    // 只是“不共享”的结论；调用方随后可能会把旧 daemon 换成当前版本（见 daemon-spawn 的
-    // restartSharedDaemon），所以这里不再断言本会话会退回进程内。
+    socket.destroy();
+    // An older release is the launcher's to replace (#2335); it says what it did.
+    if (isOlderDaemonVersion(hello.codegraph, expectedVersion)) return 'older-version';
+    // Any other: don't poll; the caller serves in-process so we never run stale-vs-new.
     process.stderr.write(
       `[CodeGraph MCP] Found a daemon on ${socketPath} but version (${hello.codegraph}) ` +
       `or build (${hello.buildId ?? 'upstream'}) differs from ours (${expectedVersion}, ${expectedBuildId ?? 'upstream'}); this client will not share it.\n`
     );
-    socket.destroy();
     return 'version-mismatch';
   }
   logAttachedDaemon(socketPath, hello);
@@ -216,8 +219,9 @@ type JsonRpc = Record<string, unknown>;
 /** Dependencies the local-handshake proxy needs, injected by MCPServer (which
  *  owns the daemon-spawn machinery and the engine factory). */
 export interface LocalHandshakeDeps {
-  /** Probe → spawn → retry → hello-verify; resolves a connected daemon socket,
-   *  or null when the daemon path is genuinely unavailable (→ in-process fallback). */
+  /** Probe (replacing a daemon of an older release, #2335) → spawn → retry →
+   *  hello-verify; resolves a connected daemon socket, or null when the daemon
+   *  path is genuinely unavailable (→ in-process fallback). */
   getDaemonSocket(): Promise<net.Socket | null>;
   /** Lazily create an in-process engine — used only while the daemon is
    *  unreachable, preserving the "a broken daemon never wedges a session"

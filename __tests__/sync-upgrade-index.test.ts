@@ -63,6 +63,14 @@ describe('extractionUpgradeScope', () => {
     expect(scope.scope).toBe('all');
     expect(scope.unrecordedHistory).toBe(false);
   });
+
+  it('rebuilds an existing personal v29 index after the upstream v28 extraction changes', () => {
+    expect(EXTRACTION_VERSION).toBeGreaterThan(29);
+    expect(extractionUpgradeScope(29)).toMatchObject({ scope: 'all', unrecordedHistory: false });
+    expect(extractionUpgradeScope(28, 29)).toMatchObject({
+      scope: ['csharp', 'vbnet'], unrecordedHistory: false,
+    });
+  });
 });
 
 describe('planIndexUpgrade', () => {

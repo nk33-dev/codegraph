@@ -54,15 +54,15 @@ Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘
 
 ## 验证与发布
 
-当前已发布版本为 [v1.6.2-personal.1](releases/v1.6.2-personal.1.md)（2026-10-04 的 GitHub prerelease），标签指向 `700d31d9`。同提交三平台 CI `37178187510` 和 Personal Release `37178636930` 均成功；详细测试数字与资产校验只保留在发行说明。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
+当前已发布版本为 [v1.6.2-personal.1](releases/v1.6.2-personal.1.md)（2026-10-04 的 GitHub prerelease），标签指向 `700d31d9`。待发布版本为 [v1.6.2-personal.2](releases/v1.6.2-personal.2.md)，目标提交包含上游 `d2fb323e`，等待同一提交的三平台 CI 与 Personal Release。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
 
-[v1.6.0-personal.13](releases/v1.6.0-personal.13.md)（2026-10-01）是上一版已发布版本，安装地址已由 `.1` 取代。`v1.6.2-personal.1` 交付 LSP 工作区配置桥接、pull/push 诊断合并、补全模式与整文件格式化、文件文本缓存、按符号快照决定的局部刷新、依赖边界与模块环检查、风险热点排序、Rust 构建上下文、索引期读缓存与写入窗口字节预算，以及端到端图基线；合并复核又补上调用方去重、同步按需重新检测框架、Rust catalog 的 glob member 复核与 `default-members` 的同名键保护，并修掉上游 v1.6.2 同步留下的解析语义冲突（命名空间链早退、`calls` 坐标锚点与接收者回读、同步重存事务，详见发行说明）。此前记录的测试性能改动（减少测试中的 Git 调用、Windows CI 三台 runner 分片）一并进入本版，实测见[测试性能](test-performance.md)。
+[v1.6.0-personal.13](releases/v1.6.0-personal.13.md)（2026-10-01）是上一版已发布版本，安装地址已由 `.1` 取代。`v1.6.2-personal.2` 将接入官方最新的 C#/VB.NET、Dart、Go、Rust、Vue/JS 解析修复、COBOL copybook 检索、daemon 安装检查和状态健康输出，并保留个人查询、LSP、编辑、资源治理与遥测契约；提取版本升到 30，v29 条件桥接补齐上游 C#/VB.NET 变更。
 
 个人版从 [GitHub Release 安装](personal-usage.md)，不通过上游 npm 包获得个人改动。`personal` 分支的同一提交通过三平台 CI 后，才由 `Personal Release` 在 GitHub runner 构建、隔离验证、打包并创建 prerelease；本机不承担发布构建和上传。
 
 ### 上游同步状态
 
-上游 **v1.6.2**（`6560052a`）已在合并提交 `41f23de3` 合入 `personal`，个人基线为 `cc52233`。本次同步保留个人查询、LSP、编辑、资源治理和遥测契约，并接入官方 v1.6.2 的解析、框架路由、Windows、daemon、索引可靠性和测试覆盖。同步提交尚未发布，发布状态仍以 GitHub CI 和 Release 为准。
+本轮目标为上游 `main` 的 `d2fb323e`，包含官方 v1.6.2 之后的解析器、多语言关系、daemon 安装检查和索引修复。同步会保留个人查询、LSP、编辑、资源治理和遥测契约；同一 `personal` 提交的三平台 CI 完成后再创建个人 prerelease，实时状态以 GitHub CI 和 Release 为准。
 
 ## 计划与维护
 
