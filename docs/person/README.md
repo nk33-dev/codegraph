@@ -54,7 +54,7 @@ Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘
 
 ## 验证与发布
 
-当前已发布版本为 [v1.6.2-personal.1](releases/v1.6.2-personal.1.md)（2026-10-04 的 GitHub prerelease），标签指向 `700d31d9`。待发布版本为 [v1.6.2-personal.2](releases/v1.6.2-personal.2.md)，目标提交包含上游 `837a1866`，等待同一提交的三平台 CI 与 Personal Release。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
+当前已发布版本为 [v1.6.2-personal.2](releases/v1.6.2-personal.2.md)（2026-10-06 的 GitHub prerelease），标签指向 `470002c2`。上一版 [v1.6.2-personal.1](releases/v1.6.2-personal.1.md) 的标签为 `700d31d9`。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
 
 [v1.6.0-personal.13](releases/v1.6.0-personal.13.md)（2026-10-01）是上一版已发布版本，安装地址已由 `.1` 取代。`v1.6.2-personal.2` 将接入官方最新的 C#/VB.NET、Dart、Go、Rust、Vue/JS 解析修复、COBOL copybook 检索、daemon 安装检查和状态健康输出，并保留个人查询、LSP、编辑、资源治理与遥测契约；提取版本升到 30，v29 条件桥接补齐上游 C#/VB.NET 变更。
 

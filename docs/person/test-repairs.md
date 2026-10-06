@@ -8,7 +8,7 @@
 - 首次探测已经收到旧 daemon hello 时，交接路径复用同一份 pid、版本、socket 身份证明；没有这份证明时仍做有界重试，身份无法确认就不发送信号。
 - 旧 daemon 断线回放相同的 `codegraph_status` 请求时只执行一次本地查询，再按原请求 ID 回写结果；编辑请求仍拒绝重放。
 
-Windows 本机验证：`npm run typecheck` 通过；`daemon-older-version.test.ts` 29/29 通过；`proxy-connect.test.ts`、`proxy-edit-replay.test.ts`、`proxy-shutdown.test.ts`、`daemon-version-switch.test.ts` 共 10 项通过、3 项按平台条件跳过。三平台 CI 与 Personal Release 仍需在本次提交推送后确认。
+Windows 本机验证：`npm run typecheck` 通过；`daemon-older-version.test.ts` 29/29 通过；`proxy-connect.test.ts`、`proxy-edit-replay.test.ts`、`proxy-shutdown.test.ts`、`daemon-version-switch.test.ts` 共 10 项通过、3 项按平台条件跳过。CI `37517484489` 的五个平台作业最终全部通过；macOS 首次因 runner 文件句柄耗尽导致该场景超时，失败作业重跑后通过。Personal Release `37519817255` 完成隔离安装、打包、`SHA256SUMS` 和 `v1.6.2-personal.2` prerelease。
 
 ## 2026-10-01：Git 配置复用与 Windows CI 分片
 
