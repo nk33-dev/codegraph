@@ -1898,7 +1898,7 @@ program
   .option('--framework <framework...>', 'Require one or more detected project frameworks')
   .option('--symbol-type <kind...>', 'Include these symbol kinds in source excerpts')
   .option('--exclude-type <kind...>', 'Fold these symbol kinds out of source excerpts')
-  .option('--mode <mode>', 'explore, source, definitions, type-definition, implementations, references, symbols, hover, completion, callers, callees, type-hierarchy, diagnostics, code-actions, impact, tests, status, or text', 'explore')
+  .option('--mode <mode>', 'explore, source, definitions, type-definition, implementations, references, symbols, hover, completion, callers, callees, type-hierarchy, diagnostics, code-actions, impact, tests, status, text, or documents', 'explore')
   .option('--backend <backend>', 'Structured query backend: graph (default), lsp, auto, or both; diagnostics defaults to auto')
   .option('--file <file>', 'Exact project-relative file for symbol queries')
   .option('--context-file <file>', '按此文件、导入关系和语言排列同名符号')

@@ -76,6 +76,21 @@ CREATE TABLE IF NOT EXISTS files (
     generated INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS field_contracts (
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL, field_name TEXT NOT NULL, external_name TEXT NOT NULL,
+    direction TEXT NOT NULL, data TEXT NOT NULL,
+    PRIMARY KEY (node_id, external_name, direction)
+);
+CREATE INDEX IF NOT EXISTS idx_field_contract_external ON field_contracts(external_name, node_id);
+CREATE INDEX IF NOT EXISTS idx_field_contract_name ON field_contracts(field_name, node_id);
+CREATE INDEX IF NOT EXISTS idx_field_contract_file ON field_contracts(file_path);
+CREATE TABLE IF NOT EXISTS field_contract_files (
+    path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL, contract_count INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS file_text (
     path TEXT PRIMARY KEY,
     content TEXT NOT NULL,
@@ -205,6 +220,12 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_file_path ON unresolved_refs(file_path
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_name ON unresolved_refs(from_node_id, reference_name);
 CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
 CREATE INDEX IF NOT EXISTS idx_unresolved_failed_tail ON unresolved_refs(name_tail) WHERE status = 'failed';
+-- Sync's failed-import retry looks failed imports up by tail and by whole
+-- name. The leading reference_kind is what makes the planner pick these over
+-- idx_unresolved_failed_tail / idx_unresolved_name, whose per-key averages
+-- hide how many failed calls a common tail (`index`, `types`) has.
+CREATE INDEX IF NOT EXISTS idx_unresolved_failed_import_tail ON unresolved_refs(reference_kind, name_tail) WHERE status = 'failed' AND reference_kind = 'imports';
+CREATE INDEX IF NOT EXISTS idx_unresolved_failed_import_name ON unresolved_refs(reference_kind, reference_name) WHERE status = 'failed' AND reference_kind = 'imports';
 CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
 -- Sync's third-file wiring lookup must not scan every synthesized edge.
 -- CASE short-circuits malformed metadata; keep these expressions identical

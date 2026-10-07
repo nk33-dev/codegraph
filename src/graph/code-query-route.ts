@@ -131,7 +131,7 @@ export function decideRoute(
       family,
     };
   }
-  if (request.mode === 'tests') {
+  if (request.mode === 'tests' || request.mode === 'documents' || request.mode === 'text') {
     return {
       resolved: 'graph',
       reason: 'related tests come from the file dependency graph; a language server reports references, not test associations',
@@ -218,7 +218,7 @@ export function languageForQuery(cg: CodeGraph, request: CodeQueryRequest): Lang
       if (language) return language;
     }
   }
-  if (request.mode === 'tests' || request.mode === 'status') return null;
+  if (request.mode === 'tests' || request.mode === 'documents' || request.mode === 'text' || request.mode === 'status') return null;
   try {
     const nodes = lookupSymbolNodes(cg, request.query).nodes.filter((node) => isQueryEligibleNode(root, node));
     return nodes.find((node) => node.language)?.language ?? null;

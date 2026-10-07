@@ -158,9 +158,10 @@ export function searchFileText(
   db: SqliteDatabase,
   root: string,
   query: string,
-  options: { offset: number; limit: number; file?: string },
+  options: { offset: number; limit: number; file?: string; documentsOnly?: boolean },
 ): { items: TextHit[]; total: number; nextOffset: number | null; warnings: string[] } {
-  const fileFilter = options.file ? ' AND file_text.path = ?' : '';
+  const documentFilter = options.documentsOnly ? " AND (file_text.path LIKE '%.md' OR file_text.path LIKE '%.mdx' OR file_text.path LIKE '%.markdown')" : '';
+  const fileFilter = (options.file ? ' AND file_text.path = ?' : '') + documentFilter;
   const hasFts = [...query].length >= 3 && Boolean(db.prepare("SELECT name FROM sqlite_master WHERE name = 'file_text_fts' AND sql LIKE '%trigram%'").get());
   const source = hasFts
     ? "file_text_fts JOIN file_text ON file_text.rowid = file_text_fts.rowid WHERE file_text_fts MATCH ? AND instr(lower(file_text.content), lower(?)) > 0"
@@ -168,7 +169,7 @@ export function searchFileText(
   const params = hasFts ? [`"${query.replace(/"/g, '""')}"`, query] : [query];
   if (options.file) params.push(options.file);
   const warnings: string[] = [];
-  const skipped = db.prepare(`SELECT path, size FROM file_text_skipped${options.file ? ' WHERE path = ?' : ''} ORDER BY path`)
+  const skipped = db.prepare(`SELECT path, size FROM file_text_skipped WHERE 1=1${options.file ? ' AND path = ?' : ''}${options.documentsOnly ? " AND (path LIKE '%.md' OR path LIKE '%.mdx' OR path LIKE '%.markdown')" : ''} ORDER BY path`)
     .all(...(options.file ? [options.file] : [])) as Array<{ path: string; size: number }>;
   const live = new Map<string, { path: string; content: string; indexed_at: number | null; size: number; modified_at: number }>();
   let remaining = MAX_SCAN_BYTES;

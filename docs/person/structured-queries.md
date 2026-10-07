@@ -4,6 +4,10 @@ This phase extends the existing graph queries: it does not start LSP, does not a
 
 ## Usage entry point
 
+`documents` searches Markdown mentions by symbol, qualified name, serialized field name or file path. Each row has `kind:"document-mention"`, `filePath`, `line`, `text`, `matchedTerms`, source and freshness. It uses the existing file-text index, excludes source files and omits stale snippets. The scan is bounded to 16 terms and 200 files per term; narrow `file` when a budget warning appears. Mentions are evidence, not required edits. Change context includes a bounded `relatedDocuments` list.
+
+Field declarations expose optional `fieldContracts`; generated definitions expose optional `generatedSource`. Their extraction, provenance and ambiguity rules are maintained in [String contracts](string-contracts.md).
+
 Keep using `codegraph_explore`, selecting structured queries through `mode`:
 
 | mode | query | Result |

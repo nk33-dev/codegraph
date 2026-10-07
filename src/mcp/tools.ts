@@ -2242,7 +2242,7 @@ export const tools: ToolDefinition[] = [
       properties: {
         mode: {
           type: 'string',
-          description: CODE_QUERY_MODES.join(','),
+          description: 'Query mode; defaults to explore.',
           enum: ['explore', 'source', ...CODE_QUERY_MODES],
           default: 'explore',
         },
@@ -4264,6 +4264,14 @@ export class ToolHandler {
         registeredAt,
       };
     }
+    if (m?.synthesizedBy === 'interface-impl' && typeof m.promotedInto === 'string') {
+      // Go: the implementing struct gets this method from a type it embeds.
+      return {
+        label: `interface dispatch — runs the method \`${m.promotedInto}\` gets by embedding (dynamic dispatch)`,
+        compact: `dynamic: interface → method promoted into ${m.promotedInto}${at}`,
+        registeredAt,
+      };
+    }
     if (m?.synthesizedBy === 'interface-impl') {
       return {
         label: `interface/abstract dispatch — runs the implementation override (dynamic dispatch)`,
@@ -4746,7 +4754,7 @@ export class ToolHandler {
         const action = item.reason === 'unindexed'
           ? ' — refresh with `codegraph sync --file <path>` (or initialize the project)'
           : item.reason === 'unsupported'
-            ? ' — add an extension mapping in `codegraph.json`, then run `codegraph sync --file <path>`'
+            ? ' — use `mode:"text"` for non-source files; generated-source manifests can be linked through `generatedSources` in `codegraph.json`'
             : item.reason === 'dynamic_key'
               ? ' — configure the framework/LSP resolver or inspect the runtime value at this site'
               : item.reason === 'ambiguous_candidates'
@@ -5801,6 +5809,17 @@ export class ToolHandler {
 
     if (subgraph.nodes.size === 0) {
       diag?.finishEmpty('no relevant code found — empty subgraph');
+      const fallback = cg.queryTextFallback(query);
+      const candidates = fallback.items.filter(item => !displayFilters.directory || item.filePath.startsWith(`${displayFilters.directory}/`));
+      if (candidates.length) {
+        const message = ['**Answer**', '- Status: Text candidates found; no symbol or call path was confirmed.',
+          '- Evidence: local lexical search. These excerpts do not establish the requested behavior.', '',
+          ...candidates.flatMap(item => [`**${item.filePath}** — matched ${item.matchedTerms.map(term => `\`${term}\``).join(', ')}`,
+            ...item.lines.map(line => `${line.line}\t${line.text}`), '']),
+          ...fallback.warnings, 'Use an exact name from these excerpts to inspect definitions or a call path.'].join('\n');
+        return this.exploreResult(message, { projectRoot, query, files: [],
+          sourceBytes: 0, responseBytes: Buffer.byteLength(message) });
+      }
       for (const rawPath of unresolvedPathSpans) {
         const absolute = validatePathWithinRoot(projectRoot, rawPath);
         if (!absolute) continue;
@@ -6267,13 +6286,22 @@ export class ToolHandler {
     }));
     const isListedSymbol = (n: Node): boolean =>
       n.kind !== 'export' && (n.kind !== 'import' || namedIncludeIds.has(n.id));
-    for (const node of subgraph.nodes.values()) {
+    const visibleNodes = cg.foldGeneratedDefinitions([...subgraph.nodes.values()]);
+    const generatedNotes: string[] = [];
+    for (const node of visibleNodes) {
       if (!isListedSymbol(node)) continue;
       // SECURITY (#383): never render the on-disk source of a config-leaf
       // (Spring application.{yml,properties} key) — its line is `key = <secret>`,
       // so whole-file/cluster rendering here would push secrets into context
       // unbidden. The key still appears in the flow/symbol listing above.
       if (isConfigLeafNode(node)) continue;
+      const generated = cg.getGeneratedLocation(node);
+      if (generated) {
+        const note = generated.input
+          ? `Generated source: ${generated.input}:${generated.startLine} → ${generated.output}${generated.generator ? `; generator ${generated.generator}` : ''}${generated.manifest ? `; manifest ${generated.manifest}` : ''}.`
+          : `Generated output: ${generated.output} [${generated.status}]${generated.reason ? ` — ${generated.reason}` : ''}.`;
+        if (!generatedNotes.includes(note) && generatedNotes.length < 5) generatedNotes.push(note);
+      }
 
       const group = fileGroups.get(node.filePath) || { nodes: [], score: 0, peripheral: 0 };
       group.nodes.push(node);
@@ -9503,7 +9531,7 @@ export class ToolHandler {
       return note ? `\n\n${note}` : '';
     };
 
-    const output = trustPrefix + flow.text + lines.join('\n');
+    const output = trustPrefix + flow.text + (generatedNotes.length ? generatedNotes.join('\n') + '\n\n' : '') + lines.join('\n');
     let finalText: string;
     // The epilogue costs less than a file section, so it is cut FIRST (CG-31).
     // Dropping a trailing section throws away source the render loop had already
@@ -10045,7 +10073,7 @@ export class ToolHandler {
     if (!isSourceFile(filePath)) {
       return this.textResult(
         `**${filePath}** — unindexed: unsupported file type. ` +
-        'Read it directly, or add an extension mapping in `codegraph.json` and run `codegraph sync --file "' + filePath + '"`.'
+        'Use `codegraph_explore` with `mode:"text"` and this file path. For generated assets, inspect or configure `generatedSources` in `codegraph.json`.'
       );
     }
     if (opts.symbolsOnly) {

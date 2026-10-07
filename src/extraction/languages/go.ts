@@ -38,6 +38,66 @@ function extractGoReturnType(node: SyntaxNode, source: string): string | undefin
   return last;
 }
 
+/**
+ * Go's predeclared types. None is ever a node in the graph, and as the lone
+ * term of an interface (`interface{ int64 }`) a basic type is a type-set
+ * constraint, not an embedded interface.
+ */
+const GO_PREDECLARED_TYPES: ReadonlySet<string> = new Set([
+  'any', 'bool', 'byte', 'comparable', 'complex64', 'complex128', 'error', 'float32', 'float64',
+  'int', 'int8', 'int16', 'int32', 'int64', 'rune', 'string', 'uint', 'uint8', 'uint16', 'uint32',
+  'uint64', 'uintptr',
+]);
+
+/**
+ * The name node of the type a Go embedding names, in a struct or an interface:
+ * `Base`, `*Base` (the `*` is a sibling token), `pkg.Base` and `Base[T]` all
+ * embed `Base`. A qualified type yields its name, not its package: the package
+ * stays in the source text, and resolution reads it back from the reference's
+ * position (#2322). Undefined for any other type (a literal, `~T`, a union's
+ * term) and for a predeclared one.
+ */
+export function goEmbeddedTypeName(type: SyntaxNode | null | undefined, source: string): SyntaxNode | undefined {
+  if (type?.type === 'generic_type') type = getChildByField(type, 'type');
+  if (type?.type === 'qualified_type') return getChildByField(type, 'name') ?? undefined;
+  if (type?.type !== 'type_identifier') return undefined;
+  return GO_PREDECLARED_TYPES.has(getNodeText(type, source)) ? undefined : type;
+}
+
+/**
+ * The name nodes of the types a Go alias declaration names, in source order:
+ * `Event` in `type Event = mvccpb.Event`, `List` and `Event` in `type Page =
+ * List[Event]`, each where it is written, so resolution reads a package
+ * qualifier back. The alias's own type parameters (`T` in `type Items[T any]
+ * = List[T]`) and Go's predeclared types are not types it names. A generic
+ * alias has no rule in tree-sitter-go 0.23: it parses as a `type_spec` whose
+ * `=` is an error, and reads as an alias here too. Undefined for a defined
+ * type (`type WatchChan <-chan Event`), which declares a type of its own.
+ */
+export function goAliasTypeNames(node: SyntaxNode, source: string): SyntaxNode[] | undefined {
+  const isAlias = node.type === 'type_alias' ||
+    (node.type === 'type_spec' && node.children.some((c: SyntaxNode) => c.type === 'ERROR' && getNodeText(c, source).trim() === '='));
+  const type = isAlias ? getChildByField(node, 'type') : null;
+  if (!type) return undefined;
+  const params = new Set<string>();
+  for (const decl of getChildByField(node, 'type_parameters')?.namedChildren ?? []) {
+    for (const c of decl.namedChildren) {
+      if (c.type === 'identifier') params.add(getNodeText(c, source));
+    }
+  }
+  const names: SyntaxNode[] = [];
+  const walk = (n: SyntaxNode): void => {
+    if (n.type === 'type_identifier') {
+      const text = getNodeText(n, source);
+      if (!params.has(text) && !GO_PREDECLARED_TYPES.has(text)) names.push(n);
+      return;
+    }
+    for (const c of n.namedChildren) walk(c);
+  };
+  walk(type);
+  return names;
+}
+
 export const goExtractor: LanguageExtractor = {
   functionTypes: ['function_declaration'],
   classTypes: [], // Go doesn't have classes
@@ -45,7 +105,7 @@ export const goExtractor: LanguageExtractor = {
   interfaceTypes: [],  // Handled via type_spec → resolveTypeAliasKind
   structTypes: [],     // Handled via type_spec → resolveTypeAliasKind
   enumTypes: [],
-  typeAliasTypes: ['type_spec'], // Go type declarations
+  typeAliasTypes: ['type_spec', 'type_alias'], // `type A B` and `type A = B`
   importTypes: ['import_declaration'],
   callTypes: ['call_expression'],
   variableTypes: ['var_declaration', 'short_var_declaration', 'const_declaration'],
@@ -66,7 +126,8 @@ export const goExtractor: LanguageExtractor = {
     return sig;
   },
   resolveTypeAliasKind: (node, _source) => {
-    // Go type_spec: `type Foo struct { ... }` or `type Bar interface { ... }`
+    // Go type_spec: `type Foo struct { ... }` or `type Bar interface { ... }`,
+    // and an alias of a literal (`type Foo = struct { ... }`) alike.
     // The inner type is in the 'type' field of the type_spec node
     const typeChild = getChildByField(node, 'type');
     if (!typeChild) return undefined;

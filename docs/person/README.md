@@ -4,6 +4,8 @@
 
 ## 已实现
 
+- [字符串契约与生成来源](string-contracts.md)：多语言序列化字段别名、Tauri 和桥接路径关联、分片到产物的来源、中文文本回退；文档提及反查见[结构化查询](structured-queries.md)。
+
 - 查询可信度：不完整索引显示原因和已知影响范围，提交对应状态单独报告；Vue/React 的 composable、路由别名、props 和 emits 关系及静态边界见[查询契约](query-output-indexing.md)和[索引状态](index-refresh-and-versioning.md)。验证见[开发记录](test-repairs.md)，发布状态见下方。
 
 - [Explore 宽问句与能力判断](mcp-experience-review.md)：清单、比较、能力和存在性问句的首段摘要，以及索引证据与运行时支持的边界。
@@ -54,15 +56,17 @@ Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘
 
 ## 验证与发布
 
+待发布版本为 [v1.6.2-personal.3](releases/v1.6.2-personal.3.md)。本地功能验证与远端 CI、发布状态分别记录。
+
 当前已发布版本为 [v1.6.2-personal.2](releases/v1.6.2-personal.2.md)（2026-10-06 的 GitHub prerelease），标签指向 `470002c2`。上一版 [v1.6.2-personal.1](releases/v1.6.2-personal.1.md) 的标签为 `700d31d9`。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
 
-[v1.6.0-personal.13](releases/v1.6.0-personal.13.md)（2026-10-01）是上一版已发布版本，安装地址已由 `.1` 取代。`v1.6.2-personal.2` 将接入官方最新的 C#/VB.NET、Dart、Go、Rust、Vue/JS 解析修复、COBOL copybook 检索、daemon 安装检查和状态健康输出，并保留个人查询、LSP、编辑、资源治理与遥测契约；提取版本升到 30，v29 条件桥接补齐上游 C#/VB.NET 变更。
+历史版本的功能与验证保留在对应[发行说明](releases/)。索引格式与升级方式见[索引状态](index-refresh-and-versioning.md)。
 
 个人版从 [GitHub Release 安装](personal-usage.md)，不通过上游 npm 包获得个人改动。`personal` 分支的同一提交通过三平台 CI 后，才由 `Personal Release` 在 GitHub runner 构建、隔离验证、打包并创建 prerelease；本机不承担发布构建和上传。
 
 ### 上游同步状态
 
-本轮目标为上游 `main` 的 `837a1866`，包含官方 v1.6.2 之后的解析器、多语言关系、daemon 安装检查和索引修复。同步会保留个人查询、LSP、编辑、资源治理和遥测契约；同一 `personal` 提交的三平台 CI 完成后再创建个人 prerelease，实时状态以 GitHub CI 和 Release 为准。
+本轮同步目标为官方 `ed199e60`，从 `837a1866` 合入 32 个提交，包含 Go/C++/Dart、框架绑定、增量引用重试和大型 JS bundle 修复。远端验证与发布状态以同一提交的 CI 和 GitHub Release 为准。
 
 ## 计划与维护
 

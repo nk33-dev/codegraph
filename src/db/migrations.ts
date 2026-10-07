@@ -5,11 +5,13 @@
  */
 
 import { SqliteDatabase } from './sqlite-adapter';
+import { referenceNameTail } from './reference-tail';
+import { FIELD_CONTRACT_SCHEMA } from './field-contracts';
 
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 18;
 
 /**
  * Migration definition
@@ -199,37 +201,106 @@ const migrations: Migration[] = [
   },
   {
     version: 12,
-    description: 'Replay the synthesis stage for databases that recorded the fork-owned version 10',
+    description: 'Retry a failed import when sync adds the file it names: path tails and failed-import indexes',
     up: (db) => {
-      // This fork's `file_text` migration was authored as version 10 before upstream
-      // claimed the same number for the synthesis stage (which now lives at version 13).
-      // A database written by the fork recorded "10" meaning `file_text`, and
-      // `runMigrations` never revisits a number at or below MAX(version) — so the
-      // synthesis stage would be skipped silently, leaving `synthesis_inputs` missing
-      // and every later synthesis query failing. Replay it for exactly those databases;
-      // one that already has the table (upstream, or a fresh index) is left untouched,
-      // which is also what keeps `edges` unchanged when this migration is re-run.
-      const existing = db
-        .prepare(
-          "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'synthesis_inputs'"
-        )
-        .get();
-      if (existing) return;
-      applySynthesisV10(db);
+      // Partial over failed imports, so both stay small. Keep the definitions
+      // in lockstep with schema.sql.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_unresolved_failed_import_tail ON unresolved_refs(reference_kind, name_tail) WHERE status = 'failed' AND reference_kind = 'imports';
+        CREATE INDEX IF NOT EXISTS idx_unresolved_failed_import_name ON unresolved_refs(reference_kind, reference_name) WHERE status = 'failed' AND reference_kind = 'imports';
+      `);
+      // A path import parked before this version carries its dotted tail —
+      // the extension or a path fragment — which no file's keys match.
+      // Rewrite it to the path tail a failed import is parked under now.
+      // Idempotent: a rewritten tail rewrites to itself.
+      const update = db.prepare('UPDATE unresolved_refs SET name_tail = ? WHERE id = ?');
+      const rows = db
+        .prepare("SELECT id, reference_name FROM unresolved_refs WHERE status = 'failed' AND reference_kind = 'imports' AND reference_name LIKE '%/%'")
+        .all() as Array<{ id: number; reference_name: string }>;
+      for (const row of rows) update.run(referenceNameTail(row.reference_name, 'imports'), row.id);
     },
   },
   {
     version: 13,
+    description: 'Retry a failed path reference when sync adds the file it names: file-name tails',
+    up: (db) => {
+      // A path reference parked before this version — a Liquid
+      // `snippets/price.liquid` — carries its extension as its tail, which no
+      // node is named. Rewrite it to the file name a failed path reference is
+      // parked under now. Idempotent: a rewritten tail rewrites to itself.
+      const update = db.prepare('UPDATE unresolved_refs SET name_tail = ? WHERE id = ?');
+      const rows = db
+        .prepare("SELECT id, reference_name, name_tail FROM unresolved_refs WHERE status = 'failed' AND reference_kind = 'references' AND reference_name LIKE '%/%.%'")
+        .all() as Array<{ id: number; reference_name: string; name_tail: string }>;
+      for (const row of rows) {
+        const tail = referenceNameTail(row.reference_name, 'references');
+        if (tail !== row.name_tail) update.run(tail, row.id);
+      }
+    },
+  },
+  {
+    version: 14,
+    description: 'Retry a failed route module reference when sync adds or changes its file: module tails',
+    up: (db) => {
+      // A route's reference to the module it lazily loads, parked before this
+      // version — React Router's `lazy-import:./pages/Team`, Vue Router's and
+      // Angular's `import:./home/home.component#HomeComponent`, each also
+      // behind `layout:` — carries a fragment of its path as its tail
+      // ('/pages/Team', 'component#HomeComponent'), which no file's keys
+      // match. Rewrite it to the module tail it is parked under now.
+      // Idempotent: a rewritten tail rewrites to itself.
+      //
+      // Each prefix is a range of idx_unresolved_name. The `+` keeps the
+      // planner off idx_unresolved_status, which it otherwise picks although
+      // 'failed' is nearly every row: on vscode's index that read 830K rows,
+      // about a second, to select none.
+      const update = db.prepare('UPDATE unresolved_refs SET name_tail = ? WHERE id = ?');
+      const rows = db
+        .prepare(`SELECT id, reference_name, reference_kind, name_tail FROM unresolved_refs
+          WHERE (reference_name GLOB 'lazy-import:*' OR reference_name GLOB 'import:*' OR reference_name GLOB 'layout:*')
+            AND +status = 'failed' AND +reference_kind IN ('references', 'calls')`)
+        .all() as Array<{ id: number; reference_name: string; reference_kind: string; name_tail: string }>;
+      for (const row of rows) {
+        const tail = referenceNameTail(row.reference_name, row.reference_kind);
+        if (tail !== row.name_tail) update.run(tail, row.id);
+      }
+    },
+  },
+  {
+    version: 15,
+    description: 'Replay synthesis for legacy personal databases',
+    up: (db) => {
+      const present = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'synthesis_inputs'").get();
+      if (!present) applySynthesisV10(db);
+    },
+  },
+  {
+    version: 16,
     description: 'Add persisted file content for project-wide text search',
     up: (db) => {
       db.exec(`CREATE TABLE IF NOT EXISTS file_text (
-        path TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
-        size INTEGER NOT NULL,
-        modified_at INTEGER NOT NULL,
-        indexed_at INTEGER NOT NULL
+        path TEXT PRIMARY KEY, content TEXT NOT NULL, size INTEGER NOT NULL,
+        modified_at INTEGER NOT NULL, indexed_at INTEGER NOT NULL
       )`);
     },
+  },
+  {
+    version: 17,
+    description: 'Bridge upstream reference-tail migrations skipped by personal schema 12/13',
+    up: (db) => {
+      for (const version of [12, 13]) {
+        const row = db.prepare('SELECT description FROM schema_versions WHERE version = ?').get(version) as { description: string } | undefined;
+        // Legacy personal rows used these numbers for synthesis and file text.
+        if (row && !row.description.startsWith('Retry a failed')) {
+          migrations.find((migration) => migration.version === version)!.up(db);
+        }
+      }
+    },
+  },
+  {
+    version: 18,
+    description: 'Add serialization field contracts and declaration freshness stamps',
+    up: (db) => { db.exec(FIELD_CONTRACT_SCHEMA); },
   },
 ];
 
@@ -237,7 +308,7 @@ const migrations: Migration[] = [
  * The synthesis stage upstream ships as schema version 10.
  *
  * Kept in one place because it runs twice by design: once as version 10, and again as
- * version 12 for databases that recorded the fork's own version 10. Every statement is
+ * version 15 for databases that recorded the fork's own version 10. Every statement is
  * idempotent, so a second run is a no-op wherever the first one landed.
  */
 function applySynthesisV10(db: SqliteDatabase): void {
