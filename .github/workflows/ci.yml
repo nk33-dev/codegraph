@@ -1,6 +1,14 @@
 name: CI
 
-# Each push / PR builds and tests all three platforms; Windows tests run across three shards.
+# 每次 push / PR 都在三个平台上跑同一套 engine + ui 测试。分片只影响墙钟，不减少覆盖面：
+# 所有分片都必须通过。本仓库是公开仓库，GitHub 托管的 runner 不计费，所以这里用**更多
+# runner**换更短的等待时间，而不是削减平台或测试范围。
+#
+# 分片数按实测的最慢 job 配平（2026-10-06，run 37517484489）：
+#   Ubuntu  1/1 @4 worker = 298s，macOS 1/1 @4 worker = 408s，Windows 1/3 @2 worker = 546s。
+# 单个 runner 上的 file worker 数保持不变（Windows 仍是 2），只增加机器数量：Windows 收窄到
+# 2 是刻意的，用于限制 SQLite/watcher 清理争用，加机器不会放开这个约束。
+# 分片数按 573 个测试文件的平均值估算，首轮实测后按最慢分片再调。
 #
 # 刻意不放进这个工作流的东西（放夜间或手动任务）：
 #   - 真实 LSP 端到端（__tests__/lsp-real-servers.test.ts）：需要按平台预装
@@ -29,6 +37,14 @@ on:
       - 'docs/**'
       - '**/*.md'
 
+# 同一 ref 的新 push 取消尚未结束的旧 run：连续推送时不把过期的红色结果留在列表里，
+# 也不让新 run 排在旧 run 后面等 runner。
+# 默认分支（personal）除外：个人发布要先确认“同一提交的 CI 成功”，取消会让那个提交
+# 永远等不到成功结果。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/personal' }}
+
 jobs:
   build-test:
     name: build-test (${{ matrix.os }}, shard ${{ matrix.shard }})
@@ -38,20 +54,35 @@ jobs:
         include:
           - os: ubuntu-latest
             workers: 4
-            shard: '1/1'
+            shard: '1/2'
+          - os: ubuntu-latest
+            workers: 4
+            shard: '2/2'
           - os: macos-latest
             workers: 4
-            shard: '1/1'
-          - os: windows-latest
-            # Separate runners reduce elapsed time while keeping handle contention bounded.
-            workers: 2
-            shard: '1/3'
-          - os: windows-latest
-            workers: 2
-            shard: '2/3'
+            shard: '1/2'
+          - os: macos-latest
+            workers: 4
+            shard: '2/2'
+          # Separate runners reduce elapsed time while keeping handle contention bounded.
           - os: windows-latest
             workers: 2
-            shard: '3/3'
+            shard: '1/6'
+          - os: windows-latest
+            workers: 2
+            shard: '2/6'
+          - os: windows-latest
+            workers: 2
+            shard: '3/6'
+          - os: windows-latest
+            workers: 2
+            shard: '4/6'
+          - os: windows-latest
+            workers: 2
+            shard: '5/6'
+          - os: windows-latest
+            workers: 2
+            shard: '6/6'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6

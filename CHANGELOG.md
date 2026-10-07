@@ -93,6 +93,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Personal fork
 
+- CI 分片从「Ubuntu/macOS 各 1 个 runner、Windows 3 分片」改成 Ubuntu 2 个、macOS 2 个、Windows 6 个：每个 runner 上的 file worker 数不变（4/4/2），只增加机器，所以墙钟变短而单机上的 SQLite/watcher 清理争用不升。公开仓库的托管 runner 不计费，这里用更多 runner 换更短的等待时间，不削减平台或测试范围。同一 ref 的新 push 会取消该 ref 未结束的旧 run，`personal` 除外——个人发布要求同一提交的 CI 成功，取消会让那个提交永远等不到成功结果。
+
 - 新增 `codegraph_architecture` MCP 工具，但**不进默认表面**：默认仍是 `codegraph_explore` 与 `codegraph_edit` 两个，避免为它抬高初始化说明与 `tools/list` 的字符预算；要用需显式配置 `CODEGRAPH_MCP_TOOLS`。代价是 Agent 默认用不到它，属于明知的取舍。
 - 新增 `codegraph_hotspots` MCP 工具与 `codegraph hotspots` 同源，同样**不进默认表面**，理由与上面的字符预算取舍相同。CLI 与 MCP 共用 `src/index.ts` 的 `getRiskHotspots`，CLI 的 `codegraph node` 式委托在这里不适用（不是同一个 handler），但配置读取、默认值与权重回退只有一份。
 - 新增端到端图基线：索引一份刻意包含反例的 6 文件 fixture，整图与提交进仓库的 golden 逐行比对，并附具名不变量（同名方法解析到正确的类、未知 receiver 进 `unresolved_refs` 而不伪造边、删除文件后同步不留悬挂端点）。上游同步或解析器升级后「哪条关系丢了」此前没有答案——kernel↔wasm parity 是两个活体提取器互比，两边同时丢同一条边时照样全绿。归一化剔除 rowid、时间戳与 content hash，并把行尾归一化，使 CRLF 工作树与 LF CI 对同一份程序给出同一快照。
