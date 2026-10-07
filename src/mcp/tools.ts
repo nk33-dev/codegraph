@@ -5809,6 +5809,16 @@ export class ToolHandler {
 
     if (subgraph.nodes.size === 0) {
       diag?.finishEmpty('no relevant code found — empty subgraph');
+      for (const rawPath of unresolvedPathSpans) {
+        const absolute = validatePathWithinRoot(projectRoot, rawPath);
+        if (!absolute) continue;
+        try {
+          if (existsSync(absolute) && statSync(absolute).isFile()) {
+            const relative = relativePath(projectRoot, absolute).replace(/\\/g, '/');
+            return this.handleUnindexedFileView(relative, absolute, {});
+          }
+        } catch { /* The file may have changed while the query was running. */ }
+      }
       const fallback = cg.queryTextFallback(query);
       const candidates = fallback.items.filter(item => !displayFilters.directory || item.filePath.startsWith(`${displayFilters.directory}/`));
       if (candidates.length) {
@@ -5819,16 +5829,6 @@ export class ToolHandler {
           ...fallback.warnings, 'Use an exact name from these excerpts to inspect definitions or a call path.'].join('\n');
         return this.exploreResult(message, { projectRoot, query, files: [],
           sourceBytes: 0, responseBytes: Buffer.byteLength(message) });
-      }
-      for (const rawPath of unresolvedPathSpans) {
-        const absolute = validatePathWithinRoot(projectRoot, rawPath);
-        if (!absolute) continue;
-        try {
-          if (existsSync(absolute) && statSync(absolute).isFile()) {
-            const relative = relativePath(projectRoot, absolute).replace(/\\/g, '/');
-            return this.handleUnindexedFileView(relative, absolute, {});
-          }
-        } catch { /* 文件可能在查询期间被编辑器替换；继续返回稳定的未命中结果。 */ }
       }
       const missNote = unresolvedPathSpans.length > 0
         ? ` (no indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')})`
