@@ -17,10 +17,13 @@ import { runtimeBuildIdentity, type RuntimeBuildIdentity } from '../runtime-info
 import { buildTypeHierarchy } from './type-hierarchy';
 import { indexRevision, REVISION_MESSAGES } from './index-health';
 import { frameworkRelationWarnings } from './framework-gaps';
+import type { FieldContract } from './field-contracts';
+import { generatedLocation, type GeneratedLocation } from './generated-sources';
+import type { DocumentMention } from './document-mentions';
 
 export const CODE_QUERY_MODES = [
   'definitions', 'type-definition', 'implementations', 'references', 'symbols', 'hover', 'completion',
-  'callers', 'callees', 'type-hierarchy', 'diagnostics', 'code-actions', 'status', 'impact', 'tests', 'text',
+  'callers', 'callees', 'type-hierarchy', 'diagnostics', 'code-actions', 'status', 'impact', 'tests', 'text', 'documents',
 ] as const;
 export type CodeQueryMode = typeof CODE_QUERY_MODES[number];
 
@@ -82,6 +85,8 @@ export interface CodeQueryRequest {
 }
 
 export interface CodeSymbol {
+  fieldContracts?: FieldContract[];
+  generatedSource?: GeneratedLocation;
   id: string;
   name: string;
   qualifiedName: string;
@@ -273,7 +278,8 @@ export type CodeQueryItem =
   | HierarchyCodeSymbol
   | ImpactItem
   | AffectedTestItem
-  | TextHit;
+  | TextHit
+  | DocumentMention;
 
 /**
  * An item under `backend: "both"`: the original item's **fields are unchanged**, with origin and
@@ -528,7 +534,7 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
   if (request.checkFiles !== undefined && typeof request.checkFiles !== 'boolean') throw new Error('checkFiles must be boolean');
   if (request.contextFile !== undefined) {
     if (typeof request.contextFile !== 'string' || !request.contextFile.trim()) throw new Error('contextFile must be a non-empty project-relative file');
-    if (['status', 'symbols', 'text', 'tests', 'diagnostics', 'code-actions'].includes(request.mode) || request.line !== undefined) {
+    if (['status', 'symbols', 'text', 'documents', 'tests', 'diagnostics', 'code-actions'].includes(request.mode) || request.line !== undefined) {
       throw new Error('contextFile is only supported for symbol-name queries');
     }
   }
@@ -585,6 +591,7 @@ export function validateCodeQueryRequest(request: CodeQueryRequest): { offset: n
 
 /** Ownership check for backend-specific fields: rather fail outright than silently ignore a parameter. */
 export function assertBackendFields(request: CodeQueryRequest, backend: CodeQuerySource): void {
+  if (request.mode === 'documents' && backend === 'lsp') throw new Error('documents mode is graph-only; use backend "graph" or "auto".');
   const positional = request.line !== undefined || request.column !== undefined;
   const positionModes: readonly CodeQueryMode[] = [
     'definitions', 'type-definition', 'implementations', 'references', 'hover', 'completion',
@@ -829,18 +836,23 @@ export function changedFilesFromRequest(root: string, request: CodeQueryRequest)
 /** Symbol builder: caches freshness per file, so the same file is not re-checked against disk repeatedly. */
 export function makeSymbolBuilder(cg: CodeGraph, root: string): (node: Node) => CodeSymbol {
   const freshness = new Map<string, FileFreshness>();
+  const generatedCatalog = cg.getGeneratedSources();
   return (node: Node): CodeSymbol => {
     let state = freshness.get(node.filePath);
     if (!state) {
       state = indexedFileFreshness(root, cg.getFile(node.filePath));
       freshness.set(node.filePath, state);
     }
+    const contracts = cg.getFieldContracts(node.id);
+    const generated = generatedLocation(node, generatedCatalog);
     return {
       id: node.id, name: node.name, qualifiedName: node.qualifiedName, selector: symbolSelector(node), kind: node.kind,
       language: node.language, filePath: node.filePath, startLine: node.startLine, endLine: node.endLine,
       startColumn: node.startColumn, endColumn: node.endColumn,
       parentId: cg.getIncomingEdges(node.id).find(e => e.kind === 'contains')?.source ?? null,
       freshness: state,
+      ...(contracts.length ? { fieldContracts: contracts } : {}),
+      ...(generated ? { generatedSource: generated } : {}),
     };
   };
 }
@@ -902,6 +914,21 @@ function collectCodeQuery(cg: CodeGraph, request: CodeQueryRequest & { query: st
   result.warnings.push(...indexWarnings(result.index));
   if (request.mode === 'status') {
     result.runtime = runtimeBuildIdentity();
+    return result;
+  }
+
+  if (request.mode === 'documents') {
+    if (!cg.isTextIndexReady()) {
+      result.status = 'unavailable';
+      result.warnings.push('File text has not been indexed yet; run codegraph sync.');
+      return result;
+    }
+    const page = cg.searchDocuments(result.query, { offset, limit, file: resolveFileInput(root, request) ?? undefined });
+    result.items = page.items;
+    result.page = { offset, limit, total: page.total, nextOffset: page.nextOffset };
+    result.routing.sources.graph = page.total;
+    result.warnings.push(...page.warnings);
+    if (!page.total) result.status = 'not_found';
     return result;
   }
 
@@ -1003,6 +1030,16 @@ function collectCodeQuery(cg: CodeGraph, request: CodeQueryRequest & { query: st
   }
   result.warnings.push(...frameworkRelationWarnings(cg, nodes.map(node => node.filePath)));
   if (!nodes.length) {
+    if (request.mode === 'definitions' && /\s|[\p{Script=Han}]/u.test(result.query)) {
+      const fallback = cg.queryTextFallback(result.query, file);
+      if (fallback.items.length) {
+        result.items = fallback.items;
+        result.page = { offset: 0, limit: fallback.items.length, total: fallback.items.length, nextOffset: null };
+        result.routing.sources.graph = fallback.items.length;
+        result.warnings.push('No symbol resolved. These are lexical text candidates, not confirmed definitions.', ...fallback.warnings);
+        return result;
+      }
+    }
     if (request.mode !== 'impact') result.status = 'not_found';
     if (request.mode !== 'symbols' && !impactFile) {
       const suggestions = (lookup?.suggestions ?? [])

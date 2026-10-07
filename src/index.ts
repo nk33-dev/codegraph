@@ -62,6 +62,14 @@ import {
 import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve, resolveWalValveMb } from './db/wal-valve';
 import { QueryBuilder } from './db/queries';
+import { refreshFieldContracts } from './db/field-contracts';
+import { refreshStringRoutes } from './db/string-routes';
+import { generatedSources, generatedLocation, foldGeneratedDefinitions } from './graph/generated-sources';
+import { searchDocumentMentions } from './graph/document-mentions';
+import { queryTextFallback } from './graph/query-text-fallback';
+export type { FieldContract } from './graph/field-contracts';
+export type { GeneratedSource, GeneratedLocation } from './graph/generated-sources';
+export type { DocumentMention } from './graph/document-mentions';
 import { importPathKeys, moduleReferenceKeys } from './db/reference-tail';
 import {
   isInitialized,
@@ -1007,6 +1015,7 @@ export class CodeGraph {
         // chance to see the actual project before resolution runs.
         if (result.success && result.filesIndexed > 0) {
           const tReinit = Date.now();
+          await this.refreshStringContracts();
           this.resolver.initialize();
           // Cross-file finalization (e.g. NestJS RouterModule prefixes). Runs
           // before resolution so updated names show up in subsequent reads.
@@ -1265,7 +1274,10 @@ export class CodeGraph {
       this.beginIndexGeneration(taskLevel, filePaths);
       try {
         const result = await this.orchestrator.indexFiles(filePaths, force);
-        if (result.success) await refreshFileTextIndex(this.db.getDb(), this.projectRoot, filePaths);
+        if (result.success) {
+          await this.refreshStringContracts(filePaths);
+          await refreshFileTextIndex(this.db.getDb(), this.projectRoot, filePaths);
+        }
         this.finishIndexGeneration(result.success ? 'complete' : 'failed', result.errors.find((entry) => entry.severity === 'error')?.message);
         return result;
       } catch (error) {
@@ -1508,6 +1520,12 @@ export class CodeGraph {
         // files exist. Those files would otherwise be resolved with no framework
         // resolver until the next full index, so re-detect here before the pass —
         // the same re-initialize `indexAll` does once its first files land.
+        const contractsChanged = await this.refreshStringContracts(result.changedFilePaths);
+        if (contractsChanged) {
+          refreshSynthesis = true;
+          this.queries.setMetadata('synthesis_pending', '1');
+          this.resolver.clearCaches();
+        }
         if (result.filesAdded > 0 || result.filesRemoved > 0) {
           this.resolver.initialize();
         }
@@ -2069,13 +2087,37 @@ export class CodeGraph {
     return this.queries.getMetadata('text_index_ready') === '1';
   }
 
-  searchText(query: string, options: { offset?: number; limit?: number; file?: string } = {}): {
+  searchText(query: string, options: { offset?: number; limit?: number; file?: string; documentsOnly?: boolean } = {}): {
     items: TextHit[]; total: number; nextOffset: number | null; warnings: string[];
   } {
     return searchFileText(this.db.getDb(), this.projectRoot, query, {
-      offset: options.offset ?? 0, limit: options.limit ?? 50, file: options.file,
+      offset: options.offset ?? 0, limit: options.limit ?? 50, file: options.file, documentsOnly: options.documentsOnly,
     });
   }
+
+  private async refreshStringContracts(paths?: readonly string[]): Promise<boolean> {
+    const fields = await refreshFieldContracts(this.db.getDb(), this.queries, this.projectRoot, paths);
+    const routes = await refreshStringRoutes(this.db.getDb(), this.queries, this.projectRoot, paths);
+    return fields || routes;
+  }
+
+  getFieldContracts(nodeId?: string) { return this.queries.getFieldContracts(nodeId); }
+
+  getFieldContractNodes(name: string): Node[] {
+    return [...this.queries.getNodesByIds(this.queries.getFieldContractNodeIds(name)).values()];
+  }
+
+  getGeneratedSources() { return generatedSources(this.projectRoot, this.queries.getAllFilePaths(), this.getIndexContentFingerprint()); }
+
+  getGeneratedLocation(node: Node) { return generatedLocation(node, this.getGeneratedSources()); }
+
+  foldGeneratedDefinitions(nodes: readonly Node[]) { return foldGeneratedDefinitions(nodes, this.getGeneratedSources()); }
+
+  searchDocuments(query: string, options: { offset?: number; limit?: number; file?: string } = {}) {
+    return searchDocumentMentions(this, query, options);
+  }
+
+  queryTextFallback(query: string, file?: string) { return queryTextFallback(this, query, file); }
 
   private gitCommitCache: { at: number; value: string | null } | null = null;
 
@@ -2652,7 +2694,7 @@ export class CodeGraph {
    * definition the caller wants is never dropped below a search cut.
    */
   getNodesByName(name: string): Node[] {
-    return this.queries.getNodesByName(name);
+    return [...new Map([...this.queries.getNodesByName(name), ...this.getFieldContractNodes(name)].map(node => [node.id, node])).values()];
   }
 
   /** Nodes whose name starts with `prefix` (index range scan, capped). */

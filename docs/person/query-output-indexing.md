@@ -10,7 +10,7 @@
 - 精确符号存在但没有 callers/callees 时，结果保留 `target.status: found` 并说明关系数为零；目标不存在才是 `not_found`。字符串/计算分派没有图边时会提示可能存在不可见调用。
 - `directory`、`languages`、`frameworks` 和 `depth` 是展示过滤与遍历参数。目录/语言过滤不会删除过滤范围外、但处在主路径深度内的跨语言后端节点；框架过滤使用索引检测到的框架名称。
 - 磁盘上刚出现、尚未写入 `files` 表的源码可以通过 `codegraph_explore` 的 `mode:"source"`（传入 `file`、`offset`、`limit`）直接查看。结果明确标为 `unindexed`，不生成节点、边或 blast radius；刷新后才会进入正式图结果。
-- 单文件刷新命令为 `codegraph sync --file <project-relative-path>`。不支持的扩展会提示在 `codegraph.json` 增加映射；不会由 MCP 查询自动写入索引。
+- 单文件刷新命令为 `codegraph sync --file <project-relative-path>`。配置、manifest 和文档等非源码文件优先使用文本查询；生成来源可通过 `generatedSources` 关联。查询不会自动写入索引。
 - 流程断点统一标记为 `unindexed`、`unsupported`、`dynamic_key`、`ambiguous_candidates`、`no_syntax_edge`、`framework_dynamic`、`language_boundary` 或 `lsp_unavailable`，并在文本结果中给出刷新、缩小查询或配置语言服务/框架的下一步。
 - `flow`、`pipeline`、`流程`、`调用链`、`链路` 会被解析为流程意图。多词自然语言中的普通 PascalCase 或全大写主题词（例如 Word、PDF、Excel）不会仅凭大小写被报告为 `unindexed`；camelCase、snake_case、限定名、路径及已确认的类型/组件仍按显式符号处理。
 - 流程未连通时，文本结果先输出英文 `Flow status — incomplete`，明确说明结果是部分证据而非“代码不存在”。自动附带的 change context、blast radius 和关系扇出会隐藏；用户显式请求的改动上下文仍保留。
@@ -27,7 +27,7 @@
 - Vue `defineEmits` 的字面量事件与父组件 `@event="handler"` 配对；Vue `defineProps` 的回调属性与 `:on-save="handler"` 配对；React 函数组件的 `props.onSave()` 和解构参数调用可与 `<Child onSave={handler} />` 配对。接收组件须由明确导入或同文件唯一定义确定，处理器须有唯一具名定义。
 - 标识符形式的 props 绑定还产生组件到属性值定义的 `references` 依赖。以上关系统一为 heuristic，带通道名和父组件绑定位置；调用边还保留子组件分派位置。
 - 查询涉及 `.vue`、`.tsx` 或 `.jsx` 时会显示框架/动态关系边界，并列出有界的未解析调用位置（其中可能包含外部 API）。未连通的前端流程使用 `framework_dynamic` 原因。计算路由、动态组件、spread props、内联回调与运行时事件名仍可能缺边。
-- 提取版本 29 登记全语言重抽取范围；既有索引用 `codegraph sync --upgrade-index --yes` 获取新增关系。
+- 当前提取范围与升级方式见[索引状态](index-refresh-and-versioning.md)。
 
 ## 验证边界
 

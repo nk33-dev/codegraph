@@ -14,6 +14,7 @@ import { isCodeGraphDataDir } from '../directory';
 import { normalizeEol } from '../edits/text-edits';
 import { analyzeImpact, findAffectedTests } from './change-impact';
 import type { TestType } from './change-impact';
+import type { DocumentMention } from './document-mentions';
 
 export const CHANGE_CONTEXT_SCHEMA_VERSION = 1;
 export const DEFAULT_CHANGE_CONTEXT_DEPTH = 2;
@@ -86,6 +87,7 @@ export interface MissingTestRisk {
 }
 
 export interface ChangeContext {
+  relatedDocuments?: DocumentMention[];
   schemaVersion: 1;
   kind: 'change-context';
   baseRef: string;
@@ -706,6 +708,10 @@ export async function analyzeChangeContext(
     edges: edges.slice(0, MAX_CHANGED_EDGES),
     affectedEntries: entries,
     affectedTests: tests,
+    relatedDocuments: [...new Map([
+      ...symbols.slice(0, 8).flatMap(symbol => cg.searchDocuments(symbol.name, { limit: 5 }).items),
+      ...files.slice(0, 8).flatMap(file => cg.searchDocuments(file.path, { limit: 5 }).items),
+    ].map(mention => [`${mention.filePath}:${mention.line}`, mention])).values()].slice(0, 20),
     missingTestRisks,
     warnings,
     deep: options.deep === true,
@@ -715,6 +721,11 @@ export async function analyzeChangeContext(
 
 export function formatChangeContext(context: ChangeContext): string {
   const lines: string[] = ['**Change context**', ''];
+  if (context.relatedDocuments?.length) {
+    lines.push('Documents mentioning changed names or paths (mentions, not required edits):');
+    for (const mention of context.relatedDocuments) lines.push(`- ${mention.filePath}:${mention.line} — ${mention.text}`);
+    lines.push('');
+  }
   const fileCounts = new Map<ChangeKind, number>();
   for (const file of context.files) fileCounts.set(file.change, (fileCounts.get(file.change) ?? 0) + 1);
   lines.push(`- Base: \`${context.baseRef}\`${context.deep ? ' (deep semantic comparison)' : ''}`);

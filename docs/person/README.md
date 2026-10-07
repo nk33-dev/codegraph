@@ -4,6 +4,8 @@
 
 ## 已实现
 
+- [字符串契约与生成来源](string-contracts.md)：多语言序列化字段别名、Tauri 和桥接路径关联、分片到产物的来源、中文文本回退；文档提及反查见[结构化查询](structured-queries.md)。
+
 - 查询可信度：不完整索引显示原因和已知影响范围，提交对应状态单独报告；Vue/React 的 composable、路由别名、props 和 emits 关系及静态边界见[查询契约](query-output-indexing.md)和[索引状态](index-refresh-and-versioning.md)。验证见[开发记录](test-repairs.md)，发布状态见下方。
 
 - [Explore 宽问句与能力判断](mcp-experience-review.md)：清单、比较、能力和存在性问句的首段摘要，以及索引证据与运行时支持的边界。
@@ -53,6 +55,8 @@ Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘
 同名消歧、关系来源/动态覆盖与升级关系报告已实现，回归测试与当前验证范围见[开发验证记录](test-repairs.md)。发布状态见下方。
 
 ## 验证与发布
+
+待发布版本为 [v1.6.2-personal.3](releases/v1.6.2-personal.3.md)。本地功能验证与远端 CI、发布状态分别记录。
 
 当前已发布版本为 [v1.6.2-personal.2](releases/v1.6.2-personal.2.md)（2026-10-06 的 GitHub prerelease），标签指向 `470002c2`。上一版 [v1.6.2-personal.1](releases/v1.6.2-personal.1.md) 的标签为 `700d31d9`。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
 

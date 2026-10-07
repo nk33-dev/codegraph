@@ -25,6 +25,7 @@ import { isGeneratedFile } from '../extraction/generated-detection';
 import { splitIdentifierSegments } from '../search/identifier-segments';
 import { recordQueryCache } from '../resource-metrics';
 import { referenceNameTail } from './reference-tail';
+import { getFieldContracts, fieldContractNodeIds } from './field-contracts';
 
 /**
  * Files that should not be candidates for "dominant file" detection: test/spec
@@ -383,6 +384,14 @@ export class QueryBuilder {
     } catch {
       this._fts5Available = false;
     }
+  }
+
+  getFieldContracts(nodeId?: string) {
+    return getFieldContracts(this.db, nodeId);
+  }
+
+  getFieldContractNodeIds(name: string): string[] {
+    return fieldContractNodeIds(this.db, name);
   }
 
   /**

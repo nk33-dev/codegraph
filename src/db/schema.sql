@@ -76,6 +76,21 @@ CREATE TABLE IF NOT EXISTS files (
     generated INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS field_contracts (
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL, field_name TEXT NOT NULL, external_name TEXT NOT NULL,
+    direction TEXT NOT NULL, data TEXT NOT NULL,
+    PRIMARY KEY (node_id, external_name, direction)
+);
+CREATE INDEX IF NOT EXISTS idx_field_contract_external ON field_contracts(external_name, node_id);
+CREATE INDEX IF NOT EXISTS idx_field_contract_name ON field_contracts(field_name, node_id);
+CREATE INDEX IF NOT EXISTS idx_field_contract_file ON field_contracts(file_path);
+CREATE TABLE IF NOT EXISTS field_contract_files (
+    path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL, contract_count INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS file_text (
     path TEXT PRIMARY KEY,
     content TEXT NOT NULL,

@@ -34,6 +34,7 @@ export const PROJECT_CONFIG_FILENAME = 'codegraph.json';
 export const LOCAL_PROJECT_CONFIG_PATH = `.codegraph/${PROJECT_CONFIG_FILENAME}`;
 
 export interface ProjectConfig {
+  generatedSources?: GeneratedSourceConfig[];
   /** Map of custom file extension (`.foo`) to a supported language id. */
   extensions?: Record<string, string>;
   /**
@@ -128,6 +129,13 @@ export interface ProjectConfig {
   };
 }
 
+export interface GeneratedSourceConfig {
+  output: string;
+  inputs: string[];
+  generator?: string;
+  manifest?: string;
+}
+
 /** One forbidden dependency direction; `from`/`to` are module ids or directory prefixes. */
 export interface ArchitectureBoundaryRule {
   from: string;
@@ -163,6 +171,7 @@ export interface HotspotsConfig {
 
 /** Parsed, validated view of a project's `codegraph.json`. */
 interface ParsedConfig {
+  generatedSources: GeneratedSourceConfig[];
   extensions: Record<string, Language>;
   includeIgnored: string[];
   exclude: string[];
@@ -201,6 +210,7 @@ const cache = new Map<string, CacheEntry>();
 /** Shared frozen empties so the no-config path allocates nothing. */
 const EMPTY_EXTENSIONS: Record<string, Language> = Object.freeze({});
 const EMPTY_CONFIG: ParsedConfig = Object.freeze({
+  generatedSources: [],
   extensions: EMPTY_EXTENSIONS,
   includeIgnored: Object.freeze([]) as unknown as string[],
   exclude: Object.freeze([]) as unknown as string[],
@@ -282,6 +292,7 @@ function parseConfig(file: string): ParsedConfig {
   const exclude = extractExclude(parsed, file);
   const include = extractInclude(parsed, file);
   const deprioritize = extractPatternList(parsed, file, 'deprioritize');
+  const generatedSources = extractGeneratedSources(parsed, file);
   const apiCorrelation = extractApiCorrelation(parsed, file);
   const { config: architecture, present: architecturePresent } = extractArchitecture(parsed, file);
   const { config: hotspots, present: hotspotsPresent } = extractHotspots(parsed, file);
@@ -306,6 +317,7 @@ function parseConfig(file: string): ParsedConfig {
     exclude,
     include,
     deprioritize,
+    generatedSources,
     apiCorrelation,
     architecture,
     architecturePresent,
@@ -336,6 +348,7 @@ function mergeConfig(base: ParsedConfig, overlay: ParsedConfig): ParsedConfig {
     exclude: pick('exclude', base.exclude, overlay.exclude),
     include: pick('include', base.include, overlay.include),
     deprioritize: pick('deprioritize', base.deprioritize, overlay.deprioritize),
+    generatedSources: pick('generatedSources', base.generatedSources, overlay.generatedSources),
     apiCorrelation: pick('apiCorrelation', base.apiCorrelation, overlay.apiCorrelation),
     architecture: {
       root: pickArch('root', base.architecture.root, overlay.architecture.root),
@@ -740,6 +753,30 @@ export function loadIncludePatterns(rootDir: string): string[] {
 /** Read the normalized HTTP client/server correlation configuration. */
 export function loadApiCorrelationConfig(rootDir: string): ParsedConfig['apiCorrelation'] {
   return loadParsedConfig(rootDir).apiCorrelation;
+}
+
+export function loadGeneratedSourcesConfig(rootDir: string): GeneratedSourceConfig[] {
+  return loadParsedConfig(rootDir).generatedSources;
+}
+
+function extractGeneratedSources(parsed: object, file: string): GeneratedSourceConfig[] {
+  const raw = (parsed as ProjectConfig).generatedSources;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    logWarn('Ignoring generatedSources: expected an array', { file });
+    return [];
+  }
+  const relative = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+    && value.length <= 4096 && !path.isAbsolute(value) && !/^[A-Za-z]:/.test(value)
+    && !value.replace(/\\/g, '/').split('/').includes('..');
+  return raw.filter((entry): entry is GeneratedSourceConfig => {
+    const valid = entry && typeof entry === 'object' && relative(entry.output)
+      && Array.isArray(entry.inputs) && entry.inputs.length > 0 && entry.inputs.length <= 2048
+      && entry.inputs.every(relative) && (entry.generator === undefined || relative(entry.generator))
+      && (entry.manifest === undefined || relative(entry.manifest));
+    if (!valid) logWarn('Ignoring generatedSources entry: expected project-relative output, ordered inputs and optional generator/manifest', { file });
+    return Boolean(valid);
+  }).map(entry => ({ ...entry, output: entry.output.replace(/\\/g, '/'), inputs: entry.inputs.map(input => input.replace(/\\/g, '/')) }));
 }
 
 /** Test/maintenance hook: forget cached config (e.g. after rewriting it in a test). */

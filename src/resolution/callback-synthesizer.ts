@@ -41,6 +41,7 @@ import { enclosingFn, makeLineAt } from './synth-utils';
 import { resolveImportPath } from './import-resolver';
 import { crossesCodeBoundary } from './name-matcher';
 import { componentBindingEdges } from './component-bindings';
+import { stringBridgeEdges, fieldContractEdges } from './string-bridge';
 
 const REGISTRAR_NAME = /^(on[A-Z]\w*|subscribe|addListener|addEventListener|register|watch|listen|addCallback)$/;
 const DISPATCHER_NAME = /(emit|trigger|notify|dispatch|fire|publish|flush)/i;
@@ -4108,6 +4109,7 @@ const ALWAYS = (): boolean => true;
 
 /** Conservative input gates for SYNTH_PASSES; keep these in sync when adding a pass. */
 export function hasSynthesisPattern(filePath: string, content: string): boolean {
+  if (/generate_handler!|tauri::command|serde\s*\(|json:"|\b(?:invoke|JsonProperty|JsonPropertyName|Field)\b|\bmatch\s+(?:path|route|url)\b|\bswitch\s*\(\s*(?:path|route|url)|bridge/i.test(content)) return true;
   // These passes consume declarations/layouts as well as dispatch sites. A
   // header or markup edit can change a channel whose endpoints live elsewhere.
   if (/\.(?:vue|svelte|dfm|fmx|nix|xml)$/.test(filePath)) return true;
@@ -4144,6 +4146,8 @@ export function hasSynthesisPattern(filePath: string, content: string): boolean 
  * run because interfaceOverrideEdges reads their edges from the DB.
  */
 export const SYNTH_PASSES: SynthPassDef[] = [
+  { name: 'stringBridgeEdges', gate: (has) => has(...JS_FAMILY, 'rust'), run: (q, c, y) => stringBridgeEdges(q, c, y) },
+  { name: 'fieldContractEdges', gate: ALWAYS, run: (q, c, y) => fieldContractEdges(q, c, y) },
   { name: 'fieldEdges', gate: ALWAYS, run: (q, c, y) => fieldChannelEdges(q, c, y) },
   { name: 'closureCollEdges', gate: ALWAYS, run: (q, c, y) => closureCollectionEdges(q, c, y) },
   // Cross-tier channels — a client's `fetch('/api/x')` onto its own route,

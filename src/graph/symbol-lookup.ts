@@ -133,6 +133,8 @@ export function matchesSymbol(node: Node, symbol: string): boolean {
 
 /** The slice of CodeGraph a symbol lookup needs — keeps this module testable. */
 export interface SymbolLookupHost {
+  getFieldContractNodes?(name: string): Node[];
+  foldGeneratedDefinitions?(nodes: readonly Node[]): Node[];
   getNodesByName(name: string): Node[];
   searchNodes(query: string, options?: { limit?: number }): Array<{ node: Node }>;
   generatedFilePredicate(paths: string[]): (path: string) => boolean;
@@ -241,7 +243,11 @@ export function lookupSymbolNodes(cg: SymbolLookupHost, symbol: string, options:
   // Exact-name index, then filter by the qualifier the user actually wrote.
   const tail = qualified ? lastQualifierPart(symbol) : symbol;
   let nodes = tail ? cg.getNodesByName(tail) : [];
-  if (qualified) nodes = nodes.filter((n) => matchesSymbol(n, symbol));
+  if (qualified) {
+    const aliases = cg.getFieldContractNodes?.(tail) ?? [];
+    nodes = nodes.filter((node) => matchesSymbol(node, symbol) || aliases.some(alias => alias.id === node.id
+      && matchesSymbol({ ...node, name: tail, qualifiedName: node.qualifiedName.replace(/[^:./]+$/, tail) }, symbol)));
+  }
 
   let suggestions: Node[] = [];
   if (nodes.length === 0) {
@@ -269,7 +275,8 @@ export function lookupSymbolNodes(cg: SymbolLookupHost, symbol: string, options:
   // Rank scope and context first, then keepers before generated stubs.
   const canonicalQuery = canonicalScope(symbol);
   const scope = qualified ? canonicalQuery.slice(0, canonicalQuery.lastIndexOf('.')) : undefined;
-  const ranked = rankSymbolNodes(cg, nodes, { ...options, scope: options.scope ?? scope });
+  const visible = file === undefined ? cg.foldGeneratedDefinitions?.(nodes) ?? nodes : nodes;
+  const ranked = rankSymbolNodes(cg, visible, { ...options, scope: options.scope ?? scope });
   return { nodes: ranked, ambiguous: groupDefinitions(ranked).groups.length > 1 };
 }
 

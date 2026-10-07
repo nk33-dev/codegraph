@@ -26,7 +26,7 @@
  * only when every crossed extraction change has a compatible recorded scope.
  */
 import type { Language } from '../types';
-export const EXTRACTION_VERSION = 30;
+export const EXTRACTION_VERSION = 31;
 
 /**
  * Extraction scope affected by each version increment.
@@ -50,6 +50,11 @@ export interface ExtractionUpgradeScope {
  * requires a full rebuild instead of claiming compatibility without evidence.
  */
 export const EXTRACTION_UPGRADES: readonly ExtractionUpgradeScope[] = [
+  {
+    version: 31,
+    scope: 'all',
+    summary: 'Apply upstream extraction fixes and add serialization field contracts and registered string bridge relationships',
+  },
   {
     version: 27,
     // Two changes landed under this number: the fork's own v27 (namespace imports

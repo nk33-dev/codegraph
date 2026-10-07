@@ -6,11 +6,12 @@
 
 import { SqliteDatabase } from './sqlite-adapter';
 import { referenceNameTail } from './reference-tail';
+import { FIELD_CONTRACT_SCHEMA } from './field-contracts';
 
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 17;
+export const CURRENT_SCHEMA_VERSION = 18;
 
 /**
  * Migration definition
@@ -295,6 +296,11 @@ const migrations: Migration[] = [
         }
       }
     },
+  },
+  {
+    version: 18,
+    description: 'Add serialization field contracts and declaration freshness stamps',
+    up: (db) => { db.exec(FIELD_CONTRACT_SCHEMA); },
   },
 ];
 

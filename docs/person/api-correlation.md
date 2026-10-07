@@ -14,6 +14,8 @@
 
 ## HTTP 前后端关联
 
+Tauri 命令及自定义字符串桥接的注册证据、包装调用与应用隔离见[字符串契约](string-contracts.md)。它们保留独立通道，不按 HTTP 方法解释命令名。
+
 跨层边统一按 HTTP 方法、规范化路径、路径参数和查询参数匹配。支持 `fetch`、Axios/实例、ky、got、`useFetch`/`useSWR` 等客户端，以及 Express、Spring 等框架产生的路由节点。唯一最佳匹配才会作为确定关联；平局会保留多个候选，并在边元数据中标注 `confidence: "candidate"`、`inferred: true` 和 `candidateTargets`。
 
 关联默认开启。初始化时可以选择关闭并填写客户端/服务端路径，并选择保存位置。两处使用同一份 schema：项目根 `codegraph.json` 是团队共享基础配置，`.codegraph/codegraph.json` 是本地覆盖配置；本地文件存在时只覆盖它明确写出的顶层字段。

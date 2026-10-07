@@ -12,6 +12,14 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Personal retrieval
+
+- Resolve serialization keys to Rust/Go/Python/Java/C# field declarations, types and read/write aliases; keep ambiguous owners explicit.
+- Connect registered Tauri commands, generic invoke wrappers and static bridge routes with registration evidence.
+- Show verified fragment-to-artifact locations and collapse duplicate definitions; preserve artifact coordinates when output drifts.
+- Find Markdown mentions with `documents`, attach them to change context, and recover natural-language misses with bounded local text candidates.
+- Preserve upstream reference-tail migrations and C++ receiver semantics across personal schema and source-coordinate differences. Existing indexes need an extraction-version 31 upgrade.
+
 ### New Features
 
 - 复用一次文件读取。此前每个 `textDocument/*` 请求都走 `syncDocument`，而它先读完整文件再比较内容，补全、hover、定义、引用各来一次就是同一文件被反复读入；现在文件文本按 mtime 与大小缓存，`syncDocument` 在文件未变化时直接命中缓存，同一次查询内的文本与位置转换也共用这一份，`fileLines` 不再各自读盘。缓存只在本进程内有效，文件变化或服务重启即失效。反复查询同一文件、大文件和多窗口场景收益最明显。

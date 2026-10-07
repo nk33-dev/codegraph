@@ -93,6 +93,8 @@ the template rather than only inside its block.
 
 ## Frontend binding coverage (2026-10-01)
 
+Registered Tauri string commands and Rust/JS/TS bridge dispatch are covered by the shared string-contract pass. Generic calls and local wrappers retain registration evidence; generated fragment groups are matched only after content verification. Fixture and Codex3N validation are recorded in [personal verification](../person/test-repairs.md); broad framework recall and agent A/B are not claimed. The current contract is [string contracts](../person/string-contracts.md).
+
 The current worktree extends existing Vue/React support with imported `useRouter`
 aliases, explicit returned composable members, Vue literal emits and callback
 props, and React named callback props. These edges retain heuristic provenance

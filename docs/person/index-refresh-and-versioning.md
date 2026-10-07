@@ -32,12 +32,10 @@
 
 ## 数据库与提取版本
 
-- schema 版本由 `CURRENT_SCHEMA_VERSION` 单点声明，**v1.6.1 同步后为 13**。上游用 10 表示 synthesis、11 表示它的索引守卫；个人自己的 `file_text` 迁移让位到 13，12 是桥接迁移，只在 `synthesis_inputs` 缺失时重放上游 v10，所以对上游库和全新库都是 no-op。编号纪律见[维护流程](maintenance.md)的「迁移编号纪律」。
-- 迁移在**打开索引库时**自动执行：任何命令（含 `codegraph sync`）打开旧库都会把它升到 13。个人库从记录 10 升上来会依次跑 11、12、13，补齐 `synthesis_inputs`、宽版 `idx_nodes_kind` 与合成回填；不需要删除索引重建，也不需要手工操作。
-- 提取版本为 **30**，全语言范围用于恢复跨文件关系并生成 Vue/React composable、路由别名、props 与 emits 关系；v29 条件桥接补齐上游 C#/VB.NET 变更。旧索引会被判定落后：`codegraph status` 给出 `reindexRecommended`，`codegraph sync --upgrade-index` 先打印范围、文件数、预计耗时与峰值磁盘再执行。这一步是重抽取，与上面的表结构补齐是两件事。
-- 桥接迁移会置 `project_metadata.synthesis_pending = '1'`，下一次同步据此重建合成边并把它清回 0；迁移本身不重建，所以升级后要跑一次 `codegraph sync`（或 `--upgrade-index`）才算真正补齐。
-- 旧构建读新库的推演：旧版看到的 `MAX(schema_versions)` 大于自己的 `CURRENT_SCHEMA_VERSION`，因此不迁移也能打开，且不认识新表新列。这是按代码推演的结论，**本轮未在旧产物上实测**；回滚仍以备份恢复为准，不是 `git checkout`。
-
+- schema 版本由 `CURRENT_SCHEMA_VERSION` 单点声明，当前为 **18**。保留上游迁移 12–14，个人 synthesis 桥接和全文表移到 15/16，17 补齐旧个人库跳过的上游引用重试迁移，18 添加字段契约目录。编号纪律见[维护流程](maintenance.md)。
+- 可写连接打开旧库时自动迁移，保留图和已有全文内容；只读连接不迁移。迁移先在一致性副本验证，回滚使用备份或前向修复。
+- 提取版本为 **31**，登记全语言范围，以应用本轮上游提取修复、字段契约和字符串桥接关系。`codegraph sync --upgrade-index --yes` 在写锁下升级已有索引；表迁移本身不会补齐这些关系。
+- 旧构建可忽略附加表，但不会理解新关系。旧产物读取新格式尚未实测，不能以 Git 回退替代数据库恢复。
 ## 升级关系报告
 
 `codegraph sync --upgrade-index` 调用公共 `CodeGraph.upgradeIndex()`，在同一 writer lock 内完成重抽取、解析与前后比较。升级会强制存储哈希未变的文件，普通索引/同步仍沿用内容哈希跳过规则；提取或同步未完成时保留旧提取版本戳。API 返回 `success`、`assessment`、`relations`、处理文件数、耗时和错误；已是当前版本时 `relations: null`。CLI 非 quiet 模式直接输出关系分类与最多二十个示例。
