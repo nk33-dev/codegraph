@@ -51,11 +51,6 @@ export interface ExtractionUpgradeScope {
  */
 export const EXTRACTION_UPGRADES: readonly ExtractionUpgradeScope[] = [
   {
-    version: 31,
-    scope: 'all',
-    summary: 'Apply upstream extraction fixes and add serialization field contracts and registered string bridge relationships',
-  },
-  {
     version: 27,
     // Two changes landed under this number: the fork's own v27 (namespace imports
     // and identifier-anchored call/constructor edges) and upstream's v27
@@ -85,6 +80,11 @@ export const EXTRACTION_UPGRADES: readonly ExtractionUpgradeScope[] = [
     version: 30,
     scope: 'all',
     summary: 'Re-extract for upstream language fixes, recover cross-file relationships and synthesize Vue/React composable, router, props and emits bindings',
+  },
+  {
+    version: 31,
+    scope: 'all',
+    summary: 'Apply upstream extraction fixes and add serialization field contracts and registered string bridge relationships',
   },
 ];
 

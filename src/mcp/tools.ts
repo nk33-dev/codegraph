@@ -2242,7 +2242,7 @@ export const tools: ToolDefinition[] = [
       properties: {
         mode: {
           type: 'string',
-          description: 'Query mode; defaults to explore.',
+          description: CODE_QUERY_MODES.join(','),
           enum: ['explore', 'source', ...CODE_QUERY_MODES],
           default: 'explore',
         },
@@ -2266,7 +2266,7 @@ export const tools: ToolDefinition[] = [
         },
         depth: {
           type: 'number',
-          description: 'explore depth 1–10 (default 3); structured depth is only valid for impact/tests (defaults 2/5).',
+          description: 'Depth 1–10: explore defaults 3; impact/tests default 2/5; other modes reject it.',
         },
         includeIndirect: {
           type: 'boolean',
@@ -2288,7 +2288,7 @@ export const tools: ToolDefinition[] = [
         },
         includeDeclaration: {
           type: 'boolean',
-          description: 'LSP references: include declaration.',
+          description: 'LSP: include declaration.',
           default: true,
         },
         startLine: { type: 'number', description: 'source: 1-based line (preferred).' },

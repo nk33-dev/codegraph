@@ -1,4 +1,3 @@
-import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { SqliteDatabase } from './sqlite-adapter';
 import type { QueryBuilder } from './queries';
@@ -6,6 +5,8 @@ import { extractFieldContracts, FIELD_CONTRACT_LANGUAGES, type FieldContract } f
 import { loadGrammarsForLanguages } from '../extraction/grammars';
 import { validatePathWithinRoot } from '../utils';
 import { createYielder } from '../resolution/cooperative-yield';
+import { MAX_SOURCE_FILE_SIZE_BYTES, readBoundedSourceSync } from '../file-limits';
+import { logWarn } from '../errors';
 
 export const FIELD_CONTRACT_SCHEMA = `
   CREATE TABLE IF NOT EXISTS field_contracts (
@@ -49,13 +50,19 @@ export async function refreshFieldContracts(db: SqliteDatabase, queries: QueryBu
   let changed = false;
   for (const file of queries.getAllFiles()) {
     if (!FIELD_CONTRACT_LANGUAGES.includes(file.language) || (scope && !scope.has(file.path))) continue;
+    if (file.size > MAX_SOURCE_FILE_SIZE_BYTES || file.errors?.some(error => error.code === 'size_exceeded')) continue;
     await yieldToLoop();
     const previous = stamps.get(file.path) as { content_hash: string; contract_count: number } | undefined;
     const retained = (count.get(file.path) as { count: number }).count;
     if (previous?.content_hash === file.contentHash && retained === previous.contract_count) continue;
     const absolute = validatePathWithinRoot(root, file.path);
-    if (!absolute) throw new Error(`Contract source is outside the project: ${file.path}`);
-    const source = fs.readFileSync(absolute, 'utf8');
+    if (!absolute) {
+      logWarn('Serialization contracts skipped for a symlink outside the project', { file: file.path });
+      continue;
+    }
+    const bounded = readBoundedSourceSync(absolute);
+    if (!bounded.bytes) throw new Error(`Serialization source grew beyond the indexing limit: ${file.path}; retry sync.`);
+    const source = bounded.bytes.toString('utf8');
     const hash = createHash('sha256').update(source).digest('hex');
     if (hash !== file.contentHash) throw new Error(`Serialization source changed during indexing: ${file.path}; retry sync.`);
     const hasMarker = /serde\s*\(|json:"|\b(?:Field|JsonProperty|JsonPropertyName)\s*\(/.test(source);

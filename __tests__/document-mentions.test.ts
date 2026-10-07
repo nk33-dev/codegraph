@@ -69,7 +69,7 @@ describe('document mentions and local lexical recovery', () => {
 
   it('attaches document mentions to change context', async () => {
     const graph = await fixture();
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe', windowsHide: true });
     git('init'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
     git('add', 'settings.ts', 'settings.rs', 'docs', 'noise.ts'); git('commit', '-m', 'baseline');
     write('settings.ts', 'export function readStore() { return "decrypt changed configuration"; }\n');
