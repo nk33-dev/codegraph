@@ -39,6 +39,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Keep text-index freshness checks consistent with NUL exclusions beyond the first KiB; replacing an excluded file with ordinary text restores indexing on sync.
+
 - 合并两个功能分支时复核出的四处缺陷：热点报告把「调用点」当成「调用方」计数，一个函数在同一个调用方里出现两次就按两个调用方加权（现按调用方符号去重）；框架检测结果只在全量索引时重算，同步进来的第一门语言的文件或新 manifest 会以「没有框架」的状态解析到下一次全量索引（现按变更集判断是否需要重检测，纯函数体编辑不重扫）；Rust crate catalog 只用 manifest 的 mtime 与大小复核，往 `crates/*` 这类 glob member 下新增 crate 后旧目录表会一直被沿用（现把 glob 的当前展开结果一并纳入复核）；Cargo 的 `default-members` 与 `members` 同名后缀会被当成成员表读取（数组取值拒绝 `-` 前缀的同名键）。
 - 修上游 **v1.6.2** 同步留下的一批语义冲突——纯上游提交上同一批用例全通过，个人树上失败，说明不是上游回归而是两边改动互斥：
   - 个人侧「未知属性链」早退（`isUnresolvedJsMemberChain`）在命名空间分支之前返回，`z.core.safeParse()` 这类以 `import * as` 为根的链永远到不了解析命名空间的那步（#2192 失效）；现在根是命名空间导入的链继续往下走。
