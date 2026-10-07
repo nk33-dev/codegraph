@@ -1,6 +1,6 @@
 # CodeGraph maintenance workflow
 
-当前待验证同步基线为官方 `837a1866`（上游 `main`，包含 v1.6.2 后的最新提交）；本轮同步完成后由 `personal` 的同一提交触发 CI 验证。
+本轮同步基线为官方 `ed199e60`，从 `837a1866` 合入 32 个提交。个人查询、编辑、遥测和资源治理契约继续保留；远端验证以 `personal` 同一提交的 CI 为准。
 
 This document describes the sync, verification, data recovery and release boundaries of the personal fork. For implementation details see the [development reference](../development.md), and for personal features see the [navigation](README.md).
 
@@ -46,6 +46,8 @@ When refactoring, record the following in the corresponding feature document:
 
 ### 迁移编号纪律
 
+`ed199e60` 新增上游迁移 12–14：失败 import、路径引用和 lazy route 的重试键。个人 synthesis 桥接移到 15，`file_text` 移到 16；17 检查已有 12/13 的迁移描述，只有个人编号占用记录才重放对应上游迁移。保留原有行和文本内容。后续新增表继续顺序编号；迁移和重复启动先在数据库副本验证。
+
 **个人独占迁移与上游共用同一条数字线，不另开高位号段。** 每次同步，如果上游新增了编号低于个人迁移的迁移，必须三件事一起做：
 
 1. 把个人迁移重编号到上游最大值之上；
@@ -71,6 +73,8 @@ Check according to the impact scope of this change, and do not assume that not-y
 For persistent format changes, first verify upgrade, repeated startup, interrupted migration and failure recovery on a copy, using a consistent database backup. Do not clear the user directory to bypass migration, and do not experiment on the only copy of the data. A Git rollback is not the same as a data downgrade; record whether the old version can read the new format and the backup-restore or forward-fix approach.
 
 ### 引用坐标：上游测试与个人约定的冲突
+
+C++ 的 `cppMemberOperator` 读取两种锚点，并保留跨行接收者。它决定 `.` / `->` 是库类型自身的方法还是指针元素的方法；缺少个人锚点会跳过上游的拒绝猜测逻辑。
 
 个人 fork 把 `calls` 引用的坐标锚点从「整个被调表达式」改成「它命名的成员标识符」（内核/wasm 坐标对齐，见个人 CHANGELOG 的 b39fade 条目），上游代码和测试里仍有按旧锚点读源码的地方。同步后出现这类失败时按两条路处理，并把结论记进 CHANGELOG：
 
