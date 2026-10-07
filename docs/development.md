@@ -4,6 +4,8 @@ Read only the sections relevant to the module you are changing; there is no need
 
 ## Build, Test, Run
 
+The personal CI macOS jobs run two workers per shard and set the test shell's file-descriptor soft limit to 4096. This bounds concurrent daemon/LSP fixture pressure; process exit, handover and response assertions remain unchanged. The previous soft limit is printed in the job log. Ubuntu and Windows retain their own worker/shard settings.
+
 ```bash
 npm run build           # tsc + copy schema.sql and *.wasm + build the viewer into dist/; chmods dist/bin/codegraph.js
 npm run build:lib       # the viewer's components as @colbymchenry/codegraph-ui (ui/dist) — NOT part of `build`

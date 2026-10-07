@@ -59,10 +59,10 @@ jobs:
             workers: 4
             shard: '2/2'
           - os: macos-latest
-            workers: 4
+            workers: 2
             shard: '1/2'
           - os: macos-latest
-            workers: 4
+            workers: 2
             shard: '2/2'
           # Separate runners reduce elapsed time while keeping handle contention bounded.
           - os: windows-latest
@@ -95,4 +95,13 @@ jobs:
       - run: npm run check:release-metadata
       - run: npm run build
       # 只跑 engine + ui 两个项目；串行严格计时的 perf 项目不在这里。
+      - name: Test on macOS with a descriptor budget
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          printf 'File descriptor soft limit before tests: '
+          ulimit -Sn
+          ulimit -Sn 4096
+          npm test -- --maxWorkers=${{ matrix.workers }} --shard=${{ matrix.shard }}
       - run: npm test -- --maxWorkers=${{ matrix.workers }} --shard=${{ matrix.shard }}
+        if: runner.os != 'macOS'
