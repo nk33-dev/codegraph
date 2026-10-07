@@ -23,7 +23,8 @@ function textFileStat(
     if (previous?.size === stat.size && previous.modified_at === stat.mtimeMs) return stat;
     const descriptor = fs.openSync(absolute, 'r');
     try {
-      const sample = Buffer.alloc(Math.min(stat.size, 1024));
+      // Status checks must use the same NUL policy as stored text, even past the first KiB.
+      const sample = Buffer.alloc(Math.min(stat.size, maxBytes === MAX_FILE_BYTES ? MAX_FILE_BYTES : 1024));
       fs.readSync(descriptor, sample, 0, sample.length, 0);
       return sample.includes(0) ? null : stat;
     } finally {

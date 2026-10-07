@@ -56,9 +56,9 @@ Explore 的主链请求默认收敛到确认过的调用脊，结构化查询摘
 
 ## 验证与发布
 
-待发布版本为 [v1.6.2-personal.3](releases/v1.6.2-personal.3.md)。本地功能验证与远端 CI、发布状态分别记录。
+待发布版本为 [v1.6.2-personal.4](releases/v1.6.2-personal.4.md)，修复全文状态对后部 NUL 的误报。本地验证与远端 CI、发布状态分别记录。
 
-当前已发布版本为 [v1.6.2-personal.2](releases/v1.6.2-personal.2.md)（2026-10-06 的 GitHub prerelease），标签指向 `470002c2`。上一版 [v1.6.2-personal.1](releases/v1.6.2-personal.1.md) 的标签为 `700d31d9`。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
+当前已发布版本为 [v1.6.2-personal.3](releases/v1.6.2-personal.3.md)（2026-10-07 的 GitHub prerelease），标签指向 `d73039b3`。实时状态以[GitHub Releases](https://github.com/nk33-dev/codegraph/releases)为准。
 
 历史版本的功能与验证保留在对应[发行说明](releases/)。索引格式与升级方式见[索引状态](index-refresh-and-versioning.md)。
 

@@ -2,6 +2,12 @@
 
 ## 2026-10-07：官方同步与字符串契约
 
+- 发行提交 `d73039b37452f890317cb8724482b4ad405035ee` 的 [CI 37634898527](https://github.com/nk33-dev/codegraph/actions/runs/37634898527) 十个三平台分片全部成功；[Personal Release 37636360926](https://github.com/nk33-dev/codegraph/actions/runs/37636360926) 成功。本机 SHA256 对照资产清单通过，global doctor 显示 personal.3、同一提交、dirty=false，两个 daemon 已切换为该发行构建。
+- 发行包升级 CodeGraph 1,322 文件用时 66 秒，Codex3N 361 文件用时 56.7 秒；提取版本 31、schema 18、待解析引用零。Codex3N 源码 Git 状态干净，索引提交与 HEAD 均为 `3eafee2c8893874d90b7720375285dbe51f5c533`。
+- FileLock 下通过发行包公共 `optimize()` 整理正式索引。Windows 上活跃 reader 使主库物理截断延后，核验身份停止两个 daemon 后完成整理。CodeGraph 主库 272,969,728 → 232,546,304 字节，Codex3N 153,968,640 → 106,057,728 字节；WAL 均为零，`quick_check=ok`。CodeGraph 节点/边/文件/全文/字段契约为 34,237/106,391/1,325/1,600/140，Codex3N 为 14,268/44,500/362/494/1,637，整理前后保持一致。备份和 JSON 报告位于本机 `.codegraph/backups/20261007-string-contracts`。
+- 正式索引实测：`officialMixApiKey` 命中 `settings.rs:59` 的 bool 字段；`load_settings` 调用方为 `App::refreshSettings`；`/settings/get` 有两个分片调用及其两个产物调用，均附来源；`postJson` 默认一个分片定义，映射产物 8504–8603 行；文档三处提及；中文问句返回五个词法候选并标注证据边界。
+- 最终文件检查发现 `steps-model.ts` 第 14,089 字节含 NUL，全文写入跳过全文件而状态只采样首 1 KiB，造成持续新增误报。统一完整候选内容检查，回归覆盖保留代码图、排除旧全文和普通文本恢复。补丁本机 `check:quick` 类型检查与两个文件 18 项通过；作为 personal.4 发布，保留 personal.3 标签。
+
 - macOS daemon 压力用例在单独重跑后仍超时；Windows 同轮两个超时重跑通过，本机对应两个文件 48 个测试通过、1 个跳过。CI 的 macOS 每分片改为两个 worker，测试进程显式设置 4096 的描述符软上限并打印原值，保留全部断言，Windows/Ubuntu 分片不变。最终状态以该提交 CI 为准。
 - 在增强后的 Codex3N 一致性副本运行 SQLite `VACUUM` 后，主库从 153,968,640 字节降到 109,182,976 字节；节点 13,795、边 43,052、全文文件 494、字段契约 1,637 保持一致，`quick_check` 为 `ok`。这是存储整理收益，不是删掉索引内容；正式索引整理在发行升级后记录。
 

@@ -105,6 +105,31 @@ describe('file text search', () => {
     } finally { connection.close(); }
   });
 
+  it('keeps late NUL exclusions consistent with status and restores text after replacement', async () => {
+    const file = path.join(root, 'src', 'literal.ts');
+    fs.writeFileSync(file, '// ' + 'x'.repeat(1400) + '\nexport function binaryLiteral() { return "a\0b"; }\n');
+    await graph.sync();
+    expect(graph.queryCode({ mode: 'definitions', query: 'binaryLiteral' }).page.total).toBe(1);
+    expect(graph.queryCode({ mode: 'text', query: 'binaryLiteral', file: 'src/literal.ts' }).page.total).toBe(0);
+    expect(graph.queryCode({ mode: 'status', query: 'status', checkFiles: true }).index?.textChanges)
+      .toEqual({ added: [], modified: [], removed: [] });
+
+    fs.writeFileSync(path.join(root, 'settings.json'), ' '.repeat(1400) + '\0');
+    expect(graph.queryCode({ mode: 'status', query: 'status', checkFiles: true }).index?.textChanges)
+      .toEqual({ added: [], modified: [], removed: ['settings.json'] });
+    await graph.sync();
+    expect(graph.queryCode({ mode: 'status', query: 'status', checkFiles: true }).index?.textChanges)
+      .toEqual({ added: [], modified: [], removed: [] });
+
+    fs.writeFileSync(file, 'export function binaryLiteral() { return "text"; }\n');
+    expect(graph.queryCode({ mode: 'status', query: 'status', checkFiles: true }).index?.textChanges?.added)
+      .toEqual(['src/literal.ts']);
+    await graph.sync();
+    expect(graph.queryCode({ mode: 'text', query: 'binaryLiteral', file: 'src/literal.ts' }).page.total).toBe(1);
+    expect(graph.queryCode({ mode: 'status', query: 'status', checkFiles: true }).index?.textChanges)
+      .toEqual({ added: [], modified: [], removed: [] });
+  });
+
   it('upgrades a word FTS index transactionally and keeps literal punctuation searchable', async () => {
     graph.destroy();
     const connection = DatabaseConnection.open(getDatabasePath(root));
