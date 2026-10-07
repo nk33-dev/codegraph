@@ -95,4 +95,16 @@ describe('generated source evidence', () => {
     write('parts/b.js', 'function second() { return 123; }');
     expect(generatedSources(root, files)[0]).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('newline') });
   });
+
+  it('resolves a project accessed through a directory alias against its real root', () => {
+    const files = fixture();
+    const alias = `${root}-alias`;
+    fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+      expect(generatedSources(alias, files)[0]).toMatchObject({ status: 'verified', output: 'bundle.js' });
+    } finally {
+      if (process.platform === 'win32') fs.rmdirSync(alias);
+      else fs.unlinkSync(alias);
+    }
+  });
 });

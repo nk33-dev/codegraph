@@ -93,6 +93,8 @@ function assemblyConfig(root: string, script: string, content: string): Generate
 }
 
 export function generatedSources(root: string, files: readonly string[], revision: string | null = null): GeneratedSource[] {
+  // macOS /var aliases /private/var; compare paths under the same real root as validated scripts.
+  root = validatePathWithinRoot(root, '.') ?? root;
   const candidates = files.filter(file => file.endsWith('.rs') || /(?:^|\/)(?:scripts|tools|build)\/.*\.(?:[cm]?js|ts)$/.test(file)
     || /(?:assembl|generat|build)[^/]*\.(?:[cm]?js|ts)$/.test(file));
   const previous = sourceCache.get(root);
