@@ -2,6 +2,10 @@
 
 ## 2026-10-07：官方同步与字符串契约
 
+- 最终补丁发行提交 `891449d7190ca41d299b8d85beaeff8245d9dd9b` 的 [CI 37639589895](https://github.com/nk33-dev/codegraph/actions/runs/37639589895) 十个分片全部通过，[Personal Release 37640811606](https://github.com/nk33-dev/codegraph/actions/runs/37640811606) 成功。personal.4 资产 SHA256 本机复算与清单一致；doctor 构建提交和标签一致，dirty=false，两个 daemon 均切换为 personal.4。
+- 发行包正常同步后两个索引提取版本 31、schema 18，完整状态与提交对应均核对通过：state=complete、pendingRefs=0、laggingFileCount=0、textChanges 为空。Codex3N HEAD 保持 `3eafee2c8893874d90b7720375285dbe51f5c533`，源码状态干净；CodeGraph 的后部 NUL 文件不再误报滞后。
+- personal.4 正式 CLI 复测：bool 字段 1 个、该字段引用 10 个（跨语言候选证据保留）、Tauri 调用方 1 个、桥接调用方 4 个及被调目标 2 个、折叠后的 `postJson` 定义 1 个、文档提及 3 处、中文候选 5 个、随机英文标识符零结果。manifest 默认查询明确返回 `mode:"text"` 与 `generatedSources` 引导。JSON 结果保存在本机备份目录的 `release-4-probes.json`。
+
 - 发行提交 `d73039b37452f890317cb8724482b4ad405035ee` 的 [CI 37634898527](https://github.com/nk33-dev/codegraph/actions/runs/37634898527) 十个三平台分片全部成功；[Personal Release 37636360926](https://github.com/nk33-dev/codegraph/actions/runs/37636360926) 成功。本机 SHA256 对照资产清单通过，global doctor 显示 personal.3、同一提交、dirty=false，两个 daemon 已切换为该发行构建。
 - 发行包升级 CodeGraph 1,322 文件用时 66 秒，Codex3N 361 文件用时 56.7 秒；提取版本 31、schema 18、待解析引用零。Codex3N 源码 Git 状态干净，索引提交与 HEAD 均为 `3eafee2c8893874d90b7720375285dbe51f5c533`。
 - FileLock 下通过发行包公共 `optimize()` 整理正式索引。Windows 上活跃 reader 使主库物理截断延后，核验身份停止两个 daemon 后完成整理。CodeGraph 主库 272,969,728 → 232,546,304 字节，Codex3N 153,968,640 → 106,057,728 字节；WAL 均为零，`quick_check=ok`。CodeGraph 节点/边/文件/全文/字段契约为 34,237/106,391/1,325/1,600/140，Codex3N 为 14,268/44,500/362/494/1,637，整理前后保持一致。备份和 JSON 报告位于本机 `.codegraph/backups/20261007-string-contracts`。

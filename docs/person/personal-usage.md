@@ -48,14 +48,14 @@ codegraph sync --upgrade-index --yes    # 非交互运行（agent/CI/git hook）
 源码包使用 Node 22.5 及以上，推荐 Node 24。发布后可直接安装固定 Release 资产：
 
 ```powershell
-npm install -g "https://github.com/nk33-dev/codegraph/releases/download/v1.6.2-personal.3/colbymchenry-codegraph-1.6.2-personal.3.tgz"
+npm install -g "https://github.com/nk33-dev/codegraph/releases/download/v1.6.2-personal.4/colbymchenry-codegraph-1.6.2-personal.4.tgz"
 codegraph doctor --json
 ```
 
 需要从 Git 标签自行打包时，推荐分两步执行：
 
 ```powershell
-npm pack "github:nk33-dev/codegraph#v1.6.2-personal.3"
+npm pack "github:nk33-dev/codegraph#v1.6.2-personal.4"
 npm install -g ".\colbymchenry-codegraph-1.6.2-personal.3.tgz"
 codegraph doctor --json
 ```
