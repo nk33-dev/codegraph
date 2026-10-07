@@ -45,7 +45,11 @@ function serdeOption(attributes: string, key: string, direction: FieldContract['
 
 function ownerFor(field: SyntaxNode, nodes: readonly Node[]): Node | undefined {
   const line = field.startPosition.row + 1;
-  return nodes.filter(node => OWNER_KINDS.has(node.kind) && node.startLine <= line && node.endLine >= line)
+  let declaration = field.parent;
+  while (declaration && !['struct_item', 'type_spec', 'class_definition', 'class_declaration', 'interface_declaration', 'record_declaration'].includes(declaration.type)) declaration = declaration.parent;
+  const name = declaration?.childForFieldName('name')?.text;
+  return nodes.filter(node => OWNER_KINDS.has(node.kind) && (!name || node.name === name)
+    && node.startLine <= line && node.endLine >= line)
     .sort((a, b) => a.endLine - a.startLine - (b.endLine - b.startLine))[0];
 }
 

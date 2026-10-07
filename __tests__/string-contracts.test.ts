@@ -116,6 +116,19 @@ pub struct Settings {
     await cg.sync();
     expect(cg.getFieldContracts()).toEqual([]);
   });
+
+  it('retains separate owners for same-line models and scopes typed key accesses', async () => {
+    const root = fixture();
+    write(root, 'settings.rs', 'pub struct First { #[serde(rename="sameKey")] pub first: bool } pub struct Second { #[serde(rename="sameKey")] pub second: String }\n');
+    write(root, 'client.ts', 'export function read(settings: Second) { return settings["sameKey"]; }\n');
+    const cg = await open(root);
+    expect(cg.getFieldContracts().map(contract => [contract.owner, contract.fieldName])).toEqual([
+      ['First', 'first'], ['First', 'first'], ['Second', 'second'], ['Second', 'second'],
+    ]);
+    const result = cg.queryCode({ mode: 'references', query: 'Second.sameKey' }).items as CodeReference[];
+    expect(result.some(item => item.source.name === 'read' && item.target.name === 'second')).toBe(true);
+    expect(result.some(item => item.target.name === 'first')).toBe(false);
+  });
 });
 
 describe('registered string calls', () => {
