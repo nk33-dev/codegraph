@@ -76,4 +76,19 @@ describe('document mentions and local lexical recovery', () => {
     const context = await analyzeChangeContext(graph);
     expect(context?.relatedDocuments?.some(mention => mention.filePath === 'docs/person/config.md' && mention.line === 3)).toBe(true);
   });
+
+  it('keeps manifest guidance ahead of lexical candidates mentioning its path', async () => {
+    const graph = await fixture();
+    const manifest = 'assets/inject/renderer-inject/manifest.json';
+    write(manifest, '{"fragments": [{"name": "part.js"}]}\n');
+    write('docs/assembly.md', `Assembly reads ${manifest}.\n`);
+    await graph.sync();
+    expect(graph.queryTextFallback(manifest).items.length).toBeGreaterThan(0);
+    handler = new ToolHandler(graph); __setLoadCodeGraphForTests(CodeGraph);
+    const result = await handler.execute('codegraph_explore', { query: manifest });
+    const output = result.content.filter(item => item.type === 'text').map(item => item.text).join('\n');
+    expect(output).toContain('mode:"text"');
+    expect(output).toContain('generatedSources');
+    expect(output).not.toContain('Text candidates found');
+  });
 });
